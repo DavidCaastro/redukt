@@ -1,0 +1,16 @@
+{
+  "model_name": "RWKV-x070-World-0.1B-v2.8-20241210-ctx4096",
+  "source": "BlinkDL/rwkv-7-world",
+  "architecture": "RWKV-7",
+  "n_layer": 12,
+  "n_embd": 768,
+  "n_head": 12,
+  "head_size": 64,
+  "vocab_size": 65536,
+  "context_length": 4096,
+  "training_tokens": "~1T",
+  "key_format": "BlinkDL",
+  "original_format": "pth",
+  "converted_to": "safetensors",
+  "license": "Apache-2.0"
+}

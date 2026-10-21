@@ -8,5 +8,4 @@ pub mod quant;
 pub mod ram_monitor;
 pub mod spectral;
 pub mod intrinsic;
-pub mod backbone;
 pub mod preprocess;
