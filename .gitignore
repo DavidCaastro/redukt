@@ -1,0 +1,10 @@
+/target
+*.azth
+weights/**/*.safetensors
+weights/**/*.gguf
+weights/**/*.bin
+!weights/MANIFEST.md
+*.log
+*.jsonl
+.env
+*.pdb

@@ -1,0 +1,26 @@
+label,tier,file_path,bytes_requested,bytes_actual,bpb,throughput_bps,elapsed_sec,state_file,intrinsic_file,timestamp
+dickens,T1b+T2b,data/silesia/dickens,100000,100000,1.3373,72,1380.9,docs/results/phase5/states/dickens.bin,docs/results/phase5/intrinsic/dickens.intrinsic.jsonl,2026-10-15 18:57:55
+samba,T1b+T2b,data/silesia/samba,100000,100000,1.0446,47,2119.1,docs/results/phase5/states/samba.bin,docs/results/phase5/intrinsic/samba.intrinsic.jsonl,2026-10-15 20:29:41
+nci,T2b,data/silesia/nci,100000,100000,0.3086,31,3178.7,docs/results/phase5/states/nci.bin,docs/results/phase5/intrinsic/nci.intrinsic.jsonl,2026-10-15 20:47:21
+osdb,T2b,data/silesia/osdb,100000,100000,2.2700,22,4516.1,docs/results/phase5/states/osdb.bin,docs/results/phase5/intrinsic/osdb.intrinsic.jsonl,2026-10-15 21:09:39
+mozilla,T1b+T2b,data/silesia/mozilla,100000,100000,1.0112,20,5058.6,docs/results/phase5/states/mozilla.bin,docs/results/phase5/intrinsic/mozilla.intrinsic.jsonl,2026-10-15 21:18:41
+mr,T2b,data/silesia/mr,100000,100000,1.3964,18,5712.6,docs/results/phase5/states/mr.bin,docs/results/phase5/intrinsic/mr.intrinsic.jsonl,2026-10-15 21:29:35
+ooffice,T2b,data/silesia/ooffice,100000,100000,3.1456,17,5722.2,docs/results/phase5/states/ooffice.bin,docs/results/phase5/intrinsic/ooffice.intrinsic.jsonl,2026-10-15 21:29:45
+reymont,T2b,data/silesia/reymont,100000,100000,1.2675,27,3672.7,docs/results/phase5/states/reymont.bin,docs/results/phase5/intrinsic/reymont.intrinsic.jsonl,2026-10-15 21:31:01
+webster,T2b,data/silesia/webster,100000,100000,1.1952,47,2114.8,docs/results/phase5/states/webster.bin,docs/results/phase5/intrinsic/webster.intrinsic.jsonl,2026-10-15 21:45:01
+enwik8,T1b,data/enwik8,100000,100000,1.1800,69,1448.2,docs/results/phase5/states/enwik8.bin,docs/results/phase5/intrinsic/enwik8.intrinsic.jsonl,2026-10-15 21:54:00
+xml,T2b,data/silesia/xml,100000,100000,0.2465,42,2380.0,docs/results/phase5/states/xml.bin,docs/results/phase5/intrinsic/xml.intrinsic.jsonl,2026-10-15 22:09:22
+sao,T2b,data/silesia/sao,100000,100000,4.9163,17,5795.9,docs/results/phase5/states/sao.bin,docs/results/phase5/intrinsic/sao.intrinsic.jsonl,2026-10-15 22:24:04
+ait-B,T3,data/t3-modern/ait-B,100000,100000,0.9512,51,1951.7,docs/results/phase5/states/ait-B.bin,docs/results/phase5/intrinsic/ait-B.intrinsic.jsonl,2026-10-15 22:26:38
+oeis,T1b,data/oeis/stripped,100000,100000,2.5233,28,3516.4,docs/results/phase5/states/oeis.bin,docs/results/phase5/intrinsic/oeis.intrinsic.jsonl,2026-10-15 22:29:44
+ait-A,T3,data/t3-modern/ait-A,100000,100000,3.9248,37,2684.2,docs/results/phase5/states/ait-A.bin,docs/results/phase5/intrinsic/ait-A.intrinsic.jsonl,2026-10-15 22:29:52
+ait-C,T3,data/t3-modern/ait-C,100000,100000,1.3042,43,2316.2,docs/results/phase5/states/ait-C.bin,docs/results/phase5/intrinsic/ait-C.intrinsic.jsonl,2026-10-15 22:48:05
+x-ray,T2b,data/silesia/x-ray,100000,100000,3.6835,17,5864.4,docs/results/phase5/states/x-ray.bin,docs/results/phase5/intrinsic/x-ray.intrinsic.jsonl,2026-10-15 22:56:33
+ml-weights,T3,data/t3-modern/ml-weights-safetensors.bin,100000,10000,0.4521,42,239.5,docs/results/phase5/states/ml-weights.bin,docs/results/phase5/intrinsic/ml-weights.intrinsic.jsonl,2026-10-15 23:00:39
+ait-D,T3,data/t3-modern/ait-D,100000,100000,7.9641,17,5782.5,docs/results/phase5/states/ait-D.bin,docs/results/phase5/intrinsic/ait-D.intrinsic.jsonl,2026-10-16 00:00:34
+ait-F,T3,data/t3-modern/ait-F,100000,100000,6.1037,18,5445.0,docs/results/phase5/states/ait-F.bin,docs/results/phase5/intrinsic/ait-F.intrinsic.jsonl,2026-10-16 00:00:37
+ait-E,T3,data/t3-modern/ait-E,100000,100000,6.0729,18,5673.0,docs/results/phase5/states/ait-E.bin,docs/results/phase5/intrinsic/ait-E.intrinsic.jsonl,2026-10-16 00:01:18
+ait-G,T3,data/t3-modern/ait-G,100000,100000,2.2727,18,5646.5,docs/results/phase5/states/ait-G.bin,docs/results/phase5/intrinsic/ait-G.intrinsic.jsonl,2026-10-16 00:04:06
+jsonl,T3,data/t3-modern/structured-jsonl.bin,100000,10000,1.0477,41,245.3,docs/results/phase5/states/jsonl.bin,docs/results/phase5/intrinsic/jsonl.intrinsic.jsonl,2026-10-16 00:04:46
+ait-H,T3,data/t3-modern/ait-H,100000,100000,2.8969,19,5249.7,docs/results/phase5/states/ait-H.bin,docs/results/phase5/intrinsic/ait-H.intrinsic.jsonl,2026-10-16 00:15:42
+modern-pe,T3,data/t3-modern/modern-x64-pe.bin,100000,100000,2.8589,21,4836.7,docs/results/phase5/states/modern-pe.bin,docs/results/phase5/intrinsic/modern-pe.intrinsic.jsonl,2026-10-16 00:21:23

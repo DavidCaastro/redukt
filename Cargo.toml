@@ -1,0 +1,19 @@
+[package]
+name = "redukt"
+version = "0.1.0"
+edition = "2021"
+description = "Neural compression engine — RWKV-7 + Context Mixing + Arithmetic Coding"
+license = "Apache-2.0"
+repository = "https://github.com/DavidCaastro/redukt"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.maxperf]
+inherits = "release"

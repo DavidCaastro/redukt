@@ -1,0 +1,49 @@
+Redukt
+Copyright 2026 David Castro
+
+This product includes software developed at azathoth-lm
+(https://github.com/DavidCaastro/azathoth-lm).
+
+Third-Party Components
+======================
+
+RWKV-7 Model Weights
+  Copyright 2024-2025 BlinkDL (Bo Peng)
+  Licensed under Apache License 2.0
+  Source: https://huggingface.co/BlinkDL/rwkv-7-world
+  Used as: pretrained neural network weights for compression prediction
+
+RWKV-7 Architecture
+  Paper: "Eagle and Finch: RWKV at Scale" (Peng et al., 2024)
+  Architecture: Linear attention with time-mixing and channel-mixing
+  Implementation: Original Rust implementation (not derived from reference Python)
+
+World Tokenizer Vocabulary
+  Copyright 2023 BlinkDL
+  Licensed under Apache License 2.0
+  File: rwkv_vocab_v20230424.txt (65,536 tokens)
+
+Algorithmic Heritage (Public Domain / No License Required)
+==========================================================
+
+Range Coding (Arithmetic Coding)
+  Based on: Schindler (1998) carry-propagation range coder
+  IBM arithmetic coding patents expired 2003-2006
+  Implementation: Original, not derived from any copyrighted source
+
+Context Mixing
+  Based on: PAQ series (Matt Mahoney, public domain)
+  LSTM mixing: Hochreiter & Schmidhuber (1997, academic)
+  Logistic mixing: standard ML technique, no patent encumbrance
+
+Walsh-Hadamard Transform
+  Public domain mathematical transform
+  Used in: embedding surgery (center0.3)
+
+SafeTensors Format Reader
+  Format specification: HuggingFace (Apache 2.0)
+  Implementation: Original Rust, not derived from HuggingFace code
+
+GGUF Format Reader
+  Format specification: llama.cpp (MIT License)
+  Implementation: Original Rust, not derived from llama.cpp code
