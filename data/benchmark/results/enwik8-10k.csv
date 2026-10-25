@@ -1,0 +1,6 @@
+mode,bytes,tokens,bpb,compressed_bytes,ratio,coder_overhead_bpb,tok_per_sec,notes
+baseline,10000,3005,1.4067,,,,,RWKV-only no ensemble
+hybrid-eval,10000,3005,1.2812,,,,26.5,full ensemble (ngram+bias+mixer)
+hybrid-eval+surgery,10000,3005,1.2558,,,,25.1,+ emb-surgery center0.3
+compress,10000,3005,1.2812,1665,0.1665,0.0508,26.2,arithmetic coded output
+target,10000,,1.1535,,,,,"MANIFEST.md (with --hierarchical --match --emb-surgery center0.3)"

@@ -6,5 +6,7 @@ weights/**/*.bin
 !weights/MANIFEST.md
 *.log
 *.jsonl
+data/benchmark/enwik8
+data/benchmark/*.zip
 .env
 *.pdb
