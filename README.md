@@ -18,10 +18,10 @@ Mixing and arithmetic coding.
 cargo build --release
 
 # Compress
-./target/release/redukt compress input.txt output.azth
+./target/release/redukt compress --input data.txt --output data.azth
 
 # Decompress
-./target/release/redukt decompress output.azth restored.txt
+./target/release/redukt decompress --input data.azth --output restored.txt
 ```
 
 ## How It Works

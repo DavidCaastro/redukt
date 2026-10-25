@@ -12,8 +12,9 @@ repository = "https://github.com/DavidCaastro/redukt"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
-strip = true
+panic = "unwind"
 
 [profile.maxperf]
 inherits = "release"
+panic = "abort"
+strip = true
