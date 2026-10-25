@@ -4,6 +4,7 @@
 /// improving compression by clustering addresses to common targets.
 
 /// Statistics from E8/E9 transform application.
+#[allow(dead_code)] // used by planned x86 preprocessing in compress command
 pub struct E8E9Stats {
     pub e8_count: usize,
     pub e9_count: usize,
@@ -12,6 +13,7 @@ pub struct E8E9Stats {
 }
 
 /// Apply E8/E9 forward transform with statistics tracking.
+#[allow(dead_code)] // used by planned x86 preprocessing in compress command
 pub fn e8e9_encode_with_stats(data: &[u8]) -> (Vec<u8>, E8E9Stats) {
     let mut out = data.to_vec();
     let n = out.len();

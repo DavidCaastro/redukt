@@ -78,6 +78,7 @@ impl WorldTokenizer {
         &self.idx_to_token[id as usize]
     }
 
+    #[allow(dead_code)] // accessor for planned commands
     pub fn vocab_size(&self) -> usize {
         self.idx_to_token.len()
     }

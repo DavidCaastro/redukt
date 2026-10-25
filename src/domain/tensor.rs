@@ -628,6 +628,7 @@ pub fn softmax(x: &Tensor) -> Tensor {
 
 /// Compute entropy H = -sum(p * ln(p)) from logits (in nats).
 /// Uses numerically stable softmax internally.
+#[allow(dead_code)] // used by planned hybrid-eval command
 pub fn entropy_from_logits(logits: &[f32]) -> f32 {
     let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let exps: Vec<f32> = logits.iter().map(|&v| (v - max_val).exp()).collect();

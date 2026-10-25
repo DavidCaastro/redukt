@@ -108,40 +108,6 @@ pub struct Rwkv7Model {
     head_w: QuantMatrix,    // (V, D) — auto-quantized (biggest matrix)
 }
 
-/// Per-layer activation steering for generation (B.11.2 / B.11.3).
-/// Supports multiplicative scaling (B.11.2, KILLED) and additive offsets (B.11.3).
-pub struct SteeringConfig {
-    /// Per-layer scale factors for tm_out. Length must equal n_layer.
-    /// 1.0 = no change, >1.0 amplifies state readout.
-    pub tm_out_scale: Vec<f32>,
-    /// Per-layer additive offset vectors for tm_out (B.11.3 state-offset tuning).
-    /// None = no offset. Some(vec) must have length n_layer, each inner vec D-sized.
-    pub tm_out_offset: Option<Vec<Vec<f32>>>,
-    /// Global scale for offsets. Applied as: tm_out[j] += offset_scale * offset[layer][j]
-    pub offset_scale: f32,
-}
-
-impl SteeringConfig {
-    /// Scale tm_out in layers [start..end) by alpha, rest unchanged.
-    pub fn late_layers(n_layer: usize, start: usize, end: usize, alpha: f32) -> Self {
-        let mut scales = vec![1.0f32; n_layer];
-        for i in start..end.min(n_layer) {
-            scales[i] = alpha;
-        }
-        Self { tm_out_scale: scales, tm_out_offset: None, offset_scale: 0.0 }
-    }
-
-    /// State-offset tuning: additive offset on tm_out per layer (B.11.3).
-    /// offsets[layer] is a D-sized vector added to tm_out at every timestep.
-    pub fn with_offset(offsets: Vec<Vec<f32>>, scale: f32) -> Self {
-        let n = offsets.len();
-        Self {
-            tm_out_scale: vec![1.0f32; n],
-            tm_out_offset: Some(offsets),
-            offset_scale: scale,
-        }
-    }
-}
 
 /// Recurrent state for inference.
 #[derive(Clone)]
@@ -166,33 +132,18 @@ impl Rwkv7State {
         }
     }
 
-    /// Number of layers in this state.
+    #[allow(dead_code)] // used by planned cm-eval command
     pub fn n_layers(&self) -> usize { self.x_prev_att.len() }
 
-    /// Read-only access to per-layer attention residual (D-sized).
+    #[allow(dead_code)] // used by planned cm-eval command
     pub fn att_residual(&self, layer: usize) -> &[f32] { &self.x_prev_att[layer].data }
 
-    /// Read-only access to per-layer WKV state matrix (H*N*N flat).
+    #[allow(dead_code)] // used by planned cm-eval command
     pub fn wkv_state(&self, layer: usize) -> &[f32] { &self.state_mat[layer] }
 
-    /// Read-only access to per-layer FFN residual (D-sized).
+    #[allow(dead_code)] // used by planned cm-eval command
     pub fn ffn_residual(&self, layer: usize) -> &[f32] { &self.x_prev_ffn[layer].data }
 
-    /// Apply additive state delta: state_mat[l] += scale * delta_state[l],
-    /// x_prev_att[l] += scale * delta_att[l]. Used by B.11.4 state-delta tuning.
-    pub fn apply_state_delta(&mut self, delta_state: &[Vec<f32>], delta_att: &[Vec<f32>], scale: f32) {
-        let n_layer = self.state_mat.len();
-        for l in 0..n_layer.min(delta_state.len()) {
-            for j in 0..self.state_mat[l].len().min(delta_state[l].len()) {
-                self.state_mat[l][j] += scale * delta_state[l][j];
-            }
-        }
-        for l in 0..n_layer.min(delta_att.len()) {
-            for j in 0..self.x_prev_att[l].data.len().min(delta_att[l].len()) {
-                self.x_prev_att[l].data[j] += scale * delta_att[l][j];
-            }
-        }
-    }
 }
 
 /// Pre-allocated workspace for zero-allocation forward pass.
@@ -511,6 +462,7 @@ impl Rwkv7Model {
     /// - "norm": equalize byte embedding norms to match text-token median
     /// - "center": blend byte embeddings toward global centroid (alpha=0.3)
     /// - "spread": decorrelate byte embeddings via mean-shift + variance scaling
+    #[allow(dead_code)] // used by planned hybrid-eval command
     pub fn embedding_surgery(&mut self, method: &str) {
         let d = self.config.n_embd;
         let v = self.config.vocab_size;
@@ -708,118 +660,9 @@ impl Rwkv7Model {
         self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
     }
 
-    /// Steered forward pass — identical to forward_into but scales tm_out
-    /// per-layer according to SteeringConfig (B.11.2 activation steering).
-    /// Use during generation only; prefill should use forward_into.
-    pub fn forward_steered(
-        &self, token: usize, state: &mut Rwkv7State, scratch: &mut Scratch,
-        out_logits: &mut [f32], steering: &SteeringConfig,
-    ) {
-        assert!(token < self.config.vocab_size,
-            "[rwkv7] token {} out of bounds (vocab_size={})", token, self.config.vocab_size);
-
-        let d = self.config.n_embd;
-        let h = self.config.n_head;
-        let n = self.config.head_size;
-
-        let emb_start = token * d;
-        scratch.x.copy_from_slice(&self.emb.data[emb_start..emb_start + d]);
-
-        for i in 0..self.config.n_layer {
-            let lw = &self.layers[i];
-
-            layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                            &lw.ln1_w.data, &lw.ln1_b.data, 1e-5);
-            time_mixing_scratch(scratch, i, h, n,
-                                &state.x_prev_att[i].data,
-                                &state.v_first.data,
-                                &mut state.state_mat[i],
-                                &lw.time_mix,
-                                self.config.g1k);
-            state.x_prev_att[i].data.copy_from_slice(&scratch.ln_buf);
-            if i == 0 {
-                state.v_first.data.copy_from_slice(&scratch.v);
-            }
-
-            // Activation steering: scale and/or offset tm_out before residual addition
-            let alpha = steering.tm_out_scale[i];
-            if alpha != 1.0 {
-                for j in 0..d { scratch.tm_out[j] *= alpha; }
-            }
-            if let Some(ref offsets) = steering.tm_out_offset {
-                let s = steering.offset_scale;
-                if s != 0.0 {
-                    for j in 0..d { scratch.tm_out[j] += s * offsets[i][j]; }
-                }
-            }
-            add_inplace(&mut scratch.x, &scratch.tm_out);
-
-            layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                            &lw.ln2_w.data, &lw.ln2_b.data, 1e-5);
-            channel_mixing_scratch(scratch,
-                                   &state.x_prev_ffn[i].data,
-                                   &lw.channel_mix);
-            state.x_prev_ffn[i].data.copy_from_slice(&scratch.ln_buf);
-            add_inplace(&mut scratch.x, &scratch.cm_out);
-        }
-
-        layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                        &self.ln_out_w.data, &self.ln_out_b.data, 1e-5);
-        self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
-    }
-
-    /// Forward pass that captures per-layer tm_out vectors (B.11.3 activation capture).
-    /// Returns n_layer vectors of dimension D. Used to compute mean activation differences
-    /// between completion and question formats for state-offset tuning.
-    pub fn forward_capture_tm_out(
-        &self, token: usize, state: &mut Rwkv7State, scratch: &mut Scratch,
-        out_logits: &mut [f32],
-    ) -> Vec<Vec<f32>> {
-        assert!(token < self.config.vocab_size);
-        let d = self.config.n_embd;
-        let h = self.config.n_head;
-        let n = self.config.head_size;
-        let n_layer = self.config.n_layer;
-
-        let emb_start = token * d;
-        scratch.x.copy_from_slice(&self.emb.data[emb_start..emb_start + d]);
-
-        let mut captured = Vec::with_capacity(n_layer);
-
-        for i in 0..n_layer {
-            let lw = &self.layers[i];
-            layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                            &lw.ln1_w.data, &lw.ln1_b.data, 1e-5);
-            time_mixing_scratch(scratch, i, h, n,
-                                &state.x_prev_att[i].data,
-                                &state.v_first.data,
-                                &mut state.state_mat[i],
-                                &lw.time_mix,
-                                self.config.g1k);
-            state.x_prev_att[i].data.copy_from_slice(&scratch.ln_buf);
-            if i == 0 {
-                state.v_first.data.copy_from_slice(&scratch.v);
-            }
-            captured.push(scratch.tm_out.clone());
-            add_inplace(&mut scratch.x, &scratch.tm_out);
-
-            layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                            &lw.ln2_w.data, &lw.ln2_b.data, 1e-5);
-            channel_mixing_scratch(scratch,
-                                   &state.x_prev_ffn[i].data,
-                                   &lw.channel_mix);
-            state.x_prev_ffn[i].data.copy_from_slice(&scratch.ln_buf);
-            add_inplace(&mut scratch.x, &scratch.cm_out);
-        }
-
-        layer_norm_into(&mut scratch.ln_buf, &scratch.x,
-                        &self.ln_out_w.data, &self.ln_out_b.data, 1e-5);
-        self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
-        captured
-    }
-
     /// Compute spectral profile of all weight matrices.
     /// Writes results as JSON to output_path and prints summary to stderr.
+    #[allow(dead_code)] // used by planned cm-eval command
     pub fn spectral_profile(&self, output_path: &str) {
         use crate::domain::spectral::*;
         let n_layers = self.config.n_layer;
