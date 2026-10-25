@@ -1,14 +1,13 @@
-//! Compress/decompress commands — arithmetic coding with RWKV + ensemble.
-//!
-//! Moved from main.rs to application/ (R98).
+//! Application commands — compress, decompress, hybrid-eval, baseline, cm-eval.
 
 use crate::domain::error::{parse_arg, next_arg};
-use crate::domain::tensor::{softmax, Tensor};
+use crate::domain::tensor::{softmax, entropy_from_logits, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::application::model_loader;
+use crate::application::telemetry::{JsonLogger, LogSnapshot};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
 const MAGIC: &[u8; 8] = b"AZTH\x01\x00\x00\x00";
@@ -257,4 +256,248 @@ pub fn cmd_decompress(args: &[String]) {
     eprintln!("[decompress] output: {} ({} bytes)", output_path, output_bytes.len());
     eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", elapsed, token_count as f64 / elapsed);
     eprintln!("[decompress] done.");
+}
+
+pub fn cmd_hybrid_eval(args: &[String]) {
+    let mut input_path = "data/enwik8".to_string();
+    let mut weights_dir = "weights/rwkv7-0.1b".to_string();
+    let mut max_bytes: usize = 0;
+    let mut bias_lr: f32 = 0.30;
+    let mut ngram_scale: f32 = 0.5;
+    let mut mix_eta: f32 = 0.01;
+    let mut tau: f32 = 0.0;
+    let mut log_path = String::new();
+    let mut emb_surgery = String::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
+            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes"), "--bytes").unwrap_or_else(|e| panic!("{}", e)); }
+            "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr"), "--lr").unwrap_or_else(|e| panic!("{}", e)); }
+            "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale"), "--ngram-scale").unwrap_or_else(|e| panic!("{}", e)); }
+            "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta"), "--mix-eta").unwrap_or_else(|e| panic!("{}", e)); }
+            "--tau" => { tau = parse_arg(next_arg(args, &mut i, "--tau"), "--tau").unwrap_or_else(|e| panic!("{}", e)); }
+            "--log" => { log_path = next_arg(args, &mut i, "--log").to_string(); }
+            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery").to_string(); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let raw_bytes = crate::domain::error::read_file(&input_path)
+        .unwrap_or_else(|e| panic!("{}", e));
+    let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
+    let input_slice = &raw_bytes[..total_bytes];
+    eprintln!("[hybrid-eval] input: {} ({} bytes)", input_path, total_bytes);
+
+    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
+    let v = model.config.vocab_size;
+
+    if !emb_surgery.is_empty() {
+        model.embedding_surgery(&emb_surgery);
+    }
+
+    let tokens = tokenizer.encode(input_slice);
+    eprintln!("[hybrid-eval] tokenized: {} tokens ({:.2} bytes/token)",
+              tokens.len(), total_bytes as f64 / tokens.len() as f64);
+
+    let mut ngram = TokenNgram::new(4, v, ngram_scale);
+    let mut bias = BiasHead::new(v, bias_lr);
+    if tau > 0.0 { bias = bias.with_decay(tau); }
+    let mut mixer = AdaptiveMixer::new(mix_eta);
+
+    let mut state = Rwkv7State::new(&model.config);
+    let mut scratch = model.create_scratch();
+    let mut logits = vec![0.0f32; v];
+    let mut ce_bits = 0.0f64;
+
+    let mut logger = if !log_path.is_empty() {
+        Some(JsonLogger::new(&log_path, total_bytes))
+    } else {
+        None
+    };
+
+    eprintln!("[hybrid-eval] evaluating ...");
+    let t_start = std::time::Instant::now();
+
+    for t in 0..tokens.len() {
+        let tok = tokens[t] as usize;
+
+        if t == 0 {
+            ce_bits += -(1.0f64 / v as f64).log2();
+        } else {
+            let h = entropy_from_logits(&logits);
+            let ng_bias = ngram.compute_bias(Some(h));
+            let b_vec = bias.bias_vector();
+            let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
+
+            let tensor = Tensor::from_data(ensemble_logits, vec![v]);
+            let probs = softmax(&tensor);
+            let prob = probs.data[tok] as f64;
+            ce_bits += -prob.max(1e-30).log2();
+
+            if let Some(ref mut lg) = logger {
+                let token_bytes = tokenizer.decode_token(tokens[t]).len();
+                let (eff_lr, ema_surp) = bias.telemetry();
+                let snap = LogSnapshot {
+                    w_ngram: mixer.w_ngram,
+                    w_bias: mixer.w_bias,
+                    eff_lr,
+                    ema_surprise: ema_surp,
+                };
+                lg.record_token(token_bytes, prob, &snap);
+            }
+
+            mixer.update(&probs.data, &ngram.compute_bias(Some(h)), bias.bias_vector(), tok);
+            bias.update(&probs.data, tok);
+        }
+
+        ngram.observe(tok as u32);
+        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+
+        if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
+            let elapsed = t_start.elapsed().as_secs_f64();
+            let bpb = ce_bits / total_bytes as f64;
+            eprint!("\r[hybrid-eval] {:.1}% | {} tokens | BPB {:.4} | {:.1} tok/s   ",
+                    100.0 * t as f64 / tokens.len() as f64, t, bpb, t as f64 / elapsed);
+        }
+    }
+
+    if let Some(ref mut lg) = logger {
+        let (eff_lr, ema_surp) = bias.telemetry();
+        let snap = LogSnapshot {
+            w_ngram: mixer.w_ngram, w_bias: mixer.w_bias,
+            eff_lr, ema_surprise: ema_surp,
+        };
+        lg.finalize(&snap);
+    }
+
+    let elapsed = t_start.elapsed().as_secs_f64();
+    let bpb = ce_bits / total_bytes as f64;
+
+    eprintln!();
+    eprintln!();
+    eprintln!("[hybrid-eval] results:");
+    eprintln!("  input:   {} ({} bytes, {} tokens)", input_path, total_bytes, tokens.len());
+    eprintln!("  BPB:     {:.6}", bpb);
+    eprintln!("  mixer:   w_ngram={:.4}, w_bias={:.4}", mixer.w_ngram, mixer.w_bias);
+    eprintln!("  time:    {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
+    if !log_path.is_empty() {
+        eprintln!("  log:     {}", log_path);
+    }
+}
+
+pub fn cmd_baseline(args: &[String]) {
+    let mut input_path = "data/enwik8".to_string();
+    let mut weights_dir = "weights/rwkv7-0.1b".to_string();
+    let mut max_bytes: usize = 0;
+    let mut log_path = String::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
+            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes"), "--bytes").unwrap_or_else(|e| panic!("{}", e)); }
+            "--log" => { log_path = next_arg(args, &mut i, "--log").to_string(); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let raw_bytes = crate::domain::error::read_file(&input_path)
+        .unwrap_or_else(|e| panic!("{}", e));
+    let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
+    let input_slice = &raw_bytes[..total_bytes];
+    eprintln!("[baseline] input: {} ({} bytes)", input_path, total_bytes);
+
+    let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
+    let v = model.config.vocab_size;
+
+    let tokens = tokenizer.encode(input_slice);
+    eprintln!("[baseline] tokenized: {} tokens ({:.2} bytes/token)",
+              tokens.len(), total_bytes as f64 / tokens.len() as f64);
+
+    let mut state = Rwkv7State::new(&model.config);
+    let mut scratch = model.create_scratch();
+    let mut logits = vec![0.0f32; v];
+    let mut ce_bits = 0.0f64;
+
+    let mut logger = if !log_path.is_empty() {
+        Some(JsonLogger::new(&log_path, total_bytes))
+    } else {
+        None
+    };
+
+    eprintln!("[baseline] evaluating (RWKV-only, no ensemble) ...");
+    let t_start = std::time::Instant::now();
+
+    for t in 0..tokens.len() {
+        let tok = tokens[t] as usize;
+
+        if t == 0 {
+            ce_bits += -(1.0f64 / v as f64).log2();
+        } else {
+            let tensor = Tensor::from_data(logits.clone(), vec![v]);
+            let probs = softmax(&tensor);
+            let prob = probs.data[tok] as f64;
+            ce_bits += -prob.max(1e-30).log2();
+
+            if let Some(ref mut lg) = logger {
+                let token_bytes = tokenizer.decode_token(tokens[t]).len();
+                lg.record_token(token_bytes, prob, &LogSnapshot::default());
+            }
+        }
+
+        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+
+        if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
+            let elapsed = t_start.elapsed().as_secs_f64();
+            let bpb = ce_bits / total_bytes as f64;
+            eprint!("\r[baseline] {:.1}% | {} tokens | BPB {:.4} | {:.1} tok/s   ",
+                    100.0 * t as f64 / tokens.len() as f64, t, bpb, t as f64 / elapsed);
+        }
+    }
+
+    if let Some(ref mut lg) = logger {
+        lg.finalize(&LogSnapshot::default());
+    }
+
+    let elapsed = t_start.elapsed().as_secs_f64();
+    let bpb = ce_bits / total_bytes as f64;
+
+    eprintln!();
+    eprintln!();
+    eprintln!("[baseline] results:");
+    eprintln!("  input: {} ({} bytes, {} tokens)", input_path, total_bytes, tokens.len());
+    eprintln!("  BPB:   {:.6} (RWKV-only, no ensemble)", bpb);
+    eprintln!("  time:  {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
+    if !log_path.is_empty() {
+        eprintln!("  log:   {}", log_path);
+    }
+}
+
+pub fn cmd_cm_eval(args: &[String]) {
+    let mut weights_dir = "weights/rwkv7-0.1b".to_string();
+    let mut output_path = String::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
+            "--output" => { output_path = next_arg(args, &mut i, "--output").to_string(); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if output_path.is_empty() {
+        eprintln!("error: --output PATH required");
+        std::process::exit(1);
+    }
+
+    let (model, _) = model_loader::load_model_and_tokenizer(&weights_dir);
+    model.spectral_profile(&output_path);
 }

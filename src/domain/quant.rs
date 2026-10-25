@@ -359,7 +359,6 @@ impl QuantMatrix {
     }
 
     /// Dequantize to f64 for spectral analysis. Returns (data, rows, cols).
-    #[allow(dead_code)] // used by spectral_profile (planned cm-eval command)
     pub fn dequantize_f64(&self) -> (Vec<f64>, usize, usize) {
         match self {
             QuantMatrix::F32(t) => {

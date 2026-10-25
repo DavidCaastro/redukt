@@ -11,15 +11,12 @@ fn main() {
     }
 
     match args[1].as_str() {
-        "compress" => {
-            application::codec::cmd_compress(&args[2..]);
-        }
-        "decompress" => {
-            application::codec::cmd_decompress(&args[2..]);
-        }
-        "--help" | "-h" | "help" => {
-            print_usage();
-        }
+        "compress" => application::codec::cmd_compress(&args[2..]),
+        "decompress" => application::codec::cmd_decompress(&args[2..]),
+        "hybrid-eval" => application::codec::cmd_hybrid_eval(&args[2..]),
+        "baseline" => application::codec::cmd_baseline(&args[2..]),
+        "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
+        "--help" | "-h" | "help" => print_usage(),
         other => {
             eprintln!("error: unknown command '{}'", other);
             eprintln!();
@@ -32,16 +29,29 @@ fn main() {
 fn print_usage() {
     eprintln!("redukt — Neural compression engine (RWKV-7 + Context Mixing + Arithmetic Coding)");
     eprintln!();
+    eprintln!("Commands:");
+    eprintln!("  compress    Compress a file to AZTH format");
+    eprintln!("  decompress  Decompress an AZTH file to original");
+    eprintln!("  hybrid-eval Evaluate BPB with full ensemble (no output file)");
+    eprintln!("  baseline    Evaluate BPB with RWKV-only (no ensemble)");
+    eprintln!("  cm-eval     Spectral analysis of weight matrices");
+    eprintln!();
     eprintln!("Usage:");
-    eprintln!("  redukt compress   --input <FILE> --output <FILE> [--weights <DIR>] [--bytes <N>]");
-    eprintln!("  redukt decompress --input <FILE> --output <FILE> [--weights <DIR>]");
+    eprintln!("  redukt compress    --input <FILE> --output <FILE> [options]");
+    eprintln!("  redukt decompress  --input <FILE> --output <FILE> [--weights <DIR>]");
+    eprintln!("  redukt hybrid-eval --input <FILE> [options] [--log <FILE>]");
+    eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
+    eprintln!("  redukt cm-eval     --output <FILE> [--weights <DIR>]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --input <FILE>    Input file path");
-    eprintln!("  --output <FILE>   Output file path");
-    eprintln!("  --weights <DIR>   Weights directory or .gguf file (default: weights/rwkv7-0.1b)");
-    eprintln!("  --bytes <N>       Max bytes to compress (0 = all)");
-    eprintln!("  --lr <F>          Bias head learning rate (default: 0.30)");
-    eprintln!("  --ngram-scale <F> N-gram logit bias scale (default: 0.5)");
-    eprintln!("  --mix-eta <F>     Adaptive mixer learning rate (default: 0.01)");
+    eprintln!("  --input <FILE>       Input file path");
+    eprintln!("  --output <FILE>      Output file path");
+    eprintln!("  --weights <DIR>      Weights directory or .gguf file (default: weights/rwkv7-0.1b)");
+    eprintln!("  --bytes <N>          Max bytes to process (0 = all)");
+    eprintln!("  --lr <F>             Bias head learning rate (default: 0.30)");
+    eprintln!("  --ngram-scale <F>    N-gram logit bias scale (default: 0.5)");
+    eprintln!("  --mix-eta <F>        Adaptive mixer learning rate (default: 0.01)");
+    eprintln!("  --tau <F>            Surprise-modulated lr decay (0 = static, default: 0)");
+    eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
+    eprintln!("  --log <FILE>         Structured .jsonl log output");
 }

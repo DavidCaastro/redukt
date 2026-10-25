@@ -462,7 +462,6 @@ impl Rwkv7Model {
     /// - "norm": equalize byte embedding norms to match text-token median
     /// - "center": blend byte embeddings toward global centroid (alpha=0.3)
     /// - "spread": decorrelate byte embeddings via mean-shift + variance scaling
-    #[allow(dead_code)] // used by planned hybrid-eval command
     pub fn embedding_surgery(&mut self, method: &str) {
         let d = self.config.n_embd;
         let v = self.config.vocab_size;
@@ -662,7 +661,6 @@ impl Rwkv7Model {
 
     /// Compute spectral profile of all weight matrices.
     /// Writes results as JSON to output_path and prints summary to stderr.
-    #[allow(dead_code)] // used by planned cm-eval command
     pub fn spectral_profile(&self, output_path: &str) {
         use crate::domain::spectral::*;
         let n_layers = self.config.n_layer;

@@ -12,6 +12,7 @@
 use std::io::Write;
 use std::time::Instant;
 
+#[allow(dead_code)] // byte-level tracker for future CM byte-model integration
 pub struct ProgressTracker {
     total_bytes: usize,
     processed_bytes: usize,
@@ -22,6 +23,7 @@ pub struct ProgressTracker {
     extra: String,
 }
 
+#[allow(dead_code)]
 impl ProgressTracker {
     pub fn new(total_bytes: usize) -> Self {
         let report_interval = if total_bytes < 4_000_000 {
@@ -142,6 +144,7 @@ pub struct LogSnapshot {
 }
 
 /// Snapshot for hybrid-eval structured logging.
+#[allow(dead_code)] // byte-level snapshot for future CM byte-model integration
 #[derive(Clone, Default)]
 pub struct HybridLogSnapshot {
     /// Per-bit cost for current byte (bits 0-7, MSB first)
@@ -152,6 +155,7 @@ pub struct HybridLogSnapshot {
 
 /// Structured .jsonl logger for hybrid-eval post-analysis.
 /// Records per-byte BPB, per-bit costs, throughput, match quality.
+#[allow(dead_code)] // byte-level logger for future CM byte-model integration
 pub struct HybridLogger {
     file: std::io::BufWriter<std::fs::File>,
     interval_bytes: usize,
@@ -170,6 +174,7 @@ pub struct HybridLogger {
     win_match_len_sum: usize,
 }
 
+#[allow(dead_code)]
 impl HybridLogger {
     pub fn new(path: &str, total_bytes: usize) -> Self {
         let file = crate::domain::error::create_file(path)

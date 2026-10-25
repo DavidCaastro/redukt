@@ -48,7 +48,6 @@ impl BiasHead {
         }
     }
 
-    #[allow(dead_code)] // used by planned baseline command (dynamic lr mode)
     pub fn with_decay(mut self, tau: f32) -> Self {
         self.tau = tau;
         self
@@ -67,7 +66,6 @@ impl BiasHead {
     }
 
     /// Return (last_effective_lr, ema_surprise) for telemetry.
-    #[allow(dead_code)] // used by planned baseline command (telemetry integration)
     pub fn telemetry(&self) -> (f32, f32) {
         (self.last_lr, self.ema_surprise)
     }

@@ -47,7 +47,6 @@ pub fn write_file(path: &str, data: &[u8]) -> AzResult<()> {
 }
 
 /// Create a file for writing with structured error context.
-#[allow(dead_code)] // used by telemetry loggers (planned hybrid-eval/baseline commands)
 pub fn create_file(path: &str) -> AzResult<std::fs::File> {
     std::fs::File::create(path).map_err(|e| AzError::Io { path: path.to_string(), source: e })
 }
@@ -90,7 +89,6 @@ pub fn read_file_capped(path: &str) -> AzResult<Vec<u8>> {
 
 /// Compare f32 values safely, treating NaN as less than everything.
 /// Use this instead of `.partial_cmp().unwrap()` on floats.
-#[allow(dead_code)] // used by embedding_surgery (planned hybrid-eval command)
 pub fn safe_f32_cmp(a: &f32, b: &f32) -> std::cmp::Ordering {
     a.partial_cmp(b).unwrap_or_else(|| {
         // NaN handling: NaN sorts to the end (less than everything)
