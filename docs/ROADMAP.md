@@ -116,10 +116,14 @@
   - [x] 62 tests totales pasando (58 unit + 4 integration)
 
 ### R-009: Métricas de eficiencia del coder
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
+- **Archivos**: `src/application/codec.rs`
 - **Subtareas**:
-  - [ ] Overhead ratio: bits_encoded vs entropía teórica (cross-entropy)
-  - [ ] Ya existe parcialmente (ce_bpb vs compressed_bpb) — exponer en report
+  - [x] `CoderMetrics` struct: ce_bpb, compressed_bpb, overhead_bpb, efficiency_pct, ratio
+  - [x] Efficiency % en report estándar de compress (`coder efficiency: XX.XX%`)
+  - [x] JSON metrics en --verbose (`coder_metrics_json: {...}`)
+  - [x] 3 nuevos unit tests (perfect efficiency, with overhead, zero input)
+  - [x] 65 tests totales pasando (61 unit + 4 integration)
 
 ---
 
@@ -149,3 +153,4 @@
 | 2026-10-26 | R-006 completado — panics→Results en todos los cmd_*, 55 tests |
 | 2026-10-26 | R-007 completado — u32 overflow validation + 3 tests, 58 total |
 | 2026-10-26 | R-008 completado — PhaseTimer + --verbose en 4 comandos, 62 tests |
+| 2026-10-26 | R-009 completado — CoderMetrics + efficiency % + 3 tests, 65 total |

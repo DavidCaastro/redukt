@@ -92,6 +92,43 @@ fn decode_checked(
         .map_err(|e| AzError::Decode { token_idx, detail: e.to_string() })
 }
 
+/// Coder efficiency metrics: theoretical vs actual compression.
+pub struct CoderMetrics {
+    pub input_bytes: usize,
+    pub compressed_bytes: usize,
+    pub ce_bits: f64,
+}
+
+impl CoderMetrics {
+    /// Bits per byte of the compressed output.
+    pub fn compressed_bpb(&self) -> f64 {
+        self.compressed_bytes as f64 * 8.0 / self.input_bytes.max(1) as f64
+    }
+
+    /// Theoretical bits per byte (cross-entropy).
+    pub fn ce_bpb(&self) -> f64 {
+        self.ce_bits / self.input_bytes.max(1) as f64
+    }
+
+    /// Overhead in BPB: how many extra bits the coder adds beyond entropy.
+    pub fn overhead_bpb(&self) -> f64 {
+        self.compressed_bpb() - self.ce_bpb()
+    }
+
+    /// Coding efficiency as percentage (100% = perfect, entropy-optimal).
+    /// Returns ce_bits / actual_bits * 100.
+    pub fn efficiency_pct(&self) -> f64 {
+        let actual_bits = self.compressed_bytes as f64 * 8.0;
+        if actual_bits <= 0.0 { return 0.0; }
+        (self.ce_bits / actual_bits) * 100.0
+    }
+
+    /// Compression ratio: compressed / original.
+    pub fn ratio(&self) -> f64 {
+        self.compressed_bytes as f64 / self.input_bytes.max(1) as f64
+    }
+}
+
 pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut output_path = String::new();
@@ -214,17 +251,20 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     timer.stop();
 
     let total_time = timer.total_secs();
-    let compressed_bpb = output.len() as f64 * 8.0 / total_bytes as f64;
-    let ce_bpb = ce_bits / total_bytes as f64;
-    let ratio = output.len() as f64 / total_bytes as f64;
+    let metrics = CoderMetrics {
+        input_bytes: total_bytes,
+        compressed_bytes: output.len(),
+        ce_bits,
+    };
 
     eprintln!();
     eprintln!("[compress] results:");
     eprintln!("  input:          {} bytes", total_bytes);
-    eprintln!("  compressed:     {} bytes (ratio: {:.4})", output.len(), ratio);
-    eprintln!("  compressed BPB: {:.4}", compressed_bpb);
-    eprintln!("  cross-ent BPB:  {:.4}", ce_bpb);
-    eprintln!("  coder overhead: {:.4} BPB", compressed_bpb - ce_bpb);
+    eprintln!("  compressed:     {} bytes (ratio: {:.4})", output.len(), metrics.ratio());
+    eprintln!("  compressed BPB: {:.4}", metrics.compressed_bpb());
+    eprintln!("  cross-ent BPB:  {:.4}", metrics.ce_bpb());
+    eprintln!("  coder overhead: {:.4} BPB", metrics.overhead_bpb());
+    eprintln!("  coder efficiency: {:.2}%", metrics.efficiency_pct());
     eprintln!("  CRC-32:         {:08X}", input_crc);
     eprintln!("  format:         AZTH v3");
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
@@ -232,6 +272,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     if verbose {
         timer.report("compress");
+        eprintln!("[compress] coder_metrics_json: {{\"ce_bpb\":{:.6},\"compressed_bpb\":{:.6},\
+            \"overhead_bpb\":{:.6},\"efficiency_pct\":{:.2},\"ce_bits\":{:.1},\"actual_bits\":{}}}",
+            metrics.ce_bpb(), metrics.compressed_bpb(), metrics.overhead_bpb(),
+            metrics.efficiency_pct(), ce_bits, output.len() * 8);
         eprintln!("[compress] timing_json: {}", timer.to_json());
     }
     Ok(())
@@ -852,5 +896,36 @@ mod tests {
         enc1.encode_symbol(42, &cdf1);
         enc2.encode_symbol(42, &cdf2);
         assert_eq!(enc1.finish(), enc2.finish());
+    }
+
+    // --- CoderMetrics (R-009) ---
+
+    #[test]
+    fn coder_metrics_perfect_efficiency() {
+        // 100 bytes input, 80 bits theoretical, 80 bits actual (10 bytes)
+        let m = CoderMetrics { input_bytes: 100, compressed_bytes: 10, ce_bits: 80.0 };
+        assert!((m.ce_bpb() - 0.80).abs() < 1e-10);
+        assert!((m.compressed_bpb() - 0.80).abs() < 1e-10);
+        assert!(m.overhead_bpb().abs() < 1e-10);
+        assert!((m.efficiency_pct() - 100.0).abs() < 1e-10);
+        assert!((m.ratio() - 0.10).abs() < 1e-10);
+    }
+
+    #[test]
+    fn coder_metrics_with_overhead() {
+        // 1000 bytes input, 4000 bits entropy, 5000 bits actual (625 bytes)
+        let m = CoderMetrics { input_bytes: 1000, compressed_bytes: 625, ce_bits: 4000.0 };
+        assert!((m.ce_bpb() - 4.0).abs() < 1e-10);
+        assert!((m.compressed_bpb() - 5.0).abs() < 1e-10);
+        assert!((m.overhead_bpb() - 1.0).abs() < 1e-10);
+        assert!((m.efficiency_pct() - 80.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn coder_metrics_zero_input() {
+        let m = CoderMetrics { input_bytes: 0, compressed_bytes: 0, ce_bits: 0.0 };
+        assert_eq!(m.ce_bpb(), 0.0);
+        assert_eq!(m.compressed_bpb(), 0.0);
+        assert_eq!(m.efficiency_pct(), 0.0);
     }
 }
