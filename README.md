@@ -14,13 +14,16 @@ Mixing and arithmetic coding.
 ## Quick Start
 
 ```bash
-# Build
+# 1. Download weights (~400 MB, requires Python 3 + torch + safetensors + huggingface_hub)
+bash scripts/download-weights.sh
+
+# 2. Build
 cargo build --release
 
-# Compress
+# 3. Compress
 ./target/release/redukt compress --input data.txt --output data.azth
 
-# Decompress
+# 4. Decompress (lossless — byte-identical output guaranteed)
 ./target/release/redukt decompress --input data.azth --output restored.txt
 ```
 
@@ -50,12 +53,22 @@ Throughput: 27–72 B/s (text), 17–22 B/s (binary). Designed for batch/archiva
 ## Requirements
 
 - Rust 1.70+
-- RWKV-7 0.1B weights (~400 MB) — see `weights/MANIFEST.md`
+- RWKV-7 0.1B weights (~400 MB) — run `bash scripts/download-weights.sh`
 - 4+ GB RAM
+
+## Testing
+
+```bash
+# Unit tests (no weights needed)
+cargo test
+
+# End-to-end roundtrip: compress → decompress → verify byte-identical (requires weights)
+cargo test --release --test roundtrip -- --ignored
+```
 
 ## Format
 
-Output format: AZTH v1 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
+Output format: AZTH v2 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
 
 ## License
 
