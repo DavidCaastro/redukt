@@ -4,8 +4,9 @@
 
 ### The Problem
 
-Redukt processes at **~62 B/s** on the benchmark hardware (i5-1235U).
-This is **~6,000x slower than brotli-11** and **~800,000x slower than gzip-9**.
+Redukt processes at **~80 B/s** (text) / **~20 B/s** (binary) on benchmark hardware
+(i5-1235U, Q8 quantization, ~25 tok/s).
+This is **~4,000x slower than brotli-11** and **~600,000x slower than gzip-9**.
 
 ### Impact by Use Case
 
@@ -79,16 +80,18 @@ standard compressors (zstd), route compressible data to Redukt.
 - Weights must be identical for compress/decompress (version management required)
 - Max tested file size: 100 MB (enwik8). Larger files untested.
 
-## Data Integrity Gap
+## Data Integrity — RESOLVED
 
-AZTH v2 has **no built-in integrity check**. A corrupted file (bit flip, truncated
-transfer) produces silent garbage on decompression. Planned fixes (see docs/ROADMAP.md):
+AZTH v3 includes comprehensive integrity protection (all items completed):
 
-- **R-001**: CRC-32 appended to AZTH v3 (+4 bytes per file)
-- **R-002**: Enforce size mismatch as hard error (currently warning-only)
-- **R-003**: Validate header hyperparameters (reject NaN/Inf)
-- **R-004**: Arithmetic decoder bounds checking
-- **R-007**: Validate u32 overflow on files >4GB
+- **R-001**: CRC-32 (IEEE) appended to every v3 file, verified on decompression
+- **R-002**: Size mismatch is a hard error (not warning)
+- **R-003**: Hyperparameter validation rejects NaN/Inf
+- **R-004**: Arithmetic decoder bounds checking with structured errors
+- **R-006**: All panics replaced with Result propagation
+- **R-007**: u32 overflow validated at compression time (>4GB rejected)
+
+Backward compatible: decoder accepts v2 (no CRC) and v3 (CRC verified).
 
 ## What We Don't Know Yet
 

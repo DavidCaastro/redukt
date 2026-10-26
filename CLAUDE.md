@@ -31,17 +31,18 @@ AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministi
 ### AZTH Format (v3)
 ```
 MAGIC:       8B  "AZTH\x03\x00\x00\x00"
-TOTAL_BYTES: 4B  LE (original size)
-TOKEN_COUNT: 4B  LE
-BIAS_LR:     4B  LE f32 (default 0.30)
-NGRAM_SCALE: 4B  LE f32 (default 0.50)
-MIX_ETA:     4B  LE f32 (default 0.01)
+TOTAL_BYTES: 4B  LE (original size, validated ≤ u32::MAX)
+TOKEN_COUNT: 4B  LE (validated ≤ u32::MAX)
+BIAS_LR:     4B  LE f32 (default 0.30, validated finite)
+NGRAM_SCALE: 4B  LE f32 (default 0.50, validated finite)
+MIX_ETA:     4B  LE f32 (default 0.01, validated finite)
 STREAM:      var (arithmetic coded probability stream)
 CRC32:       4B  LE (CRC-32 IEEE of original data)
 ```
 
 Decompression requires IDENTICAL model + weights. Hyperparameters stored in header.
 CRC-32 verified on decompression (v3). Decoder also accepts v2 (no CRC, backward compat).
+Max file size: ~4 GB (u32 TOTAL_BYTES). Validated at compression time.
 
 ## Constraints
 
@@ -146,15 +147,43 @@ Provenance documented in `weights/MANIFEST.md`.
 
 ### Before Any Release
 1. All quality gates above
-2. BPB validation: hybrid-eval enwik8 10KB = 1.1535 (±0.01)
-3. Full Silesia benchmark matches published results
+2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8) or 1.15 (F32)
+3. Full Silesia benchmark matches verified results (see below)
 4. NOTICE file up to date
 5. README badges current
 
-## Benchmarks
+## Benchmarks (Verified 2026-10-26)
 
 Primary metric: BPB (bits per byte). Lower = better.
-Our claim: #2 CPU worldwide on enwik8 (1.11 BPB warm-start).
+Quantization: auto-selected Q8 (0.163% relative error, 4x less memory than F32).
+
+### Reference BPB (enwik8 10KB, Q8 quantization)
+- **hybrid-eval**: 1.2812 BPB (full ensemble)
+- **compress**: 1.3448 BPB (includes coder overhead)
+- **coder efficiency**: 95.27% (overhead = 0.064 BPB)
+- **baseline (RWKV-only)**: 1.4067 BPB
+
+Note: Previous claim of 1.1535 BPB was measured with F32 weights + experimental
+features (--hierarchical --match --emb-surgery). The production pipeline uses Q8
+and default hyperparameters. Do NOT quote 1.1535 as a production number.
+
+### Silesia Corpus BPB (10KB, Q8)
+| File | BPB | File | BPB |
+|---|---|---|---|
+| xml | 0.640 | samba | 1.266 |
+| nci | 0.596 | dickens | 1.779 |
+| webster | 1.760 | mozilla | 1.965 |
+| reymont | 1.808 | mr | 2.283 |
+| ooffice | 3.704 | osdb | 5.643 |
+| x-ray | 6.524 | sao | 9.241 |
+
+### vs Competitors (10KB window, verified roundtrip)
+| File | Redukt | brotli-11 | Δ |
+|---|---|---|---|
+| enwik8 | **1.34** | 2.36 | -43% |
+| xml | **0.69** | 0.89 | -22% |
+| samba | **1.31** | 2.22 | -41% |
+| apache.log | **0.30** | 0.46 | -35% |
 
 Benchmark data in `data/benchmark/`. Reproducible via Python scripts.
 Results CSV in `data/benchmark/results/`.

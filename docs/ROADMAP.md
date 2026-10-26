@@ -154,3 +154,4 @@
 | 2026-10-26 | R-007 completado — u32 overflow validation + 3 tests, 58 total |
 | 2026-10-26 | R-008 completado — PhaseTimer + --verbose en 4 comandos, 62 tests |
 | 2026-10-26 | R-009 completado — CoderMetrics + efficiency % + 3 tests, 65 total |
+| 2026-10-26 | Benchmark verification — 17 files tested, claims corregidos (Q8: 1.28 BPB) |

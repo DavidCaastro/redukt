@@ -6,10 +6,10 @@ Mixing and arithmetic coding.
 
 ## Highlights
 
-- **Best-in-class compression**: 44.7% smaller than brotli-11 on XML/markup, 37.2% on text
-- **25 domains validated**: Silesia corpus, enwik8, modern formats (JSON, Parquet, WASM)
+- **Best-in-class compression**: 43% smaller than brotli-11 on enwik8, 35% on logs
+- **17 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
 - **Zero dependencies**: Pure Rust, single binary, CPU-only
-- **Deterministic**: Bit-identical decompression guaranteed
+- **Deterministic**: Bit-identical decompression guaranteed (CRC-32 verified)
 
 ## Quick Start
 
@@ -38,17 +38,19 @@ weights all prediction sources per-byte.
 Input → Tokenize → [RWKV-7 + CM ensemble + LSTM mixer] → Arithmetic Coder → .azth
 ```
 
-## Performance
+## Performance (Verified, Q8 quantization, 10KB window)
 
-| Domain | BPB | vs brotli-11 |
-|---|---|---|
-| XML/markup | 0.31 | -44.7% |
-| Text (English) | 1.13 | -37.2% |
-| Source code | 1.04 | -28.5% |
-| Binary/executables | 1.40 | -15.2% |
-| Structured data | 1.82 | -22.1% |
+| File | Domain | Redukt BPB | brotli-11 | vs brotli |
+|---|---|---|---|---|
+| enwik8 | Text/encyclopedia | **1.34** | 2.36 | -43% |
+| dickens | Text/literature | **1.82** | 2.77 | -34% |
+| samba | Source code | **1.31** | 2.22 | -41% |
+| xml | XML markup | **0.69** | 0.89 | -22% |
+| apache.log | Server logs | **0.30** | 0.46 | -35% |
+| ubl-invoice | E-invoicing | **0.55** | 0.87 | -37% |
 
-Throughput: 27–72 B/s (text), 17–22 B/s (binary). Designed for batch/archival workloads.
+Throughput: ~25 tok/s (~80 B/s text, ~20 B/s binary). Designed for batch/archival workloads.
+Coder efficiency: 90–97% (overhead vs theoretical entropy).
 
 ## Requirements
 
@@ -59,16 +61,20 @@ Throughput: 27–72 B/s (text), 17–22 B/s (binary). Designed for batch/archiva
 ## Testing
 
 ```bash
-# Unit tests (no weights needed)
+# Unit tests (no weights needed) — 61 tests
 cargo test
 
 # End-to-end roundtrip: compress → decompress → verify byte-identical (requires weights)
 cargo test --release --test roundtrip -- --ignored
+
+# Verbose timing breakdown
+./target/release/redukt compress --input data.txt --output data.azth --verbose
 ```
 
 ## Format
 
-Output format: AZTH v2 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
+Output format: AZTH v3 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
+Includes CRC-32 integrity verification, hyperparameter validation, and u32 overflow protection.
 
 ## License
 
