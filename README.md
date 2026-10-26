@@ -6,8 +6,8 @@ Mixing and arithmetic coding.
 
 ## Highlights
 
-- **Best-in-class compression**: 43% smaller than brotli-11 on enwik8, 35% on logs
-- **17 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
+- **Best-in-class compression**: 54% smaller than brotli-11 on e-invoicing, 48% on server logs
+- **18 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
 - **Zero dependencies**: Pure Rust, single binary, CPU-only
 - **Deterministic**: Bit-identical decompression guaranteed (CRC-32 verified)
 
@@ -38,19 +38,21 @@ weights all prediction sources per-byte.
 Input → Tokenize → [RWKV-7 + CM ensemble + LSTM mixer] → Arithmetic Coder → .azth
 ```
 
-## Performance (Verified, Q8 quantization, 10KB window)
+## Performance (Verified Q8, 10KB window, production defaults)
 
 | File | Domain | Redukt BPB | brotli-11 | vs brotli |
 |---|---|---|---|---|
-| enwik8 | Text/encyclopedia | **1.34** | 2.36 | -43% |
-| dickens | Text/literature | **1.82** | 2.77 | -34% |
-| samba | Source code | **1.31** | 2.22 | -41% |
-| xml | XML markup | **0.69** | 0.89 | -22% |
-| apache.log | Server logs | **0.30** | 0.46 | -35% |
-| ubl-invoice | E-invoicing | **0.55** | 0.87 | -37% |
+| apache-access.log | Server logs | **0.24** | 0.47 | **-48%** |
+| facturae-batch.xml | E-invoicing | **0.41** | 0.89 | **-54%** |
+| ubl-invoice-batch.xml | E-invoicing UBL | **0.49** | 0.89 | **-45%** |
+| xml | XML markup | **0.64** | 0.89 | **-28%** |
+| samba | Source code | **1.27** | 1.61 | **-21%** |
+| enwik8 | Text/encyclopedia | **1.28** | 1.83 | **-30%** |
+| dickens | Text/literature | **1.78** | 2.11 | **-16%** |
 
-Throughput: ~25 tok/s (~80 B/s text, ~20 B/s binary). Designed for batch/archival workloads.
-Coder efficiency: 90–97% (overhead vs theoretical entropy).
+Wins 13/18 files tested. Loses on high-entropy data (medical imaging, astronomy, databases).
+Throughput: ~37 tok/s Q8 (~120 B/s text). Designed for batch/archival workloads.
+F32 vs Q8: <2.5% BPB difference, Q8 is 2.1x faster. See `data/benchmark/results/`.
 
 ## Requirements
 

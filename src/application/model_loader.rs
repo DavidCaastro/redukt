@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::quant::{QuantLevel, QuantPolicy};
 use crate::infrastructure::rwkv7::model::Rwkv7Model;
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
 
@@ -28,11 +29,30 @@ pub fn resolve_vocab_path(weights_path: &Path) -> PathBuf {
 }
 
 /// Load model and tokenizer from a weights path (directory or GGUF file).
-/// Auto-detects format (SafeTensors directory vs GGUF file).
+/// Auto-detects format and quantization.
 pub fn load_model_and_tokenizer(weights_dir: &str) -> (Rwkv7Model, WorldTokenizer) {
+    load_model_and_tokenizer_with_quant(weights_dir, None)
+}
+
+/// Load model and tokenizer with an optional forced quantization policy.
+pub fn load_model_and_tokenizer_with_quant(
+    weights_dir: &str,
+    quant_override: Option<QuantPolicy>,
+) -> (Rwkv7Model, WorldTokenizer) {
     let weights_path = Path::new(weights_dir);
     let vocab_path = resolve_vocab_path(weights_path);
     let tokenizer = WorldTokenizer::load(&vocab_path);
-    let model = Rwkv7Model::load_auto(weights_path);
+    let model = Rwkv7Model::load_auto_with_quant(weights_path, quant_override);
     (model, tokenizer)
+}
+
+/// Parse a quantization level string ("f32", "q8", "q4", "auto") into a policy.
+/// Returns None for "auto" (let the system decide).
+pub fn parse_quant_flag(s: &str) -> Option<QuantPolicy> {
+    match s.to_lowercase().as_str() {
+        "f32" => Some(QuantPolicy::Uniform(QuantLevel::F32)),
+        "q8" => Some(QuantPolicy::Uniform(QuantLevel::Q8)),
+        "q4" => Some(QuantPolicy::Uniform(QuantLevel::Q4 { group_size: 64 })),
+        _ => None, // "auto" or unrecognized → auto-detect
+    }
 }

@@ -11,7 +11,7 @@
 
 **Pain**: 2-5 TB/day of logs, 5-year regulatory retention (BCE, CNMV, GDPR).
 **Validation**: Cribl ($390M ARR, $3.5B valuation) proves the market pays for data reduction.
-**Our advantage**: 61.7% better than gzip-9 on structured text (benchmark proven).
+**Our advantage**: 48% better than brotli-11 on server logs, 38-39% on syslog/auth logs (benchmark proven).
 **Target clients**: Banks (Bankinter, Abanca, Kutxabank), telcos (Telefonica, MasMovil), utilities.
 
 ### 2. E-Invoicing Platforms ($1.1B TAM Spain by 2034)
@@ -21,13 +21,13 @@
 - Format: XML Facturae/UBL, 6-year retention
 - Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue, 60% margin, 17K clients)
 
-**Our advantage**: 44.7% better than brotli-11 on XML (0.492 vs 0.89 BPB).
+**Our advantage**: 54% better than brotli-11 on Facturae XML (0.406 vs 0.891 BPB), 45% on UBL (0.490 vs 0.889).
 
 ### 3. Medical Imaging / PACS ($3-4B TAM)
 
 **Pain**: Hospital 500 beds = 20 TB/year DICOM, growing 30%/year. 10-year retention.
 **Validation**: PetaGene charges per TB saved in genomics, similar model applicable.
-**Our advantage**: 12-20% better than brotli on medical imaging data.
+**Our advantage**: NONE — Redukt is +0.6% to +47% worse than brotli on medical imaging (Q8 verified).
 **Target**: Servicio Andaluz de Salud (50 hospitals, EUR 10B budget), Sermas (Madrid).
 
 ### 4. Cold/Archive Storage ($49B TAM global)

@@ -147,46 +147,46 @@ Provenance documented in `weights/MANIFEST.md`.
 
 ### Before Any Release
 1. All quality gates above
-2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8) or 1.15 (F32)
-3. Full Silesia benchmark matches verified results (see below)
+2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8 or F32 — difference <2%)
+3. Full benchmark matches verified results (see below)
 4. NOTICE file up to date
 5. README badges current
 
-## Benchmarks (Verified 2026-10-26)
+## Benchmarks (Verified 2026-10-26, F32/Q8 comparison)
 
 Primary metric: BPB (bits per byte). Lower = better.
-Quantization: auto-selected Q8 (0.163% relative error, 4x less memory than F32).
+Quantization: auto-selected Q8. F32 vs Q8 difference: <2.5% on all files.
+Q8 is 2.1x faster — correct production choice.
+Use `--quant f32|q8|q4|auto` to force quantization level.
 
-### Reference BPB (enwik8 10KB, Q8 quantization)
-- **hybrid-eval**: 1.2812 BPB (full ensemble)
+### Reference BPB (enwik8 10KB)
+- **hybrid-eval Q8**: 1.2812 BPB | **F32**: 1.3041 BPB
 - **compress**: 1.3448 BPB (includes coder overhead)
 - **coder efficiency**: 95.27% (overhead = 0.064 BPB)
 - **baseline (RWKV-only)**: 1.4067 BPB
 
-Note: Previous claim of 1.1535 BPB was measured with F32 weights + experimental
-features (--hierarchical --match --emb-surgery). The production pipeline uses Q8
-and default hyperparameters. Do NOT quote 1.1535 as a production number.
+### Strongest Results (industry files, 10KB)
+| File | Redukt Q8 | brotli-11 | Δ |
+|---|---|---|---|
+| apache-access.log | **0.245** | 0.466 | **-48%** |
+| facturae-batch.xml | **0.406** | 0.891 | **-54%** |
+| ubl-invoice-batch.xml | **0.490** | 0.889 | **-45%** |
+| linux-syslog.log | **0.362** | 0.582 | **-38%** |
+| openssh-auth.log | **0.475** | 0.783 | **-39%** |
 
 ### Silesia Corpus BPB (10KB, Q8)
-| File | BPB | File | BPB |
-|---|---|---|---|
-| xml | 0.640 | samba | 1.266 |
-| nci | 0.596 | dickens | 1.779 |
-| webster | 1.760 | mozilla | 1.965 |
-| reymont | 1.808 | mr | 2.283 |
-| ooffice | 3.704 | osdb | 5.643 |
-| x-ray | 6.524 | sao | 9.241 |
+| File | BPB | vs brotli | File | BPB | vs brotli |
+|---|---|---|---|---|---|
+| xml | 0.640 | -28% | samba | 1.266 | -21% |
+| nci | 0.596 | +5% | enwik8 | 1.281 | -30% |
+| dickens | 1.779 | -16% | mozilla | 1.965 | -15% |
+| webster | 1.760 | -16% | mr | 2.283 | +1% |
+| reymont | 1.808 | -4% | ooffice | 3.704 | +12% |
+| x-ray | 6.524 | +47% | sao | 9.241 | +66% |
 
-### vs Competitors (10KB window, verified roundtrip)
-| File | Redukt | brotli-11 | Δ |
-|---|---|---|---|
-| enwik8 | **1.34** | 2.36 | -43% |
-| xml | **0.69** | 0.89 | -22% |
-| samba | **1.31** | 2.22 | -41% |
-| apache.log | **0.30** | 0.46 | -35% |
-
-Benchmark data in `data/benchmark/`. Reproducible via Python scripts.
-Results CSV in `data/benchmark/results/`.
+Wins 13/18 files. Loses on high-entropy data (medical img, astronomy, databases).
+Benchmark data in `data/benchmark/`. Raw CSV in `data/benchmark/results/`.
+Reproducible: `bash scripts/bench-f32-vs-q8.sh`
 
 ## Process Safety (Windows)
 

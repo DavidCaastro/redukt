@@ -214,9 +214,9 @@ impl Scratch {
 }
 
 impl Rwkv7Model {
-    /// Load model from a SafeTensors file.
+    /// Load model from a SafeTensors file with optional quantization override.
     /// Expects HuggingFace-format keys (model.layers.N.att.xxx).
-    pub fn load(path: &Path, config: Rwkv7Config) -> Self {
+    pub fn load(path: &Path, config: Rwkv7Config, quant_override: Option<QuantPolicy>) -> Self {
         eprintln!("[rwkv7] loading weights from {} ...", path.display());
         let st = SafeTensorsFile::open(path)
             .unwrap_or_else(|e| panic!("[rwkv7] failed to open weights: {}", e));
@@ -264,17 +264,27 @@ impl Rwkv7Model {
             ln_out_b = st.get_tensor("ln_out.bias");
         }
 
-        // Determine quantization policy via empirical benchmark on head matrix
-        eprintln!("[rwkv7] benchmarking quantization levels ...");
-        let (policy, bench_results) = QuantPolicy::auto_detect(&head_w_f32);
-        for r in &bench_results {
-            eprintln!("[rwkv7]   {}", r);
-        }
-        let policy_name = match &policy {
-            QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
-            QuantPolicy::PerMatrix => "PerMatrix".to_string(),
+        // Determine quantization policy: use override if provided, else auto-detect
+        let policy = if let Some(override_policy) = quant_override {
+            let policy_name = match &override_policy {
+                QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
+                QuantPolicy::PerMatrix => "PerMatrix".to_string(),
+            };
+            eprintln!("[rwkv7] quantization: {} (forced)", policy_name);
+            override_policy
+        } else {
+            eprintln!("[rwkv7] benchmarking quantization levels ...");
+            let (policy, bench_results) = QuantPolicy::auto_detect(&head_w_f32);
+            for r in &bench_results {
+                eprintln!("[rwkv7]   {}", r);
+            }
+            let policy_name = match &policy {
+                QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
+                QuantPolicy::PerMatrix => "PerMatrix".to_string(),
+            };
+            eprintln!("[rwkv7] policy: {}", policy_name);
+            policy
         };
-        eprintln!("[rwkv7] policy: {}", policy_name);
 
         // Head goes through the same policy
         let (head_w, _) = quantize_matrix(&head_w_f32, &policy);
@@ -434,11 +444,11 @@ impl Rwkv7Model {
         Self { config, emb, layers, ln_out_w, ln_out_b, head_w }
     }
 
-    /// Auto-detect format from path and load model.
+    /// Auto-detect format and load model with optional quantization override.
     /// - `.gguf` extension → GGUF loader
     /// - directory with `model.safetensors` → SafeTensors loader
     /// - `.safetensors` file → SafeTensors loader
-    pub fn load_auto(path: &Path) -> Self {
+    pub fn load_auto_with_quant(path: &Path, quant_override: Option<QuantPolicy>) -> Self {
         let path_str = path.display().to_string();
 
         if path_str.ends_with(".gguf") {
@@ -447,11 +457,10 @@ impl Rwkv7Model {
         } else if path.is_dir() {
             let st_path = path.join("model.safetensors");
             let config = Rwkv7Config::from_weights_dir(&path_str);
-            Self::load(&st_path, config)
+            Self::load(&st_path, config, quant_override)
         } else {
-            // Assume SafeTensors
             let config = Rwkv7Config::from_weights_dir(&path_str);
-            Self::load(path, config)
+            Self::load(path, config, quant_override)
         }
     }
 

@@ -4,9 +4,9 @@
 
 ### The Problem
 
-Redukt processes at **~80 B/s** (text) / **~20 B/s** (binary) on benchmark hardware
-(i5-1235U, Q8 quantization, ~25 tok/s).
-This is **~4,000x slower than brotli-11** and **~600,000x slower than gzip-9**.
+Redukt processes at **~120 B/s** (text) / **~20 B/s** (binary) on benchmark hardware
+(i5-1235U, Q8 quantization, ~37 tok/s Q8 / ~17 tok/s F32).
+This is **~4,000x slower than brotli-11** and **~400,000x slower than gzip-9**.
 
 ### Impact by Use Case
 

@@ -155,3 +155,6 @@
 | 2026-10-26 | R-008 completado — PhaseTimer + --verbose en 4 comandos, 62 tests |
 | 2026-10-26 | R-009 completado — CoderMetrics + efficiency % + 3 tests, 65 total |
 | 2026-10-26 | Benchmark verification — 17 files tested, claims corregidos (Q8: 1.28 BPB) |
+| 2026-10-26 | feat: --quant flag, F32 vs Q8 benchmark (18 files), industry files first benchmarked |
+| 2026-10-26 | Finding: F32 vs Q8 <2.5% diff — Q8 is correct production choice (2.1x faster) |
+| 2026-10-26 | Finding: logs -48%, invoicing -54% vs brotli — strongest verticals confirmed |
