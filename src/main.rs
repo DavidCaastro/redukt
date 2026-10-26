@@ -62,4 +62,5 @@ fn print_usage() {
     eprintln!("  --tau <F>            Surprise-modulated lr decay (0 = static, default: 0)");
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
+    eprintln!("  --verbose, -v        Show per-phase timing breakdown");
 }

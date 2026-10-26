@@ -101,12 +101,19 @@
 ## P2 — Métricas y Observabilidad
 
 ### R-008: Timing por fase
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
 - **Impacto**: Necesario para identificar cuellos de botella en optimización
+- **Archivos**: `src/application/telemetry.rs`, `src/application/codec.rs`, `src/main.rs`
 - **Subtareas**:
-  - [ ] Medir: tokenización, carga modelo, forward pass, encoding, escritura
-  - [ ] Reportar en JSON telemetry
-  - [ ] Opcional: `--verbose` flag para mostrar breakdown
+  - [x] `PhaseTimer` struct — acumulador de fases con report y JSON export
+  - [x] Instrumentar cmd_compress: read, model_load, tokenize, encode, write
+  - [x] Instrumentar cmd_decompress: read, model_load, decode, detokenize, verify, write
+  - [x] Instrumentar cmd_hybrid_eval: read, model_load, tokenize, evaluate
+  - [x] Instrumentar cmd_baseline: read, model_load, tokenize, evaluate
+  - [x] `--verbose` / `-v` flag en compress, decompress, hybrid-eval, baseline
+  - [x] JSON timing output en modo verbose (`timing_json: {...}`)
+  - [x] 4 nuevos unit tests para PhaseTimer
+  - [x] 62 tests totales pasando (58 unit + 4 integration)
 
 ### R-009: Métricas de eficiencia del coder
 - **Estado**: PENDIENTE
@@ -141,3 +148,4 @@
 | 2026-10-26 | R-005 completado — 14 edge case tests (unit + integration) |
 | 2026-10-26 | R-006 completado — panics→Results en todos los cmd_*, 55 tests |
 | 2026-10-26 | R-007 completado — u32 overflow validation + 3 tests, 58 total |
+| 2026-10-26 | R-008 completado — PhaseTimer + --verbose en 4 comandos, 62 tests |

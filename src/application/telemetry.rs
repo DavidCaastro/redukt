@@ -259,6 +259,57 @@ impl HybridLogger {
     }
 }
 
+// ---- Phase Timer: per-phase timing breakdown ----
+
+/// Accumulates wall-clock duration per named phase.
+pub struct PhaseTimer {
+    phases: Vec<(&'static str, f64)>,
+    current: Option<(&'static str, Instant)>,
+}
+
+impl PhaseTimer {
+    pub fn new() -> Self {
+        Self { phases: Vec::new(), current: None }
+    }
+
+    /// Start timing a phase. Automatically stops the previous phase if any.
+    pub fn start(&mut self, name: &'static str) {
+        self.stop();
+        self.current = Some((name, Instant::now()));
+    }
+
+    /// Stop the current phase and record its duration.
+    pub fn stop(&mut self) {
+        if let Some((name, start)) = self.current.take() {
+            self.phases.push((name, start.elapsed().as_secs_f64()));
+        }
+    }
+
+    /// Total wall-clock time across all recorded phases.
+    pub fn total_secs(&self) -> f64 {
+        self.phases.iter().map(|(_, d)| d).sum()
+    }
+
+    /// Print a timing breakdown to stderr.
+    pub fn report(&self, prefix: &str) {
+        let total = self.total_secs();
+        eprintln!("[{}] timing breakdown:", prefix);
+        for &(name, dur) in &self.phases {
+            let pct = if total > 0.0 { 100.0 * dur / total } else { 0.0 };
+            eprintln!("  {:<16} {:>7.3}s  ({:>5.1}%)", name, dur, pct);
+        }
+        eprintln!("  {:<16} {:>7.3}s", "total", total);
+    }
+
+    /// Serialize phases as a JSON object string: {"phase": secs, ...}
+    pub fn to_json(&self) -> String {
+        let entries: Vec<String> = self.phases.iter()
+            .map(|(name, dur)| format!("\"{}\":{:.3}", name, dur))
+            .collect();
+        format!("{{{}}}", entries.join(","))
+    }
+}
+
 /// Structured .jsonl logger for post-run analysis.
 pub struct JsonLogger {
     file: std::io::BufWriter<std::fs::File>,
@@ -332,5 +383,55 @@ impl JsonLogger {
         self.win_bytes = 0;
         self.win_log_loss = 0.0;
         self.win_tokens = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_timer_empty() {
+        let timer = PhaseTimer::new();
+        assert_eq!(timer.total_secs(), 0.0);
+        assert_eq!(timer.to_json(), "{}");
+    }
+
+    #[test]
+    fn phase_timer_records_phases() {
+        let mut timer = PhaseTimer::new();
+        timer.start("a");
+        // Minimal work to ensure nonzero duration
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        timer.start("b");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        timer.stop();
+
+        assert!(timer.total_secs() > 0.0);
+        let json = timer.to_json();
+        assert!(json.contains("\"a\":"));
+        assert!(json.contains("\"b\":"));
+    }
+
+    #[test]
+    fn phase_timer_auto_stops_previous() {
+        let mut timer = PhaseTimer::new();
+        timer.start("first");
+        timer.start("second"); // auto-stops "first"
+        timer.stop();
+
+        let json = timer.to_json();
+        assert!(json.contains("\"first\":"));
+        assert!(json.contains("\"second\":"));
+    }
+
+    #[test]
+    fn phase_timer_stop_idempotent() {
+        let mut timer = PhaseTimer::new();
+        timer.stop(); // no-op
+        timer.start("x");
+        timer.stop();
+        timer.stop(); // no-op
+        assert_eq!(timer.to_json().matches("\"x\":").count(), 1);
     }
 }

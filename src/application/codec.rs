@@ -8,7 +8,7 @@ use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
 use crate::application::model_loader;
-use crate::application::telemetry::{JsonLogger, LogSnapshot};
+use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
 pub const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
@@ -100,6 +100,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut bias_lr: f32 = 0.30;
     let mut ngram_scale: f32 = 0.5;
     let mut mix_eta: f32 = 0.01;
+    let mut verbose = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -111,6 +112,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr")?, "--lr")?; }
             "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale")?, "--ngram-scale")?; }
             "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
+            "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
         i += 1;
@@ -122,18 +124,24 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         });
     }
 
+    let mut timer = PhaseTimer::new();
+
+    timer.start("read");
     let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
 
+    timer.start("model_load");
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
+    timer.start("tokenize");
     let tokens = tokenizer.encode(input_slice);
     eprintln!("[compress] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
 
+    timer.start("encode");
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
     let mut mixer = AdaptiveMixer::new(mix_eta);
@@ -185,9 +193,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     }
 
     let compressed = enc.finish();
-    let elapsed = t_start.elapsed().as_secs_f64();
     eprintln!();
 
+    timer.start("write");
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
     let token_u32 = validate_u32_size(tokens.len(), "TOKEN_COUNT")?;
@@ -203,7 +211,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     output.extend_from_slice(&input_crc.to_le_bytes());
 
     crate::domain::error::write_file(&output_path, &output)?;
+    timer.stop();
 
+    let total_time = timer.total_secs();
     let compressed_bpb = output.len() as f64 * 8.0 / total_bytes as f64;
     let ce_bpb = ce_bits / total_bytes as f64;
     let ratio = output.len() as f64 / total_bytes as f64;
@@ -217,8 +227,13 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("  coder overhead: {:.4} BPB", compressed_bpb - ce_bpb);
     eprintln!("  CRC-32:         {:08X}", input_crc);
     eprintln!("  format:         AZTH v3");
-    eprintln!("  time:           {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
+    eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     eprintln!("  output:         {}", output_path);
+
+    if verbose {
+        timer.report("compress");
+        eprintln!("[compress] timing_json: {}", timer.to_json());
+    }
     Ok(())
 }
 
@@ -226,6 +241,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut input_path = String::new();
     let mut output_path = String::new();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
+    let mut verbose = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -233,6 +249,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
             "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
         i += 1;
@@ -244,6 +261,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         });
     }
 
+    let mut timer = PhaseTimer::new();
+
+    timer.start("read");
     let data = crate::domain::error::read_file(&input_path)?;
 
     let version = validate_magic(&data)?;
@@ -264,9 +284,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         eprintln!("[decompress] CRC-32: absent (v2 format, no integrity check)");
     }
 
+    timer.start("model_load");
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
+    timer.start("decode");
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
     let mut mixer = AdaptiveMixer::new(mix_eta);
@@ -311,15 +333,16 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                     pct, t, t as f64 / elapsed);
         }
     }
-    let elapsed = t_start.elapsed().as_secs_f64();
     eprintln!();
 
+    timer.start("detokenize");
     let mut output_bytes = Vec::with_capacity(total_bytes);
     for &tok in &decoded_tokens {
         let bytes = tokenizer.decode_token(tok);
         output_bytes.extend_from_slice(bytes);
     }
 
+    timer.start("verify");
     if output_bytes.len() != total_bytes {
         return Err(AzError::Integrity(format!(
             "size mismatch: decoded {} bytes, expected {}", output_bytes.len(), total_bytes
@@ -337,12 +360,20 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         eprintln!("[decompress] CRC-32: {:08X} (verified OK)", actual_crc);
     }
 
+    timer.start("write");
     crate::domain::error::write_file(&output_path, &output_bytes)?;
+    timer.stop();
 
+    let total_time = timer.total_secs();
     eprintln!();
     eprintln!("[decompress] output: {} ({} bytes)", output_path, output_bytes.len());
-    eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", elapsed, token_count as f64 / elapsed);
+    eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", total_time, token_count as f64 / total_time);
     eprintln!("[decompress] done.");
+
+    if verbose {
+        timer.report("decompress");
+        eprintln!("[decompress] timing_json: {}", timer.to_json());
+    }
     Ok(())
 }
 
@@ -356,6 +387,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut tau: f32 = 0.0;
     let mut log_path = String::new();
     let mut emb_surgery = String::new();
+    let mut verbose = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -369,16 +401,21 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
             "--tau" => { tau = parse_arg(next_arg(args, &mut i, "--tau")?, "--tau")?; }
             "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
+            "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
         i += 1;
     }
 
+    let mut timer = PhaseTimer::new();
+
+    timer.start("read");
     let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[hybrid-eval] input: {} ({} bytes)", input_path, total_bytes);
 
+    timer.start("model_load");
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
@@ -386,6 +423,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
         model.embedding_surgery(&emb_surgery);
     }
 
+    timer.start("tokenize");
     let tokens = tokenizer.encode(input_slice);
     eprintln!("[hybrid-eval] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
@@ -406,6 +444,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
         None
     };
 
+    timer.start("evaluate");
     eprintln!("[hybrid-eval] evaluating ...");
     let t_start = std::time::Instant::now();
 
@@ -451,6 +490,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
                     100.0 * t as f64 / tokens.len() as f64, t, bpb, t as f64 / elapsed);
         }
     }
+    timer.stop();
 
     if let Some(ref mut lg) = logger {
         let (eff_lr, ema_surp) = bias.telemetry();
@@ -461,7 +501,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
         lg.finalize(&snap);
     }
 
-    let elapsed = t_start.elapsed().as_secs_f64();
+    let total_time = timer.total_secs();
     let bpb = ce_bits / total_bytes as f64;
 
     eprintln!();
@@ -470,9 +510,14 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     eprintln!("  input:   {} ({} bytes, {} tokens)", input_path, total_bytes, tokens.len());
     eprintln!("  BPB:     {:.6}", bpb);
     eprintln!("  mixer:   w_ngram={:.4}, w_bias={:.4}", mixer.w_ngram, mixer.w_bias);
-    eprintln!("  time:    {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
+    eprintln!("  time:    {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     if !log_path.is_empty() {
         eprintln!("  log:     {}", log_path);
+    }
+
+    if verbose {
+        timer.report("hybrid-eval");
+        eprintln!("[hybrid-eval] timing_json: {}", timer.to_json());
     }
     Ok(())
 }
@@ -482,6 +527,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut max_bytes: usize = 0;
     let mut log_path = String::new();
+    let mut verbose = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -490,19 +536,25 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
             "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
+            "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
         i += 1;
     }
 
+    let mut timer = PhaseTimer::new();
+
+    timer.start("read");
     let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[baseline] input: {} ({} bytes)", input_path, total_bytes);
 
+    timer.start("model_load");
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
+    timer.start("tokenize");
     let tokens = tokenizer.encode(input_slice);
     eprintln!("[baseline] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
@@ -518,6 +570,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
         None
     };
 
+    timer.start("evaluate");
     eprintln!("[baseline] evaluating (RWKV-only, no ensemble) ...");
     let t_start = std::time::Instant::now();
 
@@ -547,12 +600,13 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
                     100.0 * t as f64 / tokens.len() as f64, t, bpb, t as f64 / elapsed);
         }
     }
+    timer.stop();
 
     if let Some(ref mut lg) = logger {
         lg.finalize(&LogSnapshot::default());
     }
 
-    let elapsed = t_start.elapsed().as_secs_f64();
+    let total_time = timer.total_secs();
     let bpb = ce_bits / total_bytes as f64;
 
     eprintln!();
@@ -560,9 +614,14 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     eprintln!("[baseline] results:");
     eprintln!("  input: {} ({} bytes, {} tokens)", input_path, total_bytes, tokens.len());
     eprintln!("  BPB:   {:.6} (RWKV-only, no ensemble)", bpb);
-    eprintln!("  time:  {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
+    eprintln!("  time:  {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     if !log_path.is_empty() {
         eprintln!("  log:   {}", log_path);
+    }
+
+    if verbose {
+        timer.report("baseline");
+        eprintln!("[baseline] timing_json: {}", timer.to_json());
     }
     Ok(())
 }
