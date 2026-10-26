@@ -82,13 +82,19 @@
   - [x] 55 tests totales pasando (51 unit + 4 integration)
 
 ### R-007: Límite u32 TOTAL_BYTES — documentar y validar
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
 - **Impacto**: Archivos >4GB corrompen silenciosamente (overflow u32)
-- **Coste**: 0 bytes (validar), o +4 bytes (upgrade a u64 en futuro)
+- **Coste**: 0 bytes formato, ~15 líneas validación
+- **Archivos**: `src/domain/error.rs`, `src/application/codec.rs`, `src/application/api.rs`
 - **Subtareas**:
-  - [ ] Validar en compresión: si input > u32::MAX, error explícito
-  - [ ] Documentar en FORMAT-SPEC.md como limitación conocida (ya documentado)
-  - [ ] Evaluar upgrade a u64 en futura versión
+  - [x] `validate_u32_size()` en error.rs — check genérico con error explícito
+  - [x] Validar TOTAL_BYTES y TOKEN_COUNT en cmd_compress (codec.rs)
+  - [x] Validar TOTAL_BYTES y TOKEN_COUNT en compress_bytes (api.rs)
+  - [x] api.rs compress_bytes retorna Result (antes era infallible)
+  - [x] Documentado en FORMAT-SPEC.md como limitación conocida (ya existía)
+  - [x] 3 nuevos unit tests (accepts_max, accepts_zero, rejects_overflow)
+  - [x] Evaluar upgrade a u64: diferido a futura v4 (rompe formato header)
+  - [x] 58 tests totales pasando (54 unit + 4 integration)
 
 ---
 
@@ -134,3 +140,4 @@
 | 2026-10-26 | R-004 completado — decoder bounds checking + DecodeError |
 | 2026-10-26 | R-005 completado — 14 edge case tests (unit + integration) |
 | 2026-10-26 | R-006 completado — panics→Results en todos los cmd_*, 55 tests |
+| 2026-10-26 | R-007 completado — u32 overflow validation + 3 tests, 58 total |

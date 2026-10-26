@@ -1,6 +1,6 @@
 //! Application commands — compress, decompress, hybrid-eval, baseline, cm-eval.
 
-use crate::domain::error::{AzError, AzResult, parse_arg, next_arg};
+use crate::domain::error::{AzError, AzResult, parse_arg, next_arg, validate_u32_size};
 use crate::domain::tensor::{softmax, entropy_from_logits, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
@@ -189,11 +189,13 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!();
 
     let input_crc = crc32::crc32(input_slice);
+    let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
+    let token_u32 = validate_u32_size(tokens.len(), "TOKEN_COUNT")?;
 
     let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
     output.extend_from_slice(MAGIC_V3);
-    output.extend_from_slice(&(total_bytes as u32).to_le_bytes());
-    output.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
+    output.extend_from_slice(&total_u32.to_le_bytes());
+    output.extend_from_slice(&token_u32.to_le_bytes());
     output.extend_from_slice(&bias_lr.to_le_bytes());
     output.extend_from_slice(&ngram_scale.to_le_bytes());
     output.extend_from_slice(&mix_eta.to_le_bytes());
@@ -758,6 +760,26 @@ mod tests {
         };
 
         assert_eq!(encode_once(), encode_once());
+    }
+
+    // --- validate_u32_size (R-007) ---
+
+    #[test]
+    fn validate_u32_size_accepts_max() {
+        let result = validate_u32_size(u32::MAX as usize, "test");
+        assert_eq!(result.unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn validate_u32_size_accepts_zero() {
+        assert_eq!(validate_u32_size(0, "test").unwrap(), 0);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn validate_u32_size_rejects_overflow() {
+        let too_big = u32::MAX as usize + 1;
+        assert!(validate_u32_size(too_big, "TOTAL_BYTES").is_err());
     }
 
     #[test]

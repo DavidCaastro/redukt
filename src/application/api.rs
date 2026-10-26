@@ -101,10 +101,17 @@ fn handle_connection(
                 let _ = send_response(&mut stream, 400, "text/plain", b"empty body");
                 return;
             }
-            let result = compress_bytes(&req.body, model, tokenizer, 0.30, 0.5, 0.01);
-            let elapsed = t0.elapsed().as_secs_f64();
-            eprintln!("[api] compressed {} -> {} bytes ({:.1}s)", req.body.len(), result.len(), elapsed);
-            let _ = send_response(&mut stream, 200, "application/octet-stream", &result);
+            match compress_bytes(&req.body, model, tokenizer, 0.30, 0.5, 0.01) {
+                Ok(result) => {
+                    let elapsed = t0.elapsed().as_secs_f64();
+                    eprintln!("[api] compressed {} -> {} bytes ({:.1}s)",
+                              req.body.len(), result.len(), elapsed);
+                    let _ = send_response(&mut stream, 200, "application/octet-stream", &result);
+                }
+                Err(msg) => {
+                    let _ = send_response(&mut stream, 422, "text/plain", msg.as_bytes());
+                }
+            }
         }
         ("POST", "/v1/decompress") => {
             if req.body.len() < HEADER_SIZE {
@@ -201,9 +208,20 @@ fn compress_bytes(
     bias_lr: f32,
     ngram_scale: f32,
     mix_eta: f32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
+    let total_bytes = input.len();
+    if total_bytes > u32::MAX as usize {
+        return Err(format!(
+            "input too large: {} bytes exceeds ~4 GB AZTH limit", total_bytes
+        ));
+    }
     let v = model.config.vocab_size;
     let tokens = tokenizer.encode(input);
+    if tokens.len() > u32::MAX as usize {
+        return Err(format!(
+            "too many tokens: {} exceeds u32::MAX", tokens.len()
+        ));
+    }
 
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
@@ -233,7 +251,6 @@ fn compress_bytes(
     }
 
     let compressed = enc.finish();
-    let total_bytes = input.len();
 
     let input_crc = crc32::crc32(input);
 
@@ -246,7 +263,7 @@ fn compress_bytes(
     output.extend_from_slice(&mix_eta.to_le_bytes());
     output.extend_from_slice(&compressed);
     output.extend_from_slice(&input_crc.to_le_bytes());
-    output
+    Ok(output)
 }
 
 /// Decode a symbol with bounds checking (API path — returns Err).

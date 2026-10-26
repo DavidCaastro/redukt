@@ -48,6 +48,9 @@ Byte 4 is the format version. Decoder accepts `02` or `03`.
 Original file size in bytes, stored as unsigned 32-bit little-endian.
 Maximum supported file size: 4,294,967,295 bytes (~4 GB).
 
+**Validation**: The compressor rejects inputs exceeding `u32::MAX` with an
+explicit error before encoding begins. This prevents silent overflow corruption.
+
 ### TOKEN_COUNT
 
 Number of tokens produced by the World tokenizer (65,536 vocab).

@@ -100,6 +100,18 @@ pub fn read_file_capped(path: &str) -> AzResult<Vec<u8>> {
     read_file(path)
 }
 
+/// Validate that a size fits in u32 (AZTH header field).
+/// Returns the value as u32 or a Format error if it exceeds u32::MAX.
+pub fn validate_u32_size(value: usize, field: &str) -> AzResult<u32> {
+    if value > u32::MAX as usize {
+        return Err(AzError::Format(format!(
+            "{} = {} bytes exceeds u32::MAX ({}) — AZTH format limit is ~4 GB",
+            field, value, u32::MAX
+        )));
+    }
+    Ok(value as u32)
+}
+
 /// Compare f32 values safely, treating NaN as less than everything.
 /// Use this instead of `.partial_cmp().unwrap()` on floats.
 pub fn safe_f32_cmp(a: &f32, b: &f32) -> std::cmp::Ordering {
