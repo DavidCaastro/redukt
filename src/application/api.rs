@@ -243,6 +243,15 @@ fn compress_bytes(
     output
 }
 
+/// Decode a symbol with bounds checking (API path — returns Err).
+fn decode_checked(
+    dec: &mut RangeDecoder, cdf: &Cdf, vocab_size: usize, token_idx: usize,
+) -> Result<u32, String> {
+    dec.decode_symbol_checked(cdf, vocab_size)
+        .map(|sym| sym as u32)
+        .map_err(|e| format!("decoder error at token {}: {}", token_idx, e))
+}
+
 fn decompress_bytes(
     data: &[u8],
     model: &Rwkv7Model,
@@ -280,18 +289,18 @@ fn decompress_bytes(
 
     for t in 0..token_count {
         let tok = if t == 0 {
-            dec.decode_symbol(&Cdf::uniform(v)) as u32
+            decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
         } else {
             let ng_bias = ngram.compute_bias(None);
             let b_vec = bias.bias_vector();
             let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
             let cdf = cdf_from_logits(&ensemble);
-            let sym = dec.decode_symbol(&cdf);
+            let sym = decode_checked(&mut dec, &cdf, v, t)?;
             let tensor = Tensor::from_data(ensemble, vec![v]);
             let probs = softmax(&tensor);
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym);
-            bias.update(&probs.data, sym);
-            sym as u32
+            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+            bias.update(&probs.data, sym as usize);
+            sym
         };
         decoded_tokens.push(tok);
         ngram.observe(tok);

@@ -211,6 +211,18 @@ pub fn cmd_compress(args: &[String]) {
     eprintln!("  output:         {}", output_path);
 }
 
+/// Decode a symbol or exit with a clear error message (CLI path).
+fn decode_or_exit(dec: &mut RangeDecoder, cdf: &Cdf, vocab_size: usize, token_idx: usize) -> u32 {
+    match dec.decode_symbol_checked(cdf, vocab_size) {
+        Ok(sym) => sym as u32,
+        Err(e) => {
+            eprintln!("\nerror: arithmetic decoder failure at token {}: {}", token_idx, e);
+            eprintln!("  the compressed stream or model weights may be corrupted");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn cmd_decompress(args: &[String]) {
     let mut input_path = String::new();
     let mut output_path = String::new();
@@ -272,21 +284,21 @@ pub fn cmd_decompress(args: &[String]) {
     for t in 0..token_count {
         let tok = if t == 0 {
             let cdf = Cdf::uniform(v);
-            dec.decode_symbol(&cdf) as u32
+            decode_or_exit(&mut dec, &cdf, v, t)
         } else {
             let ng_bias = ngram.compute_bias(None);
             let b_vec = bias.bias_vector();
             let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
 
             let cdf = cdf_from_logits(&ensemble_logits);
-            let sym = dec.decode_symbol(&cdf);
+            let sym = decode_or_exit(&mut dec, &cdf, v, t);
 
             let tensor = Tensor::from_data(ensemble_logits, vec![v]);
             let probs = softmax(&tensor);
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym);
-            bias.update(&probs.data, sym);
+            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+            bias.update(&probs.data, sym as usize);
 
-            sym as u32
+            sym
         };
 
         decoded_tokens.push(tok);

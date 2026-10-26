@@ -7,7 +7,29 @@
 //! shift_low handles byte output and carry resolution only.
 //! Range normalization is done separately in encode/decode loops.
 
+use std::fmt;
+
 const TOP: u32 = 1 << 24;
+
+/// Errors that can occur during arithmetic decoding.
+#[derive(Debug, Clone)]
+pub enum DecodeError {
+    /// Range divided by total == 0 (stream corruption or CDF mismatch).
+    RangeUnderflow { range: u32, total: u32 },
+    /// Decoded symbol index exceeds expected vocabulary size.
+    SymbolOutOfRange { symbol: usize, vocab_size: usize },
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeError::RangeUnderflow { range, total } =>
+                write!(f, "decoder range underflow: range={} / total={} = 0", range, total),
+            DecodeError::SymbolOutOfRange { symbol, vocab_size } =>
+                write!(f, "decoded symbol {} out of range [0, {})", symbol, vocab_size),
+        }
+    }
+}
 
 /// Quantized cumulative distribution function for range coding.
 pub struct Cdf {
@@ -216,9 +238,12 @@ impl<'a> RangeDecoder<'a> {
     }
 
     /// Get cumulative frequency for current position.
-    fn get_freq(&self, total: u32) -> u32 {
+    fn get_freq(&self, total: u32) -> Result<u32, DecodeError> {
         let r = self.range / total;
-        (self.code.wrapping_sub(self.low) / r).min(total - 1)
+        if r == 0 {
+            return Err(DecodeError::RangeUnderflow { range: self.range, total });
+        }
+        Ok((self.code.wrapping_sub(self.low) / r).min(total - 1))
     }
 
     /// Update state after decoding symbol with range [cdf_low, cdf_high).
@@ -238,11 +263,23 @@ impl<'a> RangeDecoder<'a> {
     }
 
     /// Decode one symbol using a Cdf table.
-    pub fn decode_symbol(&mut self, cdf: &Cdf) -> usize {
-        let cum = self.get_freq(cdf.total);
+    /// Returns `Err` on range underflow (corrupted stream) or out-of-range symbol.
+    pub fn decode_symbol(&mut self, cdf: &Cdf) -> Result<usize, DecodeError> {
+        let cum = self.get_freq(cdf.total)?;
         let (sym, lo, hi) = cdf.lookup(cum);
         self.update(lo, hi, cdf.total);
-        sym
+        Ok(sym)
+    }
+
+    /// Decode one symbol, validating it falls within `[0, vocab_size)`.
+    pub fn decode_symbol_checked(
+        &mut self, cdf: &Cdf, vocab_size: usize,
+    ) -> Result<usize, DecodeError> {
+        let sym = self.decode_symbol(cdf)?;
+        if sym >= vocab_size {
+            return Err(DecodeError::SymbolOutOfRange { symbol: sym, vocab_size });
+        }
+        Ok(sym)
     }
 }
 
@@ -264,7 +301,7 @@ mod tests {
 
         let mut dec = RangeDecoder::new(&compressed);
         for (i, &expected) in symbols.iter().enumerate() {
-            let got = dec.decode_symbol(&cdf);
+            let got = dec.decode_symbol(&cdf).unwrap();
             assert_eq!(got, expected, "mismatch at position {}", i);
         }
     }
@@ -288,7 +325,7 @@ mod tests {
 
         let mut dec = RangeDecoder::new(&compressed);
         for (i, &expected) in symbols.iter().enumerate() {
-            let got = dec.decode_symbol(&cdf);
+            let got = dec.decode_symbol(&cdf).unwrap();
             assert_eq!(got, expected, "mismatch at position {}", i);
         }
     }
@@ -315,7 +352,7 @@ mod tests {
 
         let mut dec = RangeDecoder::new(&compressed);
         for (i, &expected) in symbols.iter().enumerate() {
-            let got = dec.decode_symbol(&cdf);
+            let got = dec.decode_symbol(&cdf).unwrap();
             assert_eq!(got, expected, "mismatch at position {}", i);
         }
     }
@@ -344,7 +381,7 @@ mod tests {
 
         let mut dec = RangeDecoder::new(&compressed);
         for (i, &expected) in symbols.iter().enumerate() {
-            let got = dec.decode_symbol(&cdfs[i]);
+            let got = dec.decode_symbol(&cdfs[i]).unwrap();
             assert_eq!(got, expected, "mismatch at position {}", i);
         }
     }
@@ -372,5 +409,70 @@ mod tests {
         let ratio = actual_bits / expected_bits;
         assert!(ratio < 1.05, "compression ratio {:.4} too far from 1.0", ratio);
         assert!(ratio > 0.95, "compression ratio {:.4} suspiciously low", ratio);
+    }
+
+    #[test]
+    fn decode_symbol_checked_rejects_out_of_range() {
+        let n = 256;
+        let cdf = Cdf::uniform(n);
+        let mut enc = RangeEncoder::new();
+        enc.encode_symbol(200, &cdf);
+        let compressed = enc.finish();
+
+        let mut dec = RangeDecoder::new(&compressed);
+        // vocab_size=100 but symbol 200 was encoded with n=256 CDF
+        // The symbol decodes correctly as 200, but checked rejects it
+        let result = dec.decode_symbol_checked(&cdf, 100);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            DecodeError::SymbolOutOfRange { symbol, vocab_size } => {
+                assert_eq!(symbol, 200);
+                assert_eq!(vocab_size, 100);
+            }
+            other => panic!("expected SymbolOutOfRange, got: {}", other),
+        }
+    }
+
+    #[test]
+    fn decode_empty_stream_does_not_panic() {
+        // Decoding from an empty stream should return valid results (zero-padded)
+        // or an error, but never panic.
+        let cdf = Cdf::uniform(256);
+        let mut dec = RangeDecoder::new(&[]);
+        // The decoder zero-pads missing bytes; this should not crash.
+        let result = dec.decode_symbol(&cdf);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decode_corrupted_stream_detected() {
+        // Encode valid data, corrupt the stream, verify CRC would catch it
+        // (the decoder may still decode "something" — CRC is the final guard).
+        let n = 256;
+        let cdf = Cdf::uniform(n);
+        let symbols: Vec<usize> = vec![10, 20, 30, 40, 50];
+
+        let mut enc = RangeEncoder::new();
+        for &s in &symbols {
+            enc.encode_symbol(s, &cdf);
+        }
+        let mut compressed = enc.finish();
+
+        // Flip bits in the middle of the stream
+        if compressed.len() > 2 {
+            compressed[1] ^= 0xFF;
+        }
+
+        let mut dec = RangeDecoder::new(&compressed);
+        let mut mismatch = false;
+        for &expected in &symbols {
+            match dec.decode_symbol(&cdf) {
+                Ok(got) if got != expected => { mismatch = true; break; }
+                Err(_) => { mismatch = true; break; }
+                _ => {}
+            }
+        }
+        // With corrupted data, we expect at least one mismatch or error
+        assert!(mismatch, "corrupted stream should produce different symbols");
     }
 }

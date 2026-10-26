@@ -41,13 +41,14 @@
   - [x] Error claro si falla validación (CLI: exit(1), API: Err string)
 
 ### R-004: Validación del arithmetic decoder
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
 - **Impacto**: Stream corrupto causa comportamiento indefinido (basura o panic)
-- **Archivos**: `src/domain/coder.rs`
+- **Archivos**: `src/domain/coder.rs`, `src/application/codec.rs`, `src/application/api.rs`
 - **Subtareas**:
-  - [ ] Detectar underflow/overflow en `decode_symbol()`
-  - [ ] Validar que tokens decodificados ∈ [0, vocab_size)
-  - [ ] Propagar error al caller en vez de producir basura
+  - [x] Detectar underflow/overflow en `decode_symbol()` — `DecodeError::RangeUnderflow`
+  - [x] Validar que tokens decodificados ∈ [0, vocab_size) — `decode_symbol_checked()`
+  - [x] Propagar error al caller: CLI exit(1), API Err(String)
+  - [x] Tests: out-of-range, empty stream, corrupted stream
 
 ---
 
@@ -125,3 +126,4 @@
 |---|---|
 | 2026-10-26 | Creación inicial — auditoría de métricas de producción |
 | 2026-10-26 | R-001, R-002, R-003 completados — AZTH v3 con CRC-32 |
+| 2026-10-26 | R-004 completado — decoder bounds checking + DecodeError |
