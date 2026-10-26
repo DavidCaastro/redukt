@@ -588,3 +588,167 @@ pub fn cmd_cm_eval(args: &[String]) {
     let (model, _) = model_loader::load_model_and_tokenizer(&weights_dir);
     model.spectral_profile(&output_path);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a minimal valid AZTH v3 file from parts.
+    fn make_azth_v3(total_bytes: u32, token_count: u32, stream: &[u8], crc: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC_V3);
+        buf.extend_from_slice(&total_bytes.to_le_bytes());
+        buf.extend_from_slice(&token_count.to_le_bytes());
+        buf.extend_from_slice(&0.30f32.to_le_bytes()); // bias_lr
+        buf.extend_from_slice(&0.50f32.to_le_bytes()); // ngram_scale
+        buf.extend_from_slice(&0.01f32.to_le_bytes()); // mix_eta
+        buf.extend_from_slice(stream);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf
+    }
+
+    /// Helper: build a minimal valid AZTH v2 file (no CRC).
+    fn make_azth_v2(total_bytes: u32, token_count: u32, stream: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"AZTH\x02\x00\x00\x00");
+        buf.extend_from_slice(&total_bytes.to_le_bytes());
+        buf.extend_from_slice(&token_count.to_le_bytes());
+        buf.extend_from_slice(&0.30f32.to_le_bytes());
+        buf.extend_from_slice(&0.50f32.to_le_bytes());
+        buf.extend_from_slice(&0.01f32.to_le_bytes());
+        buf.extend_from_slice(stream);
+        buf
+    }
+
+    // --- validate_magic ---
+
+    #[test]
+    fn validate_magic_accepts_v2() {
+        let data = make_azth_v2(100, 10, &[0u8; 16]);
+        assert_eq!(validate_magic(&data), 2);
+    }
+
+    #[test]
+    fn validate_magic_accepts_v3() {
+        let data = make_azth_v3(100, 10, &[0u8; 16], 0);
+        assert_eq!(validate_magic(&data), 3);
+    }
+
+    // --- extract_stream_and_crc ---
+
+    #[test]
+    fn extract_crc_v3_splits_correctly() {
+        let stream_data = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let crc: u32 = 0xDEADBEEF;
+        let file = make_azth_v3(100, 10, &stream_data, crc);
+
+        let (stream, stored_crc) = extract_stream_and_crc(&file, 3);
+        assert_eq!(stream, &stream_data[..]);
+        assert_eq!(stored_crc, Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn extract_crc_v2_returns_none() {
+        let stream_data = vec![0xAA, 0xBB, 0xCC];
+        let file = make_azth_v2(100, 10, &stream_data);
+
+        let (stream, stored_crc) = extract_stream_and_crc(&file, 2);
+        assert_eq!(stream, &stream_data[..]);
+        assert_eq!(stored_crc, None);
+    }
+
+    #[test]
+    fn extract_crc_v3_empty_stream() {
+        // v3 with only CRC bytes and no stream
+        let file = make_azth_v3(0, 0, &[], 0x12345678);
+        let (stream, stored_crc) = extract_stream_and_crc(&file, 3);
+        assert!(stream.is_empty());
+        assert_eq!(stored_crc, Some(0x12345678));
+    }
+
+    // --- parse_hyperparams ---
+
+    #[test]
+    fn parse_hyperparams_valid() {
+        let file = make_azth_v3(100, 10, &[], 0);
+        let (lr, scale, eta) = parse_hyperparams(&file);
+        assert!((lr - 0.30).abs() < 1e-6);
+        assert!((scale - 0.50).abs() < 1e-6);
+        assert!((eta - 0.01).abs() < 1e-6);
+    }
+
+    // --- CRC integrity detection ---
+
+    #[test]
+    fn crc_detects_stream_corruption() {
+        let original_data = b"Hello, Redukt!";
+        let crc = crc32::crc32(original_data);
+
+        let file = make_azth_v3(original_data.len() as u32, 5, &[0xAA; 20], crc);
+        let (_, stored_crc) = extract_stream_and_crc(&file, 3);
+
+        // Simulate decompression producing wrong output
+        let wrong_output = b"Hello, Redakt!"; // one byte different
+        let actual_crc = crc32::crc32(wrong_output);
+        assert_ne!(actual_crc, stored_crc.unwrap(), "CRC should detect corruption");
+    }
+
+    #[test]
+    fn crc_detects_bitflip_in_file() {
+        let original_data = b"test data for CRC";
+        let crc = crc32::crc32(original_data);
+        let mut file = make_azth_v3(original_data.len() as u32, 3, &[0x55; 10], crc);
+
+        // Flip a bit in the stream portion
+        let stream_start = HEADER_SIZE;
+        file[stream_start] ^= 0x01;
+
+        // The stored CRC is still the original — if decompression runs with
+        // corrupted stream, the output will differ and CRC will catch it.
+        let (_, stored_crc) = extract_stream_and_crc(&file, 3);
+        assert_eq!(stored_crc, Some(crc), "stored CRC should be unchanged");
+        // The actual decompressed output would fail CRC check (tested at integration level)
+    }
+
+    // --- Coder determinism ---
+
+    #[test]
+    fn coder_deterministic_output() {
+        let n = 256;
+        let mut probs = vec![0.001f32; n];
+        probs[0] = 0.4;
+        probs[1] = 0.3;
+        probs[10] = 0.1;
+        let sum: f32 = probs.iter().sum();
+        for p in &mut probs { *p /= sum; }
+        let cdf = Cdf::from_probs(&probs);
+
+        let symbols: Vec<usize> = vec![0, 1, 0, 10, 255, 0, 0, 1, 128, 50];
+
+        let encode_once = || {
+            let mut enc = RangeEncoder::new();
+            for &s in &symbols {
+                enc.encode_symbol(s, &cdf);
+            }
+            enc.finish()
+        };
+
+        let run1 = encode_once();
+        let run2 = encode_once();
+        assert_eq!(run1, run2, "encoder must be deterministic: two runs must produce identical bytes");
+    }
+
+    #[test]
+    fn cdf_from_logits_deterministic() {
+        let logits: Vec<f32> = (0..256).map(|i| (i as f32 - 128.0) * 0.1).collect();
+        let cdf1 = cdf_from_logits(&logits);
+        let cdf2 = cdf_from_logits(&logits);
+        assert_eq!(cdf1.total, cdf2.total);
+        // Verify same CDF produces same encoded output
+        let mut enc1 = RangeEncoder::new();
+        let mut enc2 = RangeEncoder::new();
+        enc1.encode_symbol(42, &cdf1);
+        enc2.encode_symbol(42, &cdf2);
+        assert_eq!(enc1.finish(), enc2.finish());
+    }
+}

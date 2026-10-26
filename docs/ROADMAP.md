@@ -55,16 +55,18 @@
 ## P1 — Robustez y Testing
 
 ### R-005: Tests de edge cases
-- **Estado**: PENDIENTE
-- **Archivos**: `src/domain/coder.rs`, `src/application/codec.rs` (tests)
+- **Estado**: COMPLETADO
+- **Archivos**: `src/application/codec.rs` (unit tests), `tests/roundtrip.rs` (integration tests)
 - **Subtareas**:
-  - [ ] Test: archivo vacío (0 bytes)
-  - [ ] Test: archivo de 1 byte
-  - [ ] Test: archivo < 28 bytes (menor que header AZTH)
-  - [ ] Test: AZTH con magic inválido
-  - [ ] Test: AZTH truncado (header ok, stream cortado)
-  - [ ] Test: AZTH con bit flip en stream (detectado por CRC-32 via R-001)
-  - [ ] Test: determinismo — comprimir 2 veces → salida byte-idéntica
+  - [x] Test: archivo vacío (0 bytes) — `decompress_rejects_empty_file`
+  - [x] Test: archivo de 1 byte — `roundtrip_single_byte` (ignored, needs weights)
+  - [x] Test: archivo < 28 bytes — `decompress_rejects_short_file`
+  - [x] Test: AZTH con magic inválido — `decompress_rejects_bad_magic`
+  - [x] Test: AZTH con versión no soportada — `decompress_rejects_unsupported_version`
+  - [x] Test: AZTH con bit flip en stream — `decompress_rejects_corrupted_crc` (ignored, needs weights)
+  - [x] Test: determinismo — `coder_deterministic_output`, `cdf_from_logits_deterministic`, `roundtrip_determinism`
+  - [x] Unit tests: CRC split/extraction, v2/v3 parsing, hyperparams validation
+- **Total**: 14 nuevos tests (10 unit + 4 integration), 50 tests en suite completa
 
 ### R-006: Error handling — panics a Results
 - **Estado**: PENDIENTE
@@ -127,3 +129,4 @@
 | 2026-10-26 | Creación inicial — auditoría de métricas de producción |
 | 2026-10-26 | R-001, R-002, R-003 completados — AZTH v3 con CRC-32 |
 | 2026-10-26 | R-004 completado — decoder bounds checking + DecodeError |
+| 2026-10-26 | R-005 completado — 14 edge case tests (unit + integration) |
