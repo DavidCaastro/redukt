@@ -1,6 +1,6 @@
 //! Application commands — compress, decompress, hybrid-eval, baseline, cm-eval.
 
-use crate::domain::error::{parse_arg, next_arg};
+use crate::domain::error::{AzError, AzResult, parse_arg, next_arg};
 use crate::domain::tensor::{softmax, entropy_from_logits, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
@@ -15,36 +15,40 @@ pub const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
 pub const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
 pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3 only)
 
-/// Validate AZTH magic bytes. Returns format version (2 or 3) or exits.
-pub fn validate_magic(data: &[u8]) -> u8 {
+/// Validate AZTH magic bytes. Returns format version (2 or 3).
+pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
     if data.len() < HEADER_SIZE {
-        eprintln!("error: invalid AZTH file (too short: {} bytes)", data.len());
-        std::process::exit(1);
+        return Err(AzError::Format(format!(
+            "invalid AZTH file (too short: {} bytes)", data.len()
+        )));
     }
     if &data[..4] != b"AZTH" {
-        eprintln!("error: invalid AZTH file (bad magic: {:?})", &data[..4.min(data.len())]);
-        std::process::exit(1);
+        return Err(AzError::Format(format!(
+            "invalid AZTH file (bad magic: {:?})", &data[..4]
+        )));
     }
     let version = data[4];
     if version != 2 && version != 3 {
-        eprintln!("error: unsupported AZTH version {} (expected 2 or 3)", version);
-        std::process::exit(1);
+        return Err(AzError::Format(format!(
+            "unsupported AZTH version {} (expected 2 or 3)", version
+        )));
     }
-    version
+    Ok(version)
 }
 
 /// Parse header hyperparameters with NaN/Inf validation.
-pub fn parse_hyperparams(data: &[u8]) -> (f32, f32, f32) {
+pub fn parse_hyperparams(data: &[u8]) -> AzResult<(f32, f32, f32)> {
     let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
     for (name, val) in [("bias_lr", bias_lr), ("ngram_scale", ngram_scale), ("mix_eta", mix_eta)] {
         if !val.is_finite() {
-            eprintln!("error: invalid hyperparameter {}={} (NaN or Inf)", name, val);
-            std::process::exit(1);
+            return Err(AzError::Format(format!(
+                "invalid hyperparameter {}={} (NaN or Inf)", name, val
+            )));
         }
     }
-    (bias_lr, ngram_scale, mix_eta)
+    Ok((bias_lr, ngram_scale, mix_eta))
 }
 
 /// Extract stream and CRC from AZTH payload based on version.
@@ -79,7 +83,16 @@ pub fn cdf_from_logits(logits: &[f32]) -> Cdf {
     Cdf::from_probs(&probs_f32)
 }
 
-pub fn cmd_compress(args: &[String]) {
+/// Decode a symbol with bounds checking, returning AzResult.
+fn decode_checked(
+    dec: &mut RangeDecoder, cdf: &Cdf, vocab_size: usize, token_idx: usize,
+) -> AzResult<u32> {
+    dec.decode_symbol_checked(cdf, vocab_size)
+        .map(|sym| sym as u32)
+        .map_err(|e| AzError::Decode { token_idx, detail: e.to_string() })
+}
+
+pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut output_path = String::new();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
@@ -91,40 +104,36 @@ pub fn cmd_compress(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
-            "--output" => { output_path = next_arg(args, &mut i, "--output").to_string(); }
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
-            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes"), "--bytes").unwrap_or_else(|e| panic!("{}", e)); }
-            "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr"), "--lr").unwrap_or_else(|e| panic!("{}", e)); }
-            "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale"), "--ngram-scale").unwrap_or_else(|e| panic!("{}", e)); }
-            "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta"), "--mix-eta").unwrap_or_else(|e| panic!("{}", e)); }
+            "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
+            "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
+            "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr")?, "--lr")?; }
+            "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale")?, "--ngram-scale")?; }
+            "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
             _ => {}
         }
         i += 1;
     }
 
     if output_path.is_empty() {
-        eprintln!("error: --output PATH required");
-        std::process::exit(1);
+        return Err(AzError::Parse {
+            context: "--output".to_string(), value: "(missing)".to_string(),
+        });
     }
 
-    // Load input
-    let raw_bytes = crate::domain::error::read_file(&input_path)
-        .unwrap_or_else(|e| panic!("{}", e));
+    let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
 
-    // Load tokenizer and model
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
-    // Tokenize
     let tokens = tokenizer.encode(input_slice);
     eprintln!("[compress] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
 
-    // Initialize ensemble + coder
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
     let mut mixer = AdaptiveMixer::new(mix_eta);
@@ -191,8 +200,7 @@ pub fn cmd_compress(args: &[String]) {
     output.extend_from_slice(&compressed);
     output.extend_from_slice(&input_crc.to_le_bytes());
 
-    crate::domain::error::write_file(&output_path, &output)
-        .unwrap_or_else(|e| panic!("{}", e));
+    crate::domain::error::write_file(&output_path, &output)?;
 
     let compressed_bpb = output.len() as f64 * 8.0 / total_bytes as f64;
     let ce_bpb = ce_bits / total_bytes as f64;
@@ -209,21 +217,10 @@ pub fn cmd_compress(args: &[String]) {
     eprintln!("  format:         AZTH v3");
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
     eprintln!("  output:         {}", output_path);
+    Ok(())
 }
 
-/// Decode a symbol or exit with a clear error message (CLI path).
-fn decode_or_exit(dec: &mut RangeDecoder, cdf: &Cdf, vocab_size: usize, token_idx: usize) -> u32 {
-    match dec.decode_symbol_checked(cdf, vocab_size) {
-        Ok(sym) => sym as u32,
-        Err(e) => {
-            eprintln!("\nerror: arithmetic decoder failure at token {}: {}", token_idx, e);
-            eprintln!("  the compressed stream or model weights may be corrupted");
-            std::process::exit(1);
-        }
-    }
-}
-
-pub fn cmd_decompress(args: &[String]) {
+pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut input_path = String::new();
     let mut output_path = String::new();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
@@ -231,27 +228,27 @@ pub fn cmd_decompress(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
-            "--output" => { output_path = next_arg(args, &mut i, "--output").to_string(); }
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
+            "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
+            "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             _ => {}
         }
         i += 1;
     }
 
     if input_path.is_empty() || output_path.is_empty() {
-        eprintln!("error: --input PATH and --output PATH required");
-        std::process::exit(1);
+        return Err(AzError::Parse {
+            context: "--input/--output".to_string(), value: "(missing)".to_string(),
+        });
     }
 
-    let data = crate::domain::error::read_file(&input_path)
-        .unwrap_or_else(|e| panic!("{}", e));
+    let data = crate::domain::error::read_file(&input_path)?;
 
-    let version = validate_magic(&data);
+    let version = validate_magic(&data)?;
 
     let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
     let token_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let (bias_lr, ngram_scale, mix_eta) = parse_hyperparams(&data);
+    let (bias_lr, ngram_scale, mix_eta) = parse_hyperparams(&data)?;
     let (stream, stored_crc) = extract_stream_and_crc(&data, version);
 
     eprintln!("[decompress] format: AZTH v{}", version);
@@ -259,8 +256,8 @@ pub fn cmd_decompress(args: &[String]) {
               data.len(), total_bytes, token_count);
     eprintln!("[decompress] hyperparams: lr={}, ngram_scale={}, mix_eta={}",
               bias_lr, ngram_scale, mix_eta);
-    if stored_crc.is_some() {
-        eprintln!("[decompress] CRC-32: {:08X} (will verify)", stored_crc.unwrap());
+    if let Some(crc) = stored_crc {
+        eprintln!("[decompress] CRC-32: {:08X} (will verify)", crc);
     } else {
         eprintln!("[decompress] CRC-32: absent (v2 format, no integrity check)");
     }
@@ -284,14 +281,14 @@ pub fn cmd_decompress(args: &[String]) {
     for t in 0..token_count {
         let tok = if t == 0 {
             let cdf = Cdf::uniform(v);
-            decode_or_exit(&mut dec, &cdf, v, t)
+            decode_checked(&mut dec, &cdf, v, t)?
         } else {
             let ng_bias = ngram.compute_bias(None);
             let b_vec = bias.bias_vector();
             let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
 
             let cdf = cdf_from_logits(&ensemble_logits);
-            let sym = decode_or_exit(&mut dec, &cdf, v, t);
+            let sym = decode_checked(&mut dec, &cdf, v, t)?;
 
             let tensor = Tensor::from_data(ensemble_logits, vec![v]);
             let probs = softmax(&tensor);
@@ -322,30 +319,32 @@ pub fn cmd_decompress(args: &[String]) {
     }
 
     if output_bytes.len() != total_bytes {
-        eprintln!("error: size mismatch — decoded {} bytes, expected {}", output_bytes.len(), total_bytes);
-        std::process::exit(1);
+        return Err(AzError::Integrity(format!(
+            "size mismatch: decoded {} bytes, expected {}", output_bytes.len(), total_bytes
+        )));
     }
 
     if let Some(expected_crc) = stored_crc {
         let actual_crc = crc32::crc32(&output_bytes);
         if actual_crc != expected_crc {
-            eprintln!("error: CRC-32 mismatch — expected {:08X}, got {:08X}", expected_crc, actual_crc);
-            eprintln!("  the compressed file or model weights may be corrupted");
-            std::process::exit(1);
+            return Err(AzError::Integrity(format!(
+                "CRC-32 mismatch: expected {:08X}, got {:08X} — file or weights corrupted",
+                expected_crc, actual_crc
+            )));
         }
         eprintln!("[decompress] CRC-32: {:08X} (verified OK)", actual_crc);
     }
 
-    crate::domain::error::write_file(&output_path, &output_bytes)
-        .unwrap_or_else(|e| panic!("{}", e));
+    crate::domain::error::write_file(&output_path, &output_bytes)?;
 
     eprintln!();
     eprintln!("[decompress] output: {} ({} bytes)", output_path, output_bytes.len());
     eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", elapsed, token_count as f64 / elapsed);
     eprintln!("[decompress] done.");
+    Ok(())
 }
 
-pub fn cmd_hybrid_eval(args: &[String]) {
+pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut max_bytes: usize = 0;
@@ -359,22 +358,21 @@ pub fn cmd_hybrid_eval(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
-            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes"), "--bytes").unwrap_or_else(|e| panic!("{}", e)); }
-            "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr"), "--lr").unwrap_or_else(|e| panic!("{}", e)); }
-            "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale"), "--ngram-scale").unwrap_or_else(|e| panic!("{}", e)); }
-            "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta"), "--mix-eta").unwrap_or_else(|e| panic!("{}", e)); }
-            "--tau" => { tau = parse_arg(next_arg(args, &mut i, "--tau"), "--tau").unwrap_or_else(|e| panic!("{}", e)); }
-            "--log" => { log_path = next_arg(args, &mut i, "--log").to_string(); }
-            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery").to_string(); }
+            "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
+            "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr")?, "--lr")?; }
+            "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale")?, "--ngram-scale")?; }
+            "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
+            "--tau" => { tau = parse_arg(next_arg(args, &mut i, "--tau")?, "--tau")?; }
+            "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
+            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             _ => {}
         }
         i += 1;
     }
 
-    let raw_bytes = crate::domain::error::read_file(&input_path)
-        .unwrap_or_else(|e| panic!("{}", e));
+    let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[hybrid-eval] input: {} ({} bytes)", input_path, total_bytes);
@@ -474,9 +472,10 @@ pub fn cmd_hybrid_eval(args: &[String]) {
     if !log_path.is_empty() {
         eprintln!("  log:     {}", log_path);
     }
+    Ok(())
 }
 
-pub fn cmd_baseline(args: &[String]) {
+pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut max_bytes: usize = 0;
@@ -485,17 +484,16 @@ pub fn cmd_baseline(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--input" => { input_path = next_arg(args, &mut i, "--input").to_string(); }
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
-            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes"), "--bytes").unwrap_or_else(|e| panic!("{}", e)); }
-            "--log" => { log_path = next_arg(args, &mut i, "--log").to_string(); }
+            "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
+            "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
             _ => {}
         }
         i += 1;
     }
 
-    let raw_bytes = crate::domain::error::read_file(&input_path)
-        .unwrap_or_else(|e| panic!("{}", e));
+    let raw_bytes = crate::domain::error::read_file(&input_path)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[baseline] input: {} ({} bytes)", input_path, total_bytes);
@@ -564,29 +562,32 @@ pub fn cmd_baseline(args: &[String]) {
     if !log_path.is_empty() {
         eprintln!("  log:   {}", log_path);
     }
+    Ok(())
 }
 
-pub fn cmd_cm_eval(args: &[String]) {
+pub fn cmd_cm_eval(args: &[String]) -> AzResult<()> {
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut output_path = String::new();
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
-            "--output" => { output_path = next_arg(args, &mut i, "--output").to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
             _ => {}
         }
         i += 1;
     }
 
     if output_path.is_empty() {
-        eprintln!("error: --output PATH required");
-        std::process::exit(1);
+        return Err(AzError::Parse {
+            context: "--output".to_string(), value: "(missing)".to_string(),
+        });
     }
 
     let (model, _) = model_loader::load_model_and_tokenizer(&weights_dir);
     model.spectral_profile(&output_path);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -625,13 +626,60 @@ mod tests {
     #[test]
     fn validate_magic_accepts_v2() {
         let data = make_azth_v2(100, 10, &[0u8; 16]);
-        assert_eq!(validate_magic(&data), 2);
+        assert_eq!(validate_magic(&data).unwrap(), 2);
     }
 
     #[test]
     fn validate_magic_accepts_v3() {
         let data = make_azth_v3(100, 10, &[0u8; 16], 0);
-        assert_eq!(validate_magic(&data), 3);
+        assert_eq!(validate_magic(&data).unwrap(), 3);
+    }
+
+    #[test]
+    fn validate_magic_rejects_short() {
+        assert!(validate_magic(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn validate_magic_rejects_bad_prefix() {
+        let mut data = vec![0u8; 32];
+        data[..4].copy_from_slice(b"NOPE");
+        assert!(validate_magic(&data).is_err());
+    }
+
+    #[test]
+    fn validate_magic_rejects_bad_version() {
+        let mut data = make_azth_v3(100, 10, &[0u8; 8], 0);
+        data[4] = 99;
+        assert!(validate_magic(&data).is_err());
+    }
+
+    // --- parse_hyperparams ---
+
+    #[test]
+    fn parse_hyperparams_valid() {
+        let file = make_azth_v3(100, 10, &[], 0);
+        let (lr, scale, eta) = parse_hyperparams(&file).unwrap();
+        assert!((lr - 0.30).abs() < 1e-6);
+        assert!((scale - 0.50).abs() < 1e-6);
+        assert!((eta - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_hyperparams_rejects_nan() {
+        let mut file = make_azth_v3(100, 10, &[], 0);
+        // Write NaN into bias_lr (bytes 16-19)
+        let nan_bytes = f32::NAN.to_le_bytes();
+        file[16..20].copy_from_slice(&nan_bytes);
+        assert!(parse_hyperparams(&file).is_err());
+    }
+
+    #[test]
+    fn parse_hyperparams_rejects_inf() {
+        let mut file = make_azth_v3(100, 10, &[], 0);
+        let inf_bytes = f32::INFINITY.to_le_bytes();
+        file[20..24].copy_from_slice(&inf_bytes); // ngram_scale = Inf
+        assert!(parse_hyperparams(&file).is_err());
     }
 
     // --- extract_stream_and_crc ---
@@ -659,22 +707,10 @@ mod tests {
 
     #[test]
     fn extract_crc_v3_empty_stream() {
-        // v3 with only CRC bytes and no stream
         let file = make_azth_v3(0, 0, &[], 0x12345678);
         let (stream, stored_crc) = extract_stream_and_crc(&file, 3);
         assert!(stream.is_empty());
         assert_eq!(stored_crc, Some(0x12345678));
-    }
-
-    // --- parse_hyperparams ---
-
-    #[test]
-    fn parse_hyperparams_valid() {
-        let file = make_azth_v3(100, 10, &[], 0);
-        let (lr, scale, eta) = parse_hyperparams(&file);
-        assert!((lr - 0.30).abs() < 1e-6);
-        assert!((scale - 0.50).abs() < 1e-6);
-        assert!((eta - 0.01).abs() < 1e-6);
     }
 
     // --- CRC integrity detection ---
@@ -683,14 +719,12 @@ mod tests {
     fn crc_detects_stream_corruption() {
         let original_data = b"Hello, Redukt!";
         let crc = crc32::crc32(original_data);
-
         let file = make_azth_v3(original_data.len() as u32, 5, &[0xAA; 20], crc);
         let (_, stored_crc) = extract_stream_and_crc(&file, 3);
 
-        // Simulate decompression producing wrong output
-        let wrong_output = b"Hello, Redakt!"; // one byte different
+        let wrong_output = b"Hello, Redakt!";
         let actual_crc = crc32::crc32(wrong_output);
-        assert_ne!(actual_crc, stored_crc.unwrap(), "CRC should detect corruption");
+        assert_ne!(actual_crc, stored_crc.unwrap());
     }
 
     #[test]
@@ -698,16 +732,9 @@ mod tests {
         let original_data = b"test data for CRC";
         let crc = crc32::crc32(original_data);
         let mut file = make_azth_v3(original_data.len() as u32, 3, &[0x55; 10], crc);
-
-        // Flip a bit in the stream portion
-        let stream_start = HEADER_SIZE;
-        file[stream_start] ^= 0x01;
-
-        // The stored CRC is still the original — if decompression runs with
-        // corrupted stream, the output will differ and CRC will catch it.
+        file[HEADER_SIZE] ^= 0x01;
         let (_, stored_crc) = extract_stream_and_crc(&file, 3);
-        assert_eq!(stored_crc, Some(crc), "stored CRC should be unchanged");
-        // The actual decompressed output would fail CRC check (tested at integration level)
+        assert_eq!(stored_crc, Some(crc));
     }
 
     // --- Coder determinism ---
@@ -722,20 +749,15 @@ mod tests {
         let sum: f32 = probs.iter().sum();
         for p in &mut probs { *p /= sum; }
         let cdf = Cdf::from_probs(&probs);
-
         let symbols: Vec<usize> = vec![0, 1, 0, 10, 255, 0, 0, 1, 128, 50];
 
         let encode_once = || {
             let mut enc = RangeEncoder::new();
-            for &s in &symbols {
-                enc.encode_symbol(s, &cdf);
-            }
+            for &s in &symbols { enc.encode_symbol(s, &cdf); }
             enc.finish()
         };
 
-        let run1 = encode_once();
-        let run2 = encode_once();
-        assert_eq!(run1, run2, "encoder must be deterministic: two runs must produce identical bytes");
+        assert_eq!(encode_once(), encode_once());
     }
 
     #[test]
@@ -744,7 +766,6 @@ mod tests {
         let cdf1 = cdf_from_logits(&logits);
         let cdf2 = cdf_from_logits(&logits);
         assert_eq!(cdf1.total, cdf2.total);
-        // Verify same CDF produces same encoded output
         let mut enc1 = RangeEncoder::new();
         let mut enc2 = RangeEncoder::new();
         enc1.encode_symbol(42, &cdf1);

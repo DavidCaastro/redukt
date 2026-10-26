@@ -10,20 +10,25 @@ fn main() {
         std::process::exit(1);
     }
 
-    match args[1].as_str() {
+    let result = match args[1].as_str() {
         "compress" => application::codec::cmd_compress(&args[2..]),
         "decompress" => application::codec::cmd_decompress(&args[2..]),
         "hybrid-eval" => application::codec::cmd_hybrid_eval(&args[2..]),
         "baseline" => application::codec::cmd_baseline(&args[2..]),
         "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
-        "api" => application::api::cmd_api(&args[2..]),
-        "--help" | "-h" | "help" => print_usage(),
+        "api" => { application::api::cmd_api(&args[2..]); Ok(()) }
+        "--help" | "-h" | "help" => { print_usage(); Ok(()) }
         other => {
             eprintln!("error: unknown command '{}'", other);
             eprintln!();
             print_usage();
             std::process::exit(1);
         }
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
     }
 }
 

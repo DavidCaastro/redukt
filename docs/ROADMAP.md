@@ -69,14 +69,17 @@
 - **Total**: 14 nuevos tests (10 unit + 4 integration), 50 tests en suite completa
 
 ### R-006: Error handling — panics a Results
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
 - **Impacto**: `panic!()` en I/O no es aceptable para librería/API
-- **Archivos**: `src/application/codec.rs`
+- **Archivos**: `src/domain/error.rs`, `src/application/codec.rs`, `src/application/api.rs`, `src/main.rs`
 - **Subtareas**:
-  - [ ] Reemplazar `unwrap_or_else(|e| panic!())` por propagación de `Result<>`
-  - [ ] Devolver `AzError` desde compress/decompress
-  - [ ] CLI: catch en main, exit(1) con mensaje limpio
-  - [ ] API: mapear a HTTP status codes apropiados
+  - [x] Reemplazar `unwrap_or_else(|e| panic!())` por propagación de `Result<>`
+  - [x] Devolver `AzError` desde compress/decompress (y hybrid-eval, baseline, cm-eval)
+  - [x] CLI: catch en main, exit(1) con mensaje limpio
+  - [x] API: mapear a HTTP status codes apropiados
+  - [x] `next_arg` retorna `AzResult<&str>` — cascada actualizada en todos los callers
+  - [x] 5 nuevos unit tests (validate_magic, parse_hyperparams)
+  - [x] 55 tests totales pasando (51 unit + 4 integration)
 
 ### R-007: Límite u32 TOTAL_BYTES — documentar y validar
 - **Estado**: PENDIENTE
@@ -130,3 +133,4 @@
 | 2026-10-26 | R-001, R-002, R-003 completados — AZTH v3 con CRC-32 |
 | 2026-10-26 | R-004 completado — decoder bounds checking + DecodeError |
 | 2026-10-26 | R-005 completado — 14 edge case tests (unit + integration) |
+| 2026-10-26 | R-006 completado — panics→Results en todos los cmd_*, 55 tests |

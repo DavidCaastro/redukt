@@ -35,9 +35,15 @@ pub fn cmd_api(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--host" => { host = next_arg(args, &mut i, "--host").to_string(); }
-            "--port" => { port = next_arg(args, &mut i, "--port").to_string(); }
-            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights").to_string(); }
+            "--host" => { host = next_arg(args, &mut i, "--host")
+                .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+                .to_string(); }
+            "--port" => { port = next_arg(args, &mut i, "--port")
+                .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+                .to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")
+                .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+                .to_string(); }
             _ => {}
         }
         i += 1;

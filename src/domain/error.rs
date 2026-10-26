@@ -12,6 +12,12 @@ pub enum AzError {
     Parse { context: String, value: String },
     /// Weight/model loading failure.
     ModelLoad(String),
+    /// AZTH format validation failure (bad magic, bad version, bad hyperparams).
+    Format(String),
+    /// Arithmetic decoder failure (range underflow, symbol out-of-range).
+    Decode { token_idx: usize, detail: String },
+    /// Decompressed data integrity failure (size mismatch, CRC mismatch).
+    Integrity(String),
 }
 
 impl fmt::Display for AzError {
@@ -20,6 +26,11 @@ impl fmt::Display for AzError {
             AzError::Io { path, source } => write!(f, "I/O error on '{}': {}", path, source),
             AzError::Parse { context, value } => write!(f, "parse error in {}: '{}'", context, value),
             AzError::ModelLoad(msg) => write!(f, "model load error: {}", msg),
+            AzError::Format(msg) => write!(f, "format error: {}", msg),
+            AzError::Decode { token_idx, detail } => {
+                write!(f, "decoder error at token {}: {}", token_idx, detail)
+            }
+            AzError::Integrity(msg) => write!(f, "integrity error: {}", msg),
         }
     }
 }
@@ -60,14 +71,16 @@ pub fn parse_arg<T: std::str::FromStr>(value: &str, flag: &str) -> AzResult<T> {
 }
 
 /// Safely advance CLI arg index and return the next value.
-/// Exits with a clear error if the flag is the last argument (no value follows).
-pub fn next_arg<'a>(args: &'a [String], i: &mut usize, flag: &str) -> &'a str {
+/// Returns Parse error if the flag is the last argument (no value follows).
+pub fn next_arg<'a>(args: &'a [String], i: &mut usize, flag: &str) -> AzResult<&'a str> {
     *i += 1;
     if *i >= args.len() {
-        eprintln!("error: {} requires a value", flag);
-        std::process::exit(1);
+        return Err(AzError::Parse {
+            context: flag.to_string(),
+            value: "(missing value)".to_string(),
+        });
     }
-    &args[*i]
+    Ok(&args[*i])
 }
 
 /// Maximum file size for `read_file_capped()` (2 GB).
@@ -91,7 +104,6 @@ pub fn read_file_capped(path: &str) -> AzResult<Vec<u8>> {
 /// Use this instead of `.partial_cmp().unwrap()` on floats.
 pub fn safe_f32_cmp(a: &f32, b: &f32) -> std::cmp::Ordering {
     a.partial_cmp(b).unwrap_or_else(|| {
-        // NaN handling: NaN sorts to the end (less than everything)
         if a.is_nan() && b.is_nan() {
             std::cmp::Ordering::Equal
         } else if a.is_nan() {
