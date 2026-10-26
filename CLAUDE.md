@@ -28,15 +28,18 @@ Bytes -> RWKV-7(pretrained) + TokenNgram + BiasHead -> AdaptiveMixer -> RangeEnc
 AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministic)
 ```
 
-### AZTH Format (v1)
+### AZTH Format (v2)
 ```
-MAGIC:       8B  "AZTH\x01\x00\x00\x00"
+MAGIC:       8B  "AZTH\x02\x00\x00\x00"
 TOTAL_BYTES: 4B  LE (original size)
 TOKEN_COUNT: 4B  LE
+BIAS_LR:     4B  LE f32 (default 0.30)
+NGRAM_SCALE: 4B  LE f32 (default 0.50)
+MIX_ETA:     4B  LE f32 (default 0.01)
 STREAM:      var (arithmetic coded probability stream)
 ```
 
-Decompression requires IDENTICAL model + weights + hyperparameters.
+Decompression requires IDENTICAL model + weights. Hyperparameters stored in header.
 
 ## Constraints
 

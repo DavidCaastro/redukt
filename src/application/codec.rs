@@ -10,7 +10,8 @@ use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
-const MAGIC: &[u8; 8] = b"AZTH\x01\x00\x00\x00";
+const MAGIC: &[u8; 8] = b"AZTH\x02\x00\x00\x00";
+const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
 
 /// Build CDF from logits for current prediction step.
 /// Uses f64 softmax to preserve tail precision for 65K vocab.
@@ -129,10 +130,13 @@ pub fn cmd_compress(args: &[String]) {
     let elapsed = t_start.elapsed().as_secs_f64();
     eprintln!();
 
-    let mut output = Vec::with_capacity(16 + compressed.len());
+    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len());
     output.extend_from_slice(MAGIC);
     output.extend_from_slice(&(total_bytes as u32).to_le_bytes());
     output.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
+    output.extend_from_slice(&bias_lr.to_le_bytes());
+    output.extend_from_slice(&ngram_scale.to_le_bytes());
+    output.extend_from_slice(&mix_eta.to_le_bytes());
     output.extend_from_slice(&compressed);
 
     crate::domain::error::write_file(&output_path, &output)
@@ -177,24 +181,30 @@ pub fn cmd_decompress(args: &[String]) {
     let data = crate::domain::error::read_file(&input_path)
         .unwrap_or_else(|e| panic!("{}", e));
 
-    if data.len() < 16 || &data[..8] != MAGIC {
-        eprintln!("error: invalid compressed file (bad magic)");
+    if data.len() < HEADER_SIZE || &data[..8] != MAGIC {
+        eprintln!("error: invalid AZTH file (bad magic or too short)");
+        eprintln!("  expected magic: AZTH\\x02, got: {:?}", &data[..8.min(data.len())]);
         std::process::exit(1);
     }
 
     let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
     let token_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let stream = &data[16..];
+    let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
+    let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+    let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    let stream = &data[HEADER_SIZE..];
 
     eprintln!("[decompress] compressed: {} bytes, original: {} bytes, {} tokens",
               data.len(), total_bytes, token_count);
+    eprintln!("[decompress] hyperparams: lr={}, ngram_scale={}, mix_eta={}",
+              bias_lr, ngram_scale, mix_eta);
 
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
 
-    let mut ngram = TokenNgram::new(4, v, 0.5);
-    let mut bias = BiasHead::new(v, 0.30);
-    let mut mixer = AdaptiveMixer::new(0.01);
+    let mut ngram = TokenNgram::new(4, v, ngram_scale);
+    let mut bias = BiasHead::new(v, bias_lr);
+    let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut dec = RangeDecoder::new(stream);
 
     let mut state = Rwkv7State::new(&model.config);

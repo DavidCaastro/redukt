@@ -1,30 +1,35 @@
-# AZTH Format Specification v1
+# AZTH Format Specification v2
 
 ## Purpose
 
 AZTH is a lossless compression format that encodes data using neural network
 probability predictions combined with arithmetic coding. Decompression requires
-the identical model, weights, and hyperparameters used during compression.
+the identical model and weights; hyperparameters are stored in the header.
 
 ## Format Layout
 
 ```
 Offset  Size  Field          Description
 ------  ----  -----          -----------
-0x00    8B    MAGIC          "AZTH\x01\x00\x00\x00" (version 1)
+0x00    8B    MAGIC          "AZTH\x02\x00\x00\x00" (version 2)
 0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
 0x0C    4B    TOKEN_COUNT    Number of tokens after tokenization (little-endian u32)
-0x10    var   STREAM         Arithmetic coded probability stream
+0x10    4B    BIAS_LR        BiasHead learning rate (little-endian f32)
+0x14    4B    NGRAM_SCALE    N-gram logit bias scale (little-endian f32)
+0x18    4B    MIX_ETA        Adaptive mixer learning rate (little-endian f32)
+0x1C    var   STREAM         Arithmetic coded probability stream
 ```
+
+Total header size: 28 bytes (0x1C).
 
 ### Magic Bytes
 
 ```
-41 5A 54 48 01 00 00 00
-A  Z  T  H  v1 (reserved)
+41 5A 54 48 02 00 00 00
+A  Z  T  H  v2 (reserved)
 ```
 
-Bytes 4-7 are reserved for future format versions. Currently must be `01 00 00 00`.
+Byte 4 is the format version. Currently must be `02`.
 
 ### TOTAL_BYTES
 
@@ -35,6 +40,21 @@ Maximum supported file size: 4,294,967,295 bytes (~4 GB).
 
 Number of tokens produced by the World tokenizer (65,536 vocab).
 Required for decompression to know when to stop decoding.
+
+### Hyperparameters (BIAS_LR, NGRAM_SCALE, MIX_ETA)
+
+Three IEEE 754 single-precision floats stored as little-endian.
+These are the online-learning rates used during compression:
+
+| Field       | Default | Description                          |
+|-------------|---------|--------------------------------------|
+| BIAS_LR     | 0.30    | BiasHead per-symbol learning rate    |
+| NGRAM_SCALE | 0.50    | N-gram logit bias scaling factor     |
+| MIX_ETA     | 0.01    | AdaptiveMixer weight learning rate   |
+
+Decompression reads these values from the header and initializes the
+ensemble with the exact same parameters used during compression.
+This guarantees lossless roundtrip even with non-default hyperparameters.
 
 ### STREAM
 
@@ -89,7 +109,7 @@ Schindler-style carry-propagation range coder output.
 Decompression produces byte-identical output if and only if:
 1. Same RWKV-7 model weights (exact floating-point values)
 2. Same World tokenizer vocabulary file
-3. Same hyperparameters: ngram order=4, scale=0.5, bias_lr=0.30, mix_eta=0.01
+3. Same hyperparameters (stored in header since v2; ngram order=4 is fixed)
 4. Same forward pass implementation (floating-point order matters)
 
 This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
