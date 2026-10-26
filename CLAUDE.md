@@ -17,7 +17,7 @@ Purpose: production-grade compression product for batch/archival workloads.
 ## Product Scope
 
 This repo is COMPRESSION ONLY. No chat, no generation, no QA, no probes.
-Commands: compress, decompress, hybrid-eval, baseline, cm-eval.
+Commands: compress, decompress, hybrid-eval, baseline, cm-eval, api.
 
 ## Architecture
 

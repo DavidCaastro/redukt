@@ -10,12 +10,12 @@ use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
-const MAGIC: &[u8; 8] = b"AZTH\x02\x00\x00\x00";
-const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
+pub const MAGIC: &[u8; 8] = b"AZTH\x02\x00\x00\x00";
+pub const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
 
 /// Build CDF from logits for current prediction step.
 /// Uses f64 softmax to preserve tail precision for 65K vocab.
-fn cdf_from_logits(logits: &[f32]) -> Cdf {
+pub fn cdf_from_logits(logits: &[f32]) -> Cdf {
     let n = logits.len();
     let max_l = logits.iter().copied().fold(f64::NEG_INFINITY, |a, b| a.max(b as f64));
     let mut probs = Vec::with_capacity(n);

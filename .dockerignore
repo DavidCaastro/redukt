@@ -1,0 +1,11 @@
+target/
+.git/
+data/
+docs/
+scripts/
+*.azth
+*.log
+*.jsonl
+*.pdb
+.github/
+infra/

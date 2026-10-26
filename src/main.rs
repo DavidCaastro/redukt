@@ -16,6 +16,7 @@ fn main() {
         "hybrid-eval" => application::codec::cmd_hybrid_eval(&args[2..]),
         "baseline" => application::codec::cmd_baseline(&args[2..]),
         "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
+        "api" => application::api::cmd_api(&args[2..]),
         "--help" | "-h" | "help" => print_usage(),
         other => {
             eprintln!("error: unknown command '{}'", other);
@@ -35,6 +36,7 @@ fn print_usage() {
     eprintln!("  hybrid-eval Evaluate BPB with full ensemble (no output file)");
     eprintln!("  baseline    Evaluate BPB with RWKV-only (no ensemble)");
     eprintln!("  cm-eval     Spectral analysis of weight matrices");
+    eprintln!("  api         Start HTTP API server");
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  redukt compress    --input <FILE> --output <FILE> [options]");
@@ -42,6 +44,7 @@ fn print_usage() {
     eprintln!("  redukt hybrid-eval --input <FILE> [options] [--log <FILE>]");
     eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
     eprintln!("  redukt cm-eval     --output <FILE> [--weights <DIR>]");
+    eprintln!("  redukt api         [--host <ADDR>] [--port <PORT>] [--weights <DIR>]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --input <FILE>       Input file path");
