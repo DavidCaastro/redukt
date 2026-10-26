@@ -1,0 +1,186 @@
+{
+  "context": {
+    "date": "2026-10-26T10:37:18.505550+00:00",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 4, GenuineIntel",
+    "python": "3.13.5",
+    "compressors": {
+      "gzip": "9 (stdlib)",
+      "brotli": "11 (pip 1.2.1)",
+      "zstd": "19 (pip 0.25.0)"
+    },
+    "git_commit": "7405cb9",
+    "redukt_bin": "target\\release\\redukt.exe"
+  },
+  "window_bytes": 10240,
+  "results": [
+    {
+      "file": "enwik8",
+      "domain": "text/encyclopedia",
+      "bytes": 10240,
+      "sha256": "25ce06fbf6e86fb6fa38080c1b19e63edb7c0599c829ca5954e57bca1dc2d836",
+      "gzip9": {
+        "size": 3814,
+        "bpb": 2.9796875,
+        "time_s": 0.0002724000078160316
+      },
+      "brotli11": {
+        "size": 3024,
+        "bpb": 2.3625,
+        "time_s": 0.014951999997720122
+      },
+      "zstd19": {
+        "size": 3760,
+        "bpb": 2.9375,
+        "time_s": 0.0023745999787934124
+      },
+      "redukt": {
+        "size": 1712,
+        "bpb": 1.3375,
+        "time_s": 96.39630480000051,
+        "roundtrip": true,
+        "restored_sha256": "25ce06fbf6e86fb6fa38080c1b19e63edb7c0599c829ca5954e57bca1dc2d836"
+      }
+    },
+    {
+      "file": "dickens",
+      "domain": "text/literature",
+      "bytes": 10240,
+      "sha256": "9218d73b24934bce91a8a357b1a977e599ba4f4588ebe42f493b3f09be45c692",
+      "gzip9": {
+        "size": 4622,
+        "bpb": 3.6109375,
+        "time_s": 0.0004518000059761107
+      },
+      "brotli11": {
+        "size": 3551,
+        "bpb": 2.77421875,
+        "time_s": 0.010258299997076392
+      },
+      "zstd19": {
+        "size": 4532,
+        "bpb": 3.540625,
+        "time_s": 0.0018195000011473894
+      },
+      "redukt": {
+        "size": 2328,
+        "bpb": 1.81875,
+        "time_s": 70.45068000000902,
+        "roundtrip": true,
+        "restored_sha256": "9218d73b24934bce91a8a357b1a977e599ba4f4588ebe42f493b3f09be45c692"
+      }
+    },
+    {
+      "file": "samba",
+      "domain": "code/c-source",
+      "bytes": 10240,
+      "sha256": "7dbdbc08eb9d31e14a31ac9278467483f97f1a09beba508fae364aaa6820e908",
+      "gzip9": {
+        "size": 3687,
+        "bpb": 2.88046875,
+        "time_s": 0.0003436999977566302
+      },
+      "brotli11": {
+        "size": 2838,
+        "bpb": 2.2171875,
+        "time_s": 0.014837700000498444
+      },
+      "zstd19": {
+        "size": 3572,
+        "bpb": 2.790625,
+        "time_s": 0.002832099999068305
+      },
+      "redukt": {
+        "size": 1678,
+        "bpb": 1.3109375,
+        "time_s": 89.73399159999099,
+        "roundtrip": true,
+        "restored_sha256": "7dbdbc08eb9d31e14a31ac9278467483f97f1a09beba508fae364aaa6820e908"
+      }
+    },
+    {
+      "file": "xml",
+      "domain": "markup/xml",
+      "bytes": 10240,
+      "sha256": "d006fafdff6ffde120216826cd70c76545be3e48b6739217e2070f5972146e08",
+      "gzip9": {
+        "size": 1367,
+        "bpb": 1.06796875,
+        "time_s": 0.0001821999903768301
+      },
+      "brotli11": {
+        "size": 1140,
+        "bpb": 0.890625,
+        "time_s": 0.010480700002517551
+      },
+      "zstd19": {
+        "size": 1308,
+        "bpb": 1.021875,
+        "time_s": 0.005039499985286966
+      },
+      "redukt": {
+        "size": 886,
+        "bpb": 0.6921875,
+        "time_s": 143.85378140001558,
+        "roundtrip": true,
+        "restored_sha256": "d006fafdff6ffde120216826cd70c76545be3e48b6739217e2070f5972146e08"
+      }
+    },
+    {
+      "file": "apache-access.log",
+      "domain": "logs/apache",
+      "bytes": 10240,
+      "sha256": "8040314619d079d7c175ebf5050a81fa59492f8615914ee115013f3b539fd296",
+      "gzip9": {
+        "size": 698,
+        "bpb": 0.5453125,
+        "time_s": 0.00021170001127757132
+      },
+      "brotli11": {
+        "size": 595,
+        "bpb": 0.46484375,
+        "time_s": 0.017865700006950647
+      },
+      "zstd19": {
+        "size": 627,
+        "bpb": 0.48984375,
+        "time_s": 0.005582400015555322
+      },
+      "redukt": {
+        "size": 388,
+        "bpb": 0.303125,
+        "time_s": 100.34271570001147,
+        "roundtrip": true,
+        "restored_sha256": "8040314619d079d7c175ebf5050a81fa59492f8615914ee115013f3b539fd296"
+      }
+    },
+    {
+      "file": "ubl-invoice-batch.xml",
+      "domain": "e-invoicing/ubl",
+      "bytes": 10240,
+      "sha256": "a1b6a4e70a9a5a90e0fd5d8c4189e72e38fe5e3af5450c0640367b07dc34ce23",
+      "gzip9": {
+        "size": 1379,
+        "bpb": 1.07734375,
+        "time_s": 0.00013309999485500157
+      },
+      "brotli11": {
+        "size": 1116,
+        "bpb": 0.871875,
+        "time_s": 0.011075199989136308
+      },
+      "zstd19": {
+        "size": 1296,
+        "bpb": 1.0125,
+        "time_s": 0.004583100002491847
+      },
+      "redukt": {
+        "size": 698,
+        "bpb": 0.5453125,
+        "time_s": 94.02469990000827,
+        "roundtrip": true,
+        "restored_sha256": "a1b6a4e70a9a5a90e0fd5d8c4189e72e38fe5e3af5450c0640367b07dc34ce23"
+      }
+    }
+  ]
+}

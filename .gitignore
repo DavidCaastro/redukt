@@ -8,6 +8,7 @@ weights/**/*.bin
 *.jsonl
 data/benchmark/enwik8
 data/benchmark/silesia/
+data/benchmark/industry/
 data/benchmark/*.zip
 .env
 *.pdb
