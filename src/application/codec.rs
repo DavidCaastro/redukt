@@ -6,12 +6,61 @@ use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
+use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
-pub const MAGIC: &[u8; 8] = b"AZTH\x02\x00\x00\x00";
+pub const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
 pub const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
+pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3 only)
+
+/// Validate AZTH magic bytes. Returns format version (2 or 3) or exits.
+pub fn validate_magic(data: &[u8]) -> u8 {
+    if data.len() < HEADER_SIZE {
+        eprintln!("error: invalid AZTH file (too short: {} bytes)", data.len());
+        std::process::exit(1);
+    }
+    if &data[..4] != b"AZTH" {
+        eprintln!("error: invalid AZTH file (bad magic: {:?})", &data[..4.min(data.len())]);
+        std::process::exit(1);
+    }
+    let version = data[4];
+    if version != 2 && version != 3 {
+        eprintln!("error: unsupported AZTH version {} (expected 2 or 3)", version);
+        std::process::exit(1);
+    }
+    version
+}
+
+/// Parse header hyperparameters with NaN/Inf validation.
+pub fn parse_hyperparams(data: &[u8]) -> (f32, f32, f32) {
+    let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
+    let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+    let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    for (name, val) in [("bias_lr", bias_lr), ("ngram_scale", ngram_scale), ("mix_eta", mix_eta)] {
+        if !val.is_finite() {
+            eprintln!("error: invalid hyperparameter {}={} (NaN or Inf)", name, val);
+            std::process::exit(1);
+        }
+    }
+    (bias_lr, ngram_scale, mix_eta)
+}
+
+/// Extract stream and CRC from AZTH payload based on version.
+/// Returns (stream_slice, optional_stored_crc).
+pub fn extract_stream_and_crc(data: &[u8], version: u8) -> (&[u8], Option<u32>) {
+    let payload = &data[HEADER_SIZE..];
+    if version >= 3 && payload.len() >= CRC_SIZE {
+        let split = payload.len() - CRC_SIZE;
+        let stream = &payload[..split];
+        let crc_bytes = &payload[split..];
+        let stored_crc = u32::from_le_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+        (stream, Some(stored_crc))
+    } else {
+        (payload, None)
+    }
+}
 
 /// Build CDF from logits for current prediction step.
 /// Uses f64 softmax to preserve tail precision for 65K vocab.
@@ -130,14 +179,17 @@ pub fn cmd_compress(args: &[String]) {
     let elapsed = t_start.elapsed().as_secs_f64();
     eprintln!();
 
-    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len());
-    output.extend_from_slice(MAGIC);
+    let input_crc = crc32::crc32(input_slice);
+
+    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
+    output.extend_from_slice(MAGIC_V3);
     output.extend_from_slice(&(total_bytes as u32).to_le_bytes());
     output.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
     output.extend_from_slice(&bias_lr.to_le_bytes());
     output.extend_from_slice(&ngram_scale.to_le_bytes());
     output.extend_from_slice(&mix_eta.to_le_bytes());
     output.extend_from_slice(&compressed);
+    output.extend_from_slice(&input_crc.to_le_bytes());
 
     crate::domain::error::write_file(&output_path, &output)
         .unwrap_or_else(|e| panic!("{}", e));
@@ -153,6 +205,8 @@ pub fn cmd_compress(args: &[String]) {
     eprintln!("  compressed BPB: {:.4}", compressed_bpb);
     eprintln!("  cross-ent BPB:  {:.4}", ce_bpb);
     eprintln!("  coder overhead: {:.4} BPB", compressed_bpb - ce_bpb);
+    eprintln!("  CRC-32:         {:08X}", input_crc);
+    eprintln!("  format:         AZTH v3");
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", elapsed, tokens.len() as f64 / elapsed);
     eprintln!("  output:         {}", output_path);
 }
@@ -181,23 +235,23 @@ pub fn cmd_decompress(args: &[String]) {
     let data = crate::domain::error::read_file(&input_path)
         .unwrap_or_else(|e| panic!("{}", e));
 
-    if data.len() < HEADER_SIZE || &data[..8] != MAGIC {
-        eprintln!("error: invalid AZTH file (bad magic or too short)");
-        eprintln!("  expected magic: AZTH\\x02, got: {:?}", &data[..8.min(data.len())]);
-        std::process::exit(1);
-    }
+    let version = validate_magic(&data);
 
     let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
     let token_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
-    let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-    let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
-    let stream = &data[HEADER_SIZE..];
+    let (bias_lr, ngram_scale, mix_eta) = parse_hyperparams(&data);
+    let (stream, stored_crc) = extract_stream_and_crc(&data, version);
 
+    eprintln!("[decompress] format: AZTH v{}", version);
     eprintln!("[decompress] compressed: {} bytes, original: {} bytes, {} tokens",
               data.len(), total_bytes, token_count);
     eprintln!("[decompress] hyperparams: lr={}, ngram_scale={}, mix_eta={}",
               bias_lr, ngram_scale, mix_eta);
+    if stored_crc.is_some() {
+        eprintln!("[decompress] CRC-32: {:08X} (will verify)", stored_crc.unwrap());
+    } else {
+        eprintln!("[decompress] CRC-32: absent (v2 format, no integrity check)");
+    }
 
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
     let v = model.config.vocab_size;
@@ -256,7 +310,18 @@ pub fn cmd_decompress(args: &[String]) {
     }
 
     if output_bytes.len() != total_bytes {
-        eprintln!("WARNING: decoded {} bytes, expected {}", output_bytes.len(), total_bytes);
+        eprintln!("error: size mismatch — decoded {} bytes, expected {}", output_bytes.len(), total_bytes);
+        std::process::exit(1);
+    }
+
+    if let Some(expected_crc) = stored_crc {
+        let actual_crc = crc32::crc32(&output_bytes);
+        if actual_crc != expected_crc {
+            eprintln!("error: CRC-32 mismatch — expected {:08X}, got {:08X}", expected_crc, actual_crc);
+            eprintln!("  the compressed file or model weights may be corrupted");
+            std::process::exit(1);
+        }
+        eprintln!("[decompress] CRC-32: {:08X} (verified OK)", actual_crc);
     }
 
     crate::domain::error::write_file(&output_path, &output_bytes)

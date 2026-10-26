@@ -17,8 +17,10 @@ use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::tensor::{softmax, Tensor};
 use crate::domain::error::next_arg;
+use crate::domain::crc32;
 use crate::application::model_loader;
-use crate::application::codec::{MAGIC, HEADER_SIZE, cdf_from_logits};
+use crate::application::codec::{MAGIC_V3, HEADER_SIZE, CRC_SIZE, cdf_from_logits};
+use crate::application::codec::extract_stream_and_crc;
 use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
 
@@ -227,14 +229,17 @@ fn compress_bytes(
     let compressed = enc.finish();
     let total_bytes = input.len();
 
-    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len());
-    output.extend_from_slice(MAGIC);
+    let input_crc = crc32::crc32(input);
+
+    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
+    output.extend_from_slice(MAGIC_V3);
     output.extend_from_slice(&(total_bytes as u32).to_le_bytes());
     output.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
     output.extend_from_slice(&bias_lr.to_le_bytes());
     output.extend_from_slice(&ngram_scale.to_le_bytes());
     output.extend_from_slice(&mix_eta.to_le_bytes());
     output.extend_from_slice(&compressed);
+    output.extend_from_slice(&input_crc.to_le_bytes());
     output
 }
 
@@ -243,8 +248,12 @@ fn decompress_bytes(
     model: &Rwkv7Model,
     tokenizer: &WorldTokenizer,
 ) -> Result<Vec<u8>, String> {
-    if data.len() < HEADER_SIZE || &data[..8] != MAGIC {
+    if data.len() < HEADER_SIZE || &data[..4] != b"AZTH" {
         return Err("invalid AZTH file (bad magic or too short)".into());
+    }
+    let version = data[4];
+    if version != 2 && version != 3 {
+        return Err(format!("unsupported AZTH version {}", version));
     }
 
     let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
@@ -252,7 +261,12 @@ fn decompress_bytes(
     let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
-    let stream = &data[HEADER_SIZE..];
+    for (name, val) in [("bias_lr", bias_lr), ("ngram_scale", ngram_scale), ("mix_eta", mix_eta)] {
+        if !val.is_finite() {
+            return Err(format!("invalid hyperparameter {}={}", name, val));
+        }
+    }
+    let (stream, stored_crc) = extract_stream_and_crc(data, version);
 
     let v = model.config.vocab_size;
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
@@ -291,6 +305,14 @@ fn decompress_bytes(
 
     if output.len() != total_bytes {
         return Err(format!("size mismatch: decoded {} bytes, expected {}", output.len(), total_bytes));
+    }
+    if let Some(expected_crc) = stored_crc {
+        let actual_crc = crc32::crc32(&output);
+        if actual_crc != expected_crc {
+            return Err(format!(
+                "CRC-32 mismatch: expected {:08X}, got {:08X}", expected_crc, actual_crc
+            ));
+        }
     }
     Ok(output)
 }

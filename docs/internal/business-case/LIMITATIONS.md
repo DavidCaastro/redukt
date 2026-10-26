@@ -79,6 +79,17 @@ standard compressors (zstd), route compressible data to Redukt.
 - Weights must be identical for compress/decompress (version management required)
 - Max tested file size: 100 MB (enwik8). Larger files untested.
 
+## Data Integrity Gap
+
+AZTH v2 has **no built-in integrity check**. A corrupted file (bit flip, truncated
+transfer) produces silent garbage on decompression. Planned fixes (see docs/ROADMAP.md):
+
+- **R-001**: CRC-32 appended to AZTH v3 (+4 bytes per file)
+- **R-002**: Enforce size mismatch as hard error (currently warning-only)
+- **R-003**: Validate header hyperparameters (reject NaN/Inf)
+- **R-004**: Arithmetic decoder bounds checking
+- **R-007**: Validate u32 overflow on files >4GB
+
 ## What We Don't Know Yet
 
 - Performance on FASTQ/BAM (genomics) — not benchmarked

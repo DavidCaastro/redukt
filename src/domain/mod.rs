@@ -4,6 +4,7 @@ pub mod ngram;
 pub mod bias_head;
 pub mod mixer;
 pub mod coder;
+pub mod crc32;
 pub mod quant;
 pub mod ram_monitor;
 pub mod spectral;

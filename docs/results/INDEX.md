@@ -1,5 +1,7 @@
 # Results Index
 
+> Production readiness roadmap: [`docs/ROADMAP.md`](../ROADMAP.md)
+
 ## Primary Metric: Composite BPB (mean, sigma, worst)
 
 BPB is a vector, not a scalar. See for justification.
