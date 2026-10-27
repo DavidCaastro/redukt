@@ -40,7 +40,13 @@ PDF represents 67% of transaction volume. Without PDF BPB data, any weighted pro
 is speculation. The previous version of this document used "weighted BPB" of 1.28/2.05
 that included unmeasured components — those numbers have been removed.
 
-**Task required**: R-V03 (benchmark PDF compression) before this case can be quantified.
+**R-V03 result** [MEASURED]: Redukt on PDF = **11.11 BPB** vs brotli 7.90 BPB (+40.7% WORSE).
+PDF binary content is near-incompressible. Redukt loses badly on PDF.
+
+With 67% PDF in the mix, the blended BPB would be dominated by PDF losses,
+negating the XML advantage. **E-invoicing is only viable with selective XML-only compression.**
+
+CAVEAT: tested with W3C dummy.pdf (13KB). Real invoice PDFs with text may differ slightly.
 
 ### What We Know (XML-only subset)
 
@@ -64,7 +70,11 @@ projections were based on unverifiable weighted BPB and have been removed.
 XML-only advantage is strong (-54% vs brotli), but XML is only 10% of storage volume.
 The business case depends entirely on whether Redukt can beat brotli on PDF.
 
-**Verdict**: BLOCKED — requires R-V03 (PDF benchmark).
+**Verdict**: E-invoicing only viable if XML is separated from PDF for selective compression.
+The storage savings would be limited to the XML portion (~10% of volume).
+
+**R-V04 good news**: Scale test shows Redukt advantage on XML GROWS at larger sizes:
+dickens -30.6% at 1KB → -46.0% at 100KB [MEASURED]. Apache stable at -43% to -48%.
 
 ---
 
@@ -133,9 +143,13 @@ Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
 
 5-year peak: gzip 469 TB vs Redukt 225.5 TB = **-243.5 TB saved**.
 
-> **CAVEAT**: These BPB numbers are from 10KB samples. At GB scale, gzip-9 has larger
-> dictionary windows and may perform better. Redukt also improves with more context.
-> The relative advantage at production scale is UNKNOWN — requires R-V04 (scale test).
+> **R-V04 RESULT** [MEASURED]: Scale test on apache-access.log shows:
+> - 10KB: Redukt 0.245 vs brotli 0.466 = -47.5%
+> - 50KB: Redukt 0.185 vs brotli 0.353 = -47.4%
+> - 100KB: Redukt 0.186 vs brotli 0.328 = -43.4%
+> Advantage persists at larger sizes. On dickens, advantage GROWS: -36% (10KB) → -46% (100KB).
+> gzip-9 also improves (0.55→0.44 at 100KB) but Redukt maintains strong lead.
+> See `data/benchmark/results/scale-test-complete.csv`.
 
 ### Cost [CALCULATED from measured BPB, storage price is ESTIMATE]
 

@@ -1,0 +1,2 @@
+file,bytes,redukt_bpb,gzip9_bytes,gzip9_bpb,brotli11_bytes,brotli11_bpb,redukt_vs_brotli
+sample-invoice.pdf,10000,11.1104,9922,7.9376,9871,7.8968,+40.7%

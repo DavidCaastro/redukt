@@ -1,0 +1,7 @@
+file,domain,bytes,q8_bpb,q4_bpb,q4_vs_q8_pct,q4_tok_per_sec,q8_tok_per_sec
+apache-access.log,server-logs,10000,0.244821,0.269781,+10.19,2.7,26.6
+facturae-batch.xml,e-invoicing-xml,10000,0.406104,0.490446,+20.77,2.7,26.4
+dickens,text-english,10000,1.779165,2.005114,+12.70,2.7,33.1
+mozilla,executable,10000,1.964474,2.064685,+5.10,4.1,46.3
+x-ray,medical-image,10000,6.524045,6.878782,+5.44,6.1,26.6
+xml,markup,10000,0.640157,0.804573,+25.69,6.1,26.7

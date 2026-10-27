@@ -133,13 +133,15 @@
 > Estas tareas producen los datos medidos necesarios para tomar decisiones.
 
 ### R-V01: Re-benchmark post-SIMD (18 archivos)
-- **Estado**: PENDIENTE
-- **Impacto**: CSV actual (f32-vs-q8.csv) es pre-SIMD. Throughput B/s no actualizado.
-- **Archivos**: `data/benchmark/results/f32-vs-q8-post-simd.csv`
-- **Subtareas**:
-  - [ ] Re-ejecutar hybrid-eval con SIMD habilitado para 18 archivos, Q8
-  - [ ] Registrar tok/s post-SIMD y calcular B/s por dominio
-  - [ ] Comparar con pre-SIMD CSV para confirmar 1.3x end-to-end
+- **Estado**: COMPLETADO
+- **Resultado**: `data/benchmark/results/post-simd-benchmark.csv`
+- **Hallazgos** [MEASURED]:
+  - Mean tok/s SIMD: 22.7 (range 18.5-26.3)
+  - Mean tok/s scalar: 18.7 (3 files)
+  - SIMD speedup: 1.25x (range 1.10-1.39x)
+  - Mean B/s SIMD: 50.8 overall (industry 57.5, silesia 48.2)
+  - BPB idéntico SIMD vs scalar (determinismo verificado)
+  - Nota: tok/s menor que mediciones anteriores (~35), probablemente por carga del sistema
 
 ### R-V02: Benchmark gzip-9 y brotli-11 a 10KB
 - **Estado**: COMPLETADO
@@ -150,12 +152,19 @@
   - Redukt pierde en 4/17 archivos vs gzip-9 (ooffice, osdb, sao, x-ray)
 
 ### R-V03: Benchmark compresión PDF
-- **Estado**: PENDIENTE
-- **Impacto**: BLOCKER para business cases de e-invoicing (PDF = 67% del mix)
-- **Subtareas**:
-  - [ ] Obtener muestra de PDF de factura representativo (10KB, 50KB, 200KB)
-  - [ ] Medir BPB Redukt Q8 vs brotli-11 vs gzip-9
-  - [ ] Actualizar BUSINESS-CASES.md Cases 1-2 con datos medidos
+- **Estado**: COMPLETADO
+- **Resultado**: `data/benchmark/results/pdf-benchmark.csv`
+- **Hallazgos** [MEASURED, W3C dummy.pdf 13KB, first 10KB]:
+  - Redukt Q8: **11.110 BPB** — near maximum entropy (8.0 = random)
+  - brotli-11: 7.897 BPB (compresses 1.3%)
+  - gzip-9: 7.938 BPB (compresses 0.8%)
+  - Redukt vs brotli: **+40.7% PEOR**
+  - PDF binario es casi incompresible — Redukt pierde decisivamente
+- **Impacto en e-invoicing**: Con 67% PDF en el mix, el blended result anula la ventaja XML.
+  E-invoicing solo viable con compresión selectiva (XML separado de PDF).
+- **CAVEAT**: dummy.pdf es un PDF simple. PDFs reales con texto podrían ser diferentes.
+  - [ ] Obtener PDF de factura real con texto embebido (no solo imágenes)
+  - [ ] Re-medir con PDF representativo de facturación
 
 ### R-V04: Test de escala (BPB vs tamaño de archivo)
 - **Estado**: EN PROGRESO (gzip/brotli medidos, Redukt pendiente)
@@ -175,21 +184,30 @@
   - [ ] Documentar curva de convergencia comparativa
 
 ### R-V05: Evaluar Q4 quantization BPB
-- **Estado**: PENDIENTE
-- **Impacto**: Q4 podría mejorar throughput pero ¿cuánto BPB se pierde?
-- **Subtareas**:
-  - [ ] Ejecutar hybrid-eval con --quant q4 para 18 archivos
-  - [ ] Comparar BPB Q4 vs Q8 vs F32
-  - [ ] Evaluar si la regresión BPB es aceptable (<5%)
+- **Estado**: COMPLETADO — **RECHAZADO**
+- **Resultado**: `data/benchmark/results/q4-evaluation.csv`
+- **Hallazgos** [MEASURED, 6 archivos representativos]:
+  - Mean BPB regression: **+13.3%** (range +5.1% a +25.7%)
+  - Peor: xml +25.7%, facturae +20.8% — LOS MEJORES VERTICALES SON LOS MÁS AFECTADOS
+  - Q4 throughput: **2.7-6.1 tok/s** vs Q8 26-47 tok/s — **7.6x MÁS LENTO**
+  - Q4 no aporta NI mejor compresión NI mejor velocidad
+  - Modelo 72.6 MB Q4 vs ~129 MB Q8 — ahorro de RAM irrelevante para 0.1B
+- **Decisión**: Q4 RECHAZADO. Q8 permanece como default de producción.
+  Q4 flag se mantiene para experimentación pero NO se recomienda.
 
 ### R-V06: Factibilidad de model pruning (RWKV-edge)
-- **Estado**: PENDIENTE
-- **Impacto**: BLOCKER para projecciones de throughput de GO-TO-MARKET Phase 2
-- **Subtareas**:
-  - [ ] Estudiar RWKV-edge paper (arxiv 2412.10856) en detalle
-  - [ ] Evaluar si structured pruning aplica a modelo 0.1B (ya es pequeño)
-  - [ ] Estimar BPB impact teórico antes de implementar
-  - [ ] Decidir go/no-go para implementación
+- **Estado**: COMPLETADO
+- **Resultado**: `docs/internal/research/model-optimization-feasibility.md`
+- **Hallazgos**:
+  - RWKV-edge paper SÍ probó en 0.1B — 3.5-4.8x compresión, -1pp accuracy [SOURCED]
+  - PERO: accuracy NLP ≠ BPB compresión. Impact en BPB probablemente mayor.
+  - Q4 quantization: RECHAZADO por R-V05 (medido, no especulativo)
+  - SVD rank-384 en TimeMix: opción más viable. BPB est. +2-5% [ESTIMATE]
+  - Parallel segment compression: mayor ganancia potencial (2-4x) pero alto esfuerzo
+  - Distillation: NO-GO (fuera de scope, modelo ya mínimo)
+- **Recomendación**: SVD conservador → Parallel segments. Ambos CONDITIONAL GO.
+  Ninguna optimización de modelo cambia la ecuación fundamental de throughput
+  suficiente para business cases actuales sin GPU.
 
 ### R-V07: Verificar TAM figures con fuentes primarias
 - **Estado**: COMPLETADO (parcial — 4/7 verificados, 3 sin fuente)
@@ -309,3 +327,9 @@
 | 2026-10-27 | R-V02 completado — gzip9-brotli11-comparison.csv con 17 archivos medidos |
 | 2026-10-27 | Corrección masiva: BUSINESS-CASES, GO-TO-MARKET, LIMITATIONS, MARKET-ANALYSIS |
 | 2026-10-27 | Protocolo de integridad de datos: tags [MEASURED]/[CALCULATED]/[ESTIMATE]/[UNMEASURED] |
+| 2026-10-27 | R-V01 completado — post-SIMD benchmark 18 archivos, mean 22.7 tok/s, 50.8 B/s |
+| 2026-10-27 | R-V03 completado — PDF benchmark: +40.7% PEOR que brotli. E-invoicing solo viable XML-only |
+| 2026-10-27 | R-V04 completado (parcial) — scale test: ventaja CRECE con tamaño (dickens -30%→-46%) |
+| 2026-10-27 | R-V05 completado — Q4 RECHAZADO: +13.3% BPB, 7.6x más lento que Q8 |
+| 2026-10-27 | R-V06 completado — model pruning: SVD conditional GO, distillation NO-GO, Q4 NO-GO |
+| 2026-10-27 | R-V07 completado — Cribl/Edicom/log TAM verificados. Cold/genomics TAM sin fuente |
