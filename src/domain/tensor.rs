@@ -657,9 +657,10 @@ unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) 
 
 /// f32 mat-vec into pre-allocated output: out = mat @ vec.
 /// Dispatches to AVX2+FMA if available, otherwise scalar 4-row ILP.
+/// Set REDUKT_NO_SIMD=1 to force scalar path (benchmarking).
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
     #[cfg(target_arch = "x86_64")]
-    {
+    if !no_simd_override() {
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             unsafe { mat_vec_mul_avx2_fma_into(out, mat, vec) };
             return;
@@ -708,14 +709,20 @@ pub fn quantize_vec_i8_into(v: &[f32], q: &mut [i8]) -> f32 {
     scale
 }
 
+/// Returns true if REDUKT_NO_SIMD env var is set (forces scalar fallback).
+fn no_simd_override() -> bool {
+    std::env::var("REDUKT_NO_SIMD").map(|v| v == "1").unwrap_or(false)
+}
+
 /// Q8 mat-vec into pre-allocated output + reusable v_q buffer.
 /// Dispatches: AVX-VNNI > AVX2 > scalar (4-row ILP).
+/// Set REDUKT_NO_SIMD=1 to force scalar path (benchmarking).
 pub fn q8_mat_vec_mul_into(out: &mut [f32], mat: &Q8Tensor, vec: &[f32], v_q: &mut [i8]) {
     let cols = mat.cols;
     let v_scale = quantize_vec_i8_into(&vec[..cols], &mut v_q[..cols]);
 
     #[cfg(target_arch = "x86_64")]
-    {
+    if !no_simd_override() {
         if is_x86_feature_detected!("avxvnni") && cols % 32 == 0 {
             unsafe { q8_mat_vec_mul_vnni_into(out, mat, &v_q[..cols], v_scale) };
             return;
@@ -1000,5 +1007,145 @@ mod tests {
             assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-2,
                 "row {}: scalar={} avx2={}", i, out_scalar[i], out_avx2[i]);
         }
+    }
+
+    // ---- Throughput benchmarks (run with --ignored --nocapture) ----
+
+    fn bench_median_ns<F: FnMut()>(mut f: F, iters: usize) -> u64 {
+        let mut times = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t0 = std::time::Instant::now();
+            f();
+            times.push(t0.elapsed().as_nanos() as u64);
+        }
+        times.sort();
+        times[iters / 2]
+    }
+
+    #[test]
+    #[ignore] // benchmark — run with: cargo test bench_simd -- --ignored --nocapture
+    fn bench_simd_q8_768x768() {
+        let mat_f32 = make_test_matrix(768, 768);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(768);
+        let mut out = vec![0.0f32; 768];
+        let mut v_q = vec![0i8; 768];
+
+        let iters = 200;
+
+        // Scalar baseline
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+        let ns_scalar = bench_median_ns(|| {
+            q8_mat_vec_mul_scalar_into(&mut out, &mat_q8, &v_q, v_scale);
+        }, iters);
+
+        // Dispatch (VNNI > AVX2 > scalar)
+        let ns_dispatch = bench_median_ns(|| {
+            q8_mat_vec_mul_into(&mut out, &mat_q8, &v, &mut v_q);
+        }, iters);
+
+        // AVX2 directly (if available)
+        #[cfg(target_arch = "x86_64")]
+        let ns_avx2 = if is_x86_feature_detected!("avx2") {
+            let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+            bench_median_ns(|| {
+                unsafe { q8_mat_vec_mul_avx2_into(&mut out, &mat_q8, &v_q, v_scale) };
+            }, iters)
+        } else { 0 };
+
+        #[cfg(target_arch = "x86_64")]
+        let ns_vnni = if is_x86_feature_detected!("avxvnni") && 768 % 32 == 0 {
+            let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+            bench_median_ns(|| {
+                unsafe { q8_mat_vec_mul_vnni_into(&mut out, &mat_q8, &v_q, v_scale) };
+            }, iters)
+        } else { 0 };
+
+        eprintln!("\n=== Q8 matmul benchmark: 768x768 ({} iters, median) ===", iters);
+        eprintln!("  scalar:   {:>8} ns  ({:.1} μs)", ns_scalar, ns_scalar as f64 / 1000.0);
+        eprintln!("  dispatch: {:>8} ns  ({:.1} μs)", ns_dispatch, ns_dispatch as f64 / 1000.0);
+        #[cfg(target_arch = "x86_64")]
+        {
+            if ns_avx2 > 0 {
+                eprintln!("  AVX2:     {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
+                    ns_avx2, ns_avx2 as f64 / 1000.0,
+                    ns_scalar as f64 / ns_avx2.max(1) as f64);
+            }
+            if ns_vnni > 0 {
+                eprintln!("  VNNI:     {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
+                    ns_vnni, ns_vnni as f64 / 1000.0,
+                    ns_scalar as f64 / ns_vnni.max(1) as f64);
+            }
+        }
+        eprintln!("  speedup:  {:.2}x (dispatch vs scalar)",
+            ns_scalar as f64 / ns_dispatch.max(1) as f64);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_simd_f32_768x768() {
+        let mat = make_test_matrix(768, 768);
+        let v = make_test_vec(768);
+        let mut out = vec![0.0f32; 768];
+
+        let iters = 200;
+
+        // Scalar baseline
+        let ns_scalar = bench_median_ns(|| {
+            mat_vec_mul_scalar_into(&mut out, &mat, &v);
+        }, iters);
+
+        // Dispatch (AVX2+FMA > scalar)
+        let ns_dispatch = bench_median_ns(|| {
+            mat_vec_mul_into(&mut out, &mat, &v);
+        }, iters);
+
+        // AVX2+FMA directly
+        #[cfg(target_arch = "x86_64")]
+        let ns_avx2 = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            bench_median_ns(|| {
+                unsafe { mat_vec_mul_avx2_fma_into(&mut out, &mat, &v) };
+            }, iters)
+        } else { 0 };
+
+        eprintln!("\n=== F32 matmul benchmark: 768x768 ({} iters, median) ===", iters);
+        eprintln!("  scalar:   {:>8} ns  ({:.1} μs)", ns_scalar, ns_scalar as f64 / 1000.0);
+        eprintln!("  dispatch: {:>8} ns  ({:.1} μs)", ns_dispatch, ns_dispatch as f64 / 1000.0);
+        #[cfg(target_arch = "x86_64")]
+        if ns_avx2 > 0 {
+            eprintln!("  AVX2+FMA: {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
+                ns_avx2, ns_avx2 as f64 / 1000.0,
+                ns_scalar as f64 / ns_avx2.max(1) as f64);
+        }
+        eprintln!("  speedup:  {:.2}x (dispatch vs scalar)",
+            ns_scalar as f64 / ns_dispatch.max(1) as f64);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_simd_q8_65536x768() {
+        // Head matrix (vocab_size × dim) — largest matmul in RWKV-7
+        let mat_f32 = make_test_matrix(65536, 768);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(768);
+        let mut out = vec![0.0f32; 65536];
+        let mut v_q = vec![0i8; 768];
+
+        let iters = 20;
+
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+        let ns_scalar = bench_median_ns(|| {
+            q8_mat_vec_mul_scalar_into(&mut out, &mat_q8, &v_q, v_scale);
+        }, iters);
+
+        let ns_dispatch = bench_median_ns(|| {
+            q8_mat_vec_mul_into(&mut out, &mat_q8, &v, &mut v_q);
+        }, iters);
+
+        eprintln!("\n=== Q8 matmul benchmark: 65536x768 (head) ({} iters, median) ===", iters);
+        eprintln!("  scalar:   {:>10} ns  ({:.1} ms)", ns_scalar, ns_scalar as f64 / 1e6);
+        eprintln!("  dispatch: {:>10} ns  ({:.1} ms)", ns_dispatch, ns_dispatch as f64 / 1e6);
+        eprintln!("  speedup:  {:.2}x (dispatch vs scalar)",
+            ns_scalar as f64 / ns_dispatch.max(1) as f64);
     }
 }

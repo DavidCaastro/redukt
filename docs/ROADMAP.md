@@ -154,11 +154,17 @@
 - **Estado**: COMPLETADO
 - **Impacto**: AVX2 kernels para Q8 y F32 matmul, 3-tier dispatch automático
 - **Archivos**: `src/domain/tensor.rs`
-- **Resultados benchmark** (i5-1235U Alder Lake):
-  - Q8 matmul: 4360μs/mul (VNNI), F32 matmul: 12600μs/mul (AVX2+FMA)
-  - Q8 throughput: 25.8 tok/s, F32: 15.1 tok/s (10KB enwik8)
-  - Dispatch: VNNI > AVX2 > scalar (runtime CPU feature detection)
-  - CPUs sin VNNI (Haswell–Coffee Lake) benefician de nuevo AVX2 Q8 kernel
+- **Resultados micro-benchmark** (i5-1235U Alder Lake, release, 768×768 Q8):
+  - Scalar: 97.2 μs → AVX2: 14.5 μs (**6.7x**) → VNNI: 6.7 μs (**14.5x**)
+  - F32: Scalar 80.5 μs → AVX2+FMA: 50.4 μs (**1.6x**)
+  - Head 65536×768: Scalar 4.2ms → VNNI 3.2ms (**1.32x**, memory-bound)
+- **Resultados end-to-end** (enwik8 5KB, Q8, 3 rondas):
+  - Scalar: 32.3 tok/s → SIMD: 37.9 tok/s (**+17% throughput**)
+  - Compress: 32.5 → 36.9 tok/s (**+14%**)
+  - BPB difference: 0.1% (FMA rounding, acceptable)
+  - Detalle: `data/benchmark/results/simd-benchmark.md`
+- **Dispatch**: VNNI > AVX2 > scalar (runtime `is_x86_feature_detected!`)
+- **REDUKT_NO_SIMD=1**: env var para forzar scalar (benchmarking)
 - **Subtareas**:
   - [x] Perfilar hotspots: mat_vec_mul dominante (>80% del tiempo via PhaseTimer)
   - [x] Implementar AVX2 kernel para Q8: sign trick + maddubs + madd_epi16, 4-row ILP
@@ -168,8 +174,10 @@
   - [x] Dispatch 2-tier en `mat_vec_mul_into`: AVX2+FMA > scalar
   - [x] Remainder handling: cols no divisible por 32 (AVX2) o 8 (FMA)
   - [x] 9 nuevos tests: scalar vs dispatch, AVX2 directo, non-aligned, single row
+  - [x] 3 benchmarks ignorados: Q8 768×768, F32 768×768, Q8 65536×768 (head)
+  - [x] End-to-end benchmark: REDUKT_NO_SIMD=1 vs default, 3 rondas cada uno
   - [x] Evaluar portable_simd: descartado (requiere nightly, raw intrinsics son estables)
-  - [x] 74 tests totales pasando (70 unit + 4 integration)
+  - [x] 74 tests totales pasando (70 unit + 4 integration), 3 ignored benchmarks
 
 ### R-012: Multi-file paralelismo
 - **Estado**: PENDIENTE
@@ -216,3 +224,4 @@
 | 2026-10-27 | R-010: --tau descartado (empeora BPB en todos los valores) |
 | 2026-10-27 | Roadmap reestructurado: P3 → optimización + go-to-market (R-010 a R-014) |
 | 2026-10-27 | R-011 completado — AVX2 Q8/F32 kernels + 3-tier dispatch + 9 tests, 74 total |
+| 2026-10-27 | R-011 benchmark — Q8 matmul 6.7x-14.5x, end-to-end +17% throughput (32→38 tok/s) |
