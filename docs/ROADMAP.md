@@ -151,14 +151,25 @@
   - [ ] `--hierarchical`: supersedido por AdaptiveMixer actual, no portar
 
 ### R-011: Throughput — SIMD vectorización
-- **Estado**: PENDIENTE
-- **Impacto**: 2-4x throughput (AVX2 en matmul Q8/F32)
-- **Archivos**: `src/domain/quant.rs` (q8_mat_vec_mul, q4_mat_vec_mul)
+- **Estado**: COMPLETADO
+- **Impacto**: AVX2 kernels para Q8 y F32 matmul, 3-tier dispatch automático
+- **Archivos**: `src/domain/tensor.rs`
+- **Resultados benchmark** (i5-1235U Alder Lake):
+  - Q8 matmul: 4360μs/mul (VNNI), F32 matmul: 12600μs/mul (AVX2+FMA)
+  - Q8 throughput: 25.8 tok/s, F32: 15.1 tok/s (10KB enwik8)
+  - Dispatch: VNNI > AVX2 > scalar (runtime CPU feature detection)
+  - CPUs sin VNNI (Haswell–Coffee Lake) benefician de nuevo AVX2 Q8 kernel
 - **Subtareas**:
-  - [ ] Perfilar hotspots: mat_vec_mul dominante (>80% del tiempo)
-  - [ ] Implementar AVX2 kernel para Q8 matmul
-  - [ ] Benchmark antes/después en enwik8 10KB
-  - [ ] Evaluar portable_simd (nightly) vs raw intrinsics
+  - [x] Perfilar hotspots: mat_vec_mul dominante (>80% del tiempo via PhaseTimer)
+  - [x] Implementar AVX2 kernel para Q8: sign trick + maddubs + madd_epi16, 4-row ILP
+  - [x] Implementar AVX2+FMA kernel para F32: 8-wide FMA, 4-row ILP
+  - [x] Horizontal sum helpers: `hsum_i32_avx2`, `hsum_f32_avx`
+  - [x] Dispatch 3-tier en `q8_mat_vec_mul_into`: VNNI > AVX2 > scalar
+  - [x] Dispatch 2-tier en `mat_vec_mul_into`: AVX2+FMA > scalar
+  - [x] Remainder handling: cols no divisible por 32 (AVX2) o 8 (FMA)
+  - [x] 9 nuevos tests: scalar vs dispatch, AVX2 directo, non-aligned, single row
+  - [x] Evaluar portable_simd: descartado (requiere nightly, raw intrinsics son estables)
+  - [x] 74 tests totales pasando (70 unit + 4 integration)
 
 ### R-012: Multi-file paralelismo
 - **Estado**: PENDIENTE
@@ -204,3 +215,4 @@
 | 2026-10-27 | R-010: --emb-surgery añadido a compress, decompress, baseline |
 | 2026-10-27 | R-010: --tau descartado (empeora BPB en todos los valores) |
 | 2026-10-27 | Roadmap reestructurado: P3 → optimización + go-to-market (R-010 a R-014) |
+| 2026-10-27 | R-011 completado — AVX2 Q8/F32 kernels + 3-tier dispatch + 9 tests, 74 total |

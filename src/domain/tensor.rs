@@ -220,6 +220,17 @@ unsafe fn hsum_i32_avx2(v: __m256i) -> i32 {
     _mm_cvtsi128_si32(_mm_add_epi32(sum2, hi32))
 }
 
+/// Horizontal sum of 8 x f32 lanes in __m256.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum_f32_avx(v: __m256) -> f32 {
+    let hi = _mm256_extractf128_ps::<1>(v);
+    let lo = _mm256_castps256_ps128(v);
+    let sum4 = _mm_add_ps(lo, hi);
+    let sum2 = _mm_add_ps(sum4, _mm_movehl_ps(sum4, sum4));
+    _mm_cvtss_f32(_mm_add_ss(sum2, _mm_shuffle_ps::<1>(sum2, sum2)))
+}
+
 /// AVX-VNNI kernel writing into pre-allocated buffers (zero allocation).
 /// v_q must already be quantized via quantize_vec_i8_into before calling.
 #[cfg(target_arch = "x86_64")]
@@ -289,6 +300,94 @@ unsafe fn q8_mat_vec_mul_vnni_into(out: &mut [f32], mat: &Q8Tensor, v_q: &[i8], 
             acc = _mm256_dpbusd_avx_epi32(acc, _mm256_xor_si256(w, bias), vb);
         }
         let d = hsum_i32_avx2(acc) - correction;
+        out[r] = d as f32 * (scales[r] * v_scale);
+    }
+}
+
+/// AVX2 kernel for Q8 mat-vec: i8*i8 → i32 using sign trick + maddubs.
+/// Available on all AVX2 CPUs (Haswell 2013+). Falls back to scalar for
+/// remainder elements when cols is not divisible by 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn q8_mat_vec_mul_avx2_into(
+    out: &mut [f32], mat: &Q8Tensor, v_q: &[i8], v_scale: f32,
+) {
+    let rows = mat.rows;
+    let cols = mat.cols;
+    let chunks = cols / 32;
+    let rem_start = chunks * 32;
+
+    let q = mat.q_data.as_ptr();
+    let v_ptr = v_q.as_ptr();
+    let scales = &mat.scales;
+    let ones = _mm256_set1_epi16(1);
+
+    let rows_4 = rows / 4 * 4;
+    for r in (0..rows_4).step_by(4) {
+        let mut acc0 = _mm256_setzero_si256();
+        let mut acc1 = _mm256_setzero_si256();
+        let mut acc2 = _mm256_setzero_si256();
+        let mut acc3 = _mm256_setzero_si256();
+
+        let b0 = r * cols;
+        let b1 = b0 + cols;
+        let b2 = b1 + cols;
+        let b3 = b2 + cols;
+
+        for ch in 0..chunks {
+            let off = ch * 32;
+            let vb = _mm256_loadu_si256(v_ptr.add(off) as *const __m256i);
+
+            macro_rules! dot {
+                ($base:expr, $acc:expr) => {{
+                    let w = _mm256_loadu_si256(q.add($base + off) as *const __m256i);
+                    let w_abs = _mm256_abs_epi8(w);
+                    let v_signed = _mm256_sign_epi8(vb, w);
+                    let p16 = _mm256_maddubs_epi16(w_abs, v_signed);
+                    $acc = _mm256_add_epi32($acc, _mm256_madd_epi16(p16, ones));
+                }};
+            }
+            dot!(b0, acc0);
+            dot!(b1, acc1);
+            dot!(b2, acc2);
+            dot!(b3, acc3);
+        }
+
+        let (mut d0, mut d1, mut d2, mut d3) = (
+            hsum_i32_avx2(acc0), hsum_i32_avx2(acc1),
+            hsum_i32_avx2(acc2), hsum_i32_avx2(acc3),
+        );
+
+        for c in rem_start..cols {
+            let vc = *v_q.get_unchecked(c) as i32;
+            d0 += *mat.q_data.get_unchecked(b0 + c) as i32 * vc;
+            d1 += *mat.q_data.get_unchecked(b1 + c) as i32 * vc;
+            d2 += *mat.q_data.get_unchecked(b2 + c) as i32 * vc;
+            d3 += *mat.q_data.get_unchecked(b3 + c) as i32 * vc;
+        }
+
+        out[r]     = d0 as f32 * (scales[r]     * v_scale);
+        out[r + 1] = d1 as f32 * (scales[r + 1] * v_scale);
+        out[r + 2] = d2 as f32 * (scales[r + 2] * v_scale);
+        out[r + 3] = d3 as f32 * (scales[r + 3] * v_scale);
+    }
+
+    for r in rows_4..rows {
+        let mut acc = _mm256_setzero_si256();
+        let base = r * cols;
+        for ch in 0..chunks {
+            let off = ch * 32;
+            let vb = _mm256_loadu_si256(v_ptr.add(off) as *const __m256i);
+            let w = _mm256_loadu_si256(q.add(base + off) as *const __m256i);
+            let w_abs = _mm256_abs_epi8(w);
+            let v_signed = _mm256_sign_epi8(vb, w);
+            let p16 = _mm256_maddubs_epi16(w_abs, v_signed);
+            acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, ones));
+        }
+        let mut d = hsum_i32_avx2(acc);
+        for c in rem_start..cols {
+            d += *mat.q_data.get_unchecked(base + c) as i32 * *v_q.get_unchecked(c) as i32;
+        }
         out[r] = d as f32 * (scales[r] * v_scale);
     }
 }
@@ -493,8 +592,84 @@ pub fn l2_normalize_per_head_inplace(x: &mut [f32], num_heads: usize, head_size:
     }
 }
 
-/// f32 mat-vec into pre-allocated output: out = mat @ vec (4-row ILP)
+/// AVX2+FMA kernel for f32 mat-vec: 8-wide FMA with 4-row ILP.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    let rows = mat.shape[0];
+    let cols = mat.shape[1];
+    let m = mat.data.as_ptr();
+    let v = vec.as_ptr();
+    let chunks = cols / 8;
+    let rem_start = chunks * 8;
+
+    let rows_4 = rows / 4 * 4;
+    for r in (0..rows_4).step_by(4) {
+        let mut a0 = _mm256_setzero_ps();
+        let mut a1 = _mm256_setzero_ps();
+        let mut a2 = _mm256_setzero_ps();
+        let mut a3 = _mm256_setzero_ps();
+
+        let b0 = r * cols;
+        let b1 = b0 + cols;
+        let b2 = b1 + cols;
+        let b3 = b2 + cols;
+
+        for ch in 0..chunks {
+            let off = ch * 8;
+            let vv = _mm256_loadu_ps(v.add(off));
+            a0 = _mm256_fmadd_ps(_mm256_loadu_ps(m.add(b0 + off)), vv, a0);
+            a1 = _mm256_fmadd_ps(_mm256_loadu_ps(m.add(b1 + off)), vv, a1);
+            a2 = _mm256_fmadd_ps(_mm256_loadu_ps(m.add(b2 + off)), vv, a2);
+            a3 = _mm256_fmadd_ps(_mm256_loadu_ps(m.add(b3 + off)), vv, a3);
+        }
+
+        let (mut s0, mut s1, mut s2, mut s3) = (
+            hsum_f32_avx(a0), hsum_f32_avx(a1),
+            hsum_f32_avx(a2), hsum_f32_avx(a3),
+        );
+
+        for c in rem_start..cols {
+            let vc = *vec.get_unchecked(c);
+            s0 += *mat.data.get_unchecked(b0 + c) * vc;
+            s1 += *mat.data.get_unchecked(b1 + c) * vc;
+            s2 += *mat.data.get_unchecked(b2 + c) * vc;
+            s3 += *mat.data.get_unchecked(b3 + c) * vc;
+        }
+        out[r] = s0; out[r + 1] = s1; out[r + 2] = s2; out[r + 3] = s3;
+    }
+
+    for r in rows_4..rows {
+        let mut acc = _mm256_setzero_ps();
+        let base = r * cols;
+        for ch in 0..chunks {
+            let off = ch * 8;
+            let vv = _mm256_loadu_ps(v.add(off));
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(m.add(base + off)), vv, acc);
+        }
+        let mut s = hsum_f32_avx(acc);
+        for c in rem_start..cols {
+            s += *mat.data.get_unchecked(base + c) * *vec.get_unchecked(c);
+        }
+        out[r] = s;
+    }
+}
+
+/// f32 mat-vec into pre-allocated output: out = mat @ vec.
+/// Dispatches to AVX2+FMA if available, otherwise scalar 4-row ILP.
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            unsafe { mat_vec_mul_avx2_fma_into(out, mat, vec) };
+            return;
+        }
+    }
+    mat_vec_mul_scalar_into(out, mat, vec);
+}
+
+/// Scalar fallback for f32 mat-vec: 4-row ILP.
+fn mat_vec_mul_scalar_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
     let rows = mat.shape[0];
     let cols = mat.shape[1];
     let m = &mat.data;
@@ -534,7 +709,7 @@ pub fn quantize_vec_i8_into(v: &[f32], q: &mut [i8]) -> f32 {
 }
 
 /// Q8 mat-vec into pre-allocated output + reusable v_q buffer.
-/// Dispatches to AVX-VNNI kernel if available, otherwise scalar 4-row ILP.
+/// Dispatches: AVX-VNNI > AVX2 > scalar (4-row ILP).
 pub fn q8_mat_vec_mul_into(out: &mut [f32], mat: &Q8Tensor, vec: &[f32], v_q: &mut [i8]) {
     let cols = mat.cols;
     let v_scale = quantize_vec_i8_into(&vec[..cols], &mut v_q[..cols]);
@@ -543,6 +718,10 @@ pub fn q8_mat_vec_mul_into(out: &mut [f32], mat: &Q8Tensor, vec: &[f32], v_q: &m
     {
         if is_x86_feature_detected!("avxvnni") && cols % 32 == 0 {
             unsafe { q8_mat_vec_mul_vnni_into(out, mat, &v_q[..cols], v_scale) };
+            return;
+        }
+        if is_x86_feature_detected!("avx2") {
+            unsafe { q8_mat_vec_mul_avx2_into(out, mat, &v_q[..cols], v_scale) };
             return;
         }
     }
@@ -640,4 +819,186 @@ pub fn entropy_from_logits(logits: &[f32]) -> f32 {
         }
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_matrix(rows: usize, cols: usize) -> Tensor {
+        let mut data = Vec::with_capacity(rows * cols);
+        for i in 0..rows * cols {
+            data.push(((i as f32 * 0.01).sin()) * 2.0);
+        }
+        Tensor::from_data(data, vec![rows, cols])
+    }
+
+    fn make_test_vec(cols: usize) -> Vec<f32> {
+        (0..cols).map(|i| ((i as f32 * 0.03).cos()) * 1.5).collect()
+    }
+
+    #[test]
+    fn test_mat_vec_mul_into_matches_allocating() {
+        let mat = make_test_matrix(64, 256);
+        let v = make_test_vec(256);
+        let v_tensor = Tensor::from_data(v.clone(), vec![256]);
+
+        let ref_out = mat_vec_mul(&mat, &v_tensor);
+        let mut out = vec![0.0f32; 64];
+        mat_vec_mul_into(&mut out, &mat, &v);
+
+        for i in 0..64 {
+            assert!((ref_out.data[i] - out[i]).abs() < 1e-2,
+                "row {}: alloc={} into={}", i, ref_out.data[i], out[i]);
+        }
+    }
+
+    #[test]
+    fn test_f32_scalar_matches_dispatch() {
+        let mat = make_test_matrix(64, 256);
+        let v = make_test_vec(256);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_dispatch = vec![0.0f32; 64];
+        mat_vec_mul_into(&mut out_dispatch, &mat, &v);
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_dispatch[i]).abs() < 1e-2,
+                "row {}: scalar={} dispatch={}", i, out_scalar[i], out_dispatch[i]);
+        }
+    }
+
+    #[test]
+    fn test_f32_non_aligned_cols() {
+        let mat = make_test_matrix(16, 100);
+        let v = make_test_vec(100);
+        let v_tensor = Tensor::from_data(v.clone(), vec![100]);
+
+        let ref_out = mat_vec_mul(&mat, &v_tensor);
+        let mut out = vec![0.0f32; 16];
+        mat_vec_mul_into(&mut out, &mat, &v);
+
+        for i in 0..16 {
+            assert!((ref_out.data[i] - out[i]).abs() < 1e-2,
+                "row {}: ref={} into={}", i, ref_out.data[i], out[i]);
+        }
+    }
+
+    #[test]
+    fn test_q8_dispatch_matches_scalar() {
+        let mat_f32 = make_test_matrix(64, 256);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(256);
+        let mut v_q = vec![0i8; 256];
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        q8_mat_vec_mul_scalar_into(&mut out_scalar, &mat_q8, &v_q, v_scale);
+
+        let mut out_dispatch = vec![0.0f32; 64];
+        let mut v_q2 = vec![0i8; 256];
+        q8_mat_vec_mul_into(&mut out_dispatch, &mat_q8, &v, &mut v_q2);
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_dispatch[i]).abs() < 1e-2,
+                "row {}: scalar={} dispatch={}", i, out_scalar[i], out_dispatch[i]);
+        }
+    }
+
+    #[test]
+    fn test_q8_non_aligned_cols() {
+        let mat_f32 = make_test_matrix(16, 100);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(100);
+
+        let mut out = vec![0.0f32; 16];
+        let mut v_q = vec![0i8; 100];
+        q8_mat_vec_mul_into(&mut out, &mat_q8, &v, &mut v_q);
+
+        let v_tensor = Tensor::from_data(v.clone(), vec![100]);
+        let ref_out = q8_mat_vec_mul(&mat_q8, &v_tensor);
+
+        for i in 0..16 {
+            assert!((ref_out.data[i] - out[i]).abs() < 1e-2,
+                "row {}: alloc={} into={}", i, ref_out.data[i], out[i]);
+        }
+    }
+
+    #[test]
+    fn test_q8_single_row() {
+        let mat_f32 = make_test_matrix(1, 256);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(256);
+
+        let mut out = vec![0.0f32; 1];
+        let mut v_q = vec![0i8; 256];
+        q8_mat_vec_mul_into(&mut out, &mat_q8, &v, &mut v_q);
+
+        let v_tensor = Tensor::from_data(v, vec![256]);
+        let ref_out = q8_mat_vec_mul(&mat_q8, &v_tensor);
+
+        assert!((ref_out.data[0] - out[0]).abs() < 1e-2,
+            "single row: ref={} got={}", ref_out.data[0], out[0]);
+    }
+
+    #[test]
+    fn test_f32_single_row() {
+        let mat = make_test_matrix(1, 256);
+        let v = make_test_vec(256);
+        let v_tensor = Tensor::from_data(v.clone(), vec![256]);
+
+        let ref_out = mat_vec_mul(&mat, &v_tensor);
+        let mut out = vec![0.0f32; 1];
+        mat_vec_mul_into(&mut out, &mat, &v);
+
+        assert!((ref_out.data[0] - out[0]).abs() < 1e-2,
+            "single row: ref={} got={}", ref_out.data[0], out[0]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_q8_avx2_directly() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat_f32 = make_test_matrix(64, 256);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(256);
+        let mut v_q = vec![0i8; 256];
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        q8_mat_vec_mul_scalar_into(&mut out_scalar, &mat_q8, &v_q, v_scale);
+
+        let mut out_avx2 = vec![0.0f32; 64];
+        unsafe { q8_mat_vec_mul_avx2_into(&mut out_avx2, &mat_q8, &v_q, v_scale) };
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-2,
+                "row {}: scalar={} avx2={}", i, out_scalar[i], out_avx2[i]);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_fma_directly() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+
+        let mat = make_test_matrix(64, 256);
+        let v = make_test_vec(256);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 64];
+        unsafe { mat_vec_mul_avx2_fma_into(&mut out_avx2, &mat, &v) };
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-2,
+                "row {}: scalar={} avx2={}", i, out_scalar[i], out_avx2[i]);
+        }
+    }
 }
