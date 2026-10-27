@@ -51,7 +51,7 @@ Input → Tokenize → [RWKV-7 + CM ensemble + LSTM mixer] → Arithmetic Coder 
 | dickens | Text/literature | **1.78** | 2.11 | **-16%** |
 
 Wins 13/18 files tested. Loses on high-entropy data (medical imaging, astronomy, databases).
-Throughput: ~37 tok/s Q8 (~120 B/s text). Designed for batch/archival workloads.
+Throughput: ~23 tok/s Q8 SIMD (~51 B/s mean, ~75 B/s on logs). Batch/archival workloads.
 F32 vs Q8: <2.5% BPB difference, Q8 is 2.1x faster. See `data/benchmark/results/`.
 
 ## Requirements
@@ -60,10 +60,28 @@ F32 vs Q8: <2.5% BPB difference, Q8 is 2.1x faster. See `data/benchmark/results/
 - RWKV-7 0.1B weights (~400 MB) — run `bash scripts/download-weights.sh`
 - 4+ GB RAM
 
+## Benchmark Your Data
+
+```bash
+# Evaluate Redukt vs gzip-9/brotli-11 on your files (JSON report)
+./target/release/redukt benchmark --input /path/to/logs/ --output report.json
+
+# Single file, custom window size
+./target/release/redukt benchmark --input mydata.log --output report.json --bytes 50000
+
+# Full benchmark suite (Python, includes zstd-19)
+pip install brotli zstandard
+python scripts/benchmark-suite.py --bytes 10240
+```
+
+The `benchmark` command evaluates Redukt BPB on your data and compares against gzip-9
+and brotli-11 (auto-detected). Output: JSON with per-file BPB, compression ratio,
+throughput, and storage savings projection. All results are deterministic and CRC-verified.
+
 ## Testing
 
 ```bash
-# Unit tests (no weights needed) — 61 tests
+# Unit tests (no weights needed) — 82 tests
 cargo test
 
 # End-to-end roundtrip: compress → decompress → verify byte-identical (requires weights)
