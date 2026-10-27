@@ -127,6 +127,73 @@
 
 ---
 
+## PV — Verificación de Datos (BLOCKER para decisiones de negocio)
+
+> Auditoría 2026-10-27 encontró datos fabricados/no verificados en business-case docs.
+> Estas tareas producen los datos medidos necesarios para tomar decisiones.
+
+### R-V01: Re-benchmark post-SIMD (18 archivos)
+- **Estado**: PENDIENTE
+- **Impacto**: CSV actual (f32-vs-q8.csv) es pre-SIMD. Throughput B/s no actualizado.
+- **Archivos**: `data/benchmark/results/f32-vs-q8-post-simd.csv`
+- **Subtareas**:
+  - [ ] Re-ejecutar hybrid-eval con SIMD habilitado para 18 archivos, Q8
+  - [ ] Registrar tok/s post-SIMD y calcular B/s por dominio
+  - [ ] Comparar con pre-SIMD CSV para confirmar 1.3x end-to-end
+
+### R-V02: Benchmark gzip-9 y brotli-11 a 10KB
+- **Estado**: COMPLETADO
+- **Resultado**: `data/benchmark/results/gzip9-brotli11-comparison.csv`
+- **Hallazgos clave**:
+  - gzip-9 en logs: 0.546-0.990 BPB (NO 3.00 como decía BUSINESS-CASES.md)
+  - Redukt vs gzip-9 en logs: -49% a -55% (mejor de lo documentado)
+  - Redukt pierde en 4/17 archivos vs gzip-9 (ooffice, osdb, sao, x-ray)
+
+### R-V03: Benchmark compresión PDF
+- **Estado**: PENDIENTE
+- **Impacto**: BLOCKER para business cases de e-invoicing (PDF = 67% del mix)
+- **Subtareas**:
+  - [ ] Obtener muestra de PDF de factura representativo (10KB, 50KB, 200KB)
+  - [ ] Medir BPB Redukt Q8 vs brotli-11 vs gzip-9
+  - [ ] Actualizar BUSINESS-CASES.md Cases 1-2 con datos medidos
+
+### R-V04: Test de escala (BPB vs tamaño de archivo)
+- **Estado**: PENDIENTE
+- **Impacto**: Benchmarks actuales son a 10KB. No sabemos si la ventaja crece o decrece.
+- **Subtareas**:
+  - [ ] Medir BPB a 1KB, 10KB, 100KB, 1MB para apache-access.log
+  - [ ] Medir gzip-9 y brotli-11 a los mismos tamaños
+  - [ ] Documentar curva de convergencia
+
+### R-V05: Evaluar Q4 quantization BPB
+- **Estado**: PENDIENTE
+- **Impacto**: Q4 podría mejorar throughput pero ¿cuánto BPB se pierde?
+- **Subtareas**:
+  - [ ] Ejecutar hybrid-eval con --quant q4 para 18 archivos
+  - [ ] Comparar BPB Q4 vs Q8 vs F32
+  - [ ] Evaluar si la regresión BPB es aceptable (<5%)
+
+### R-V06: Factibilidad de model pruning (RWKV-edge)
+- **Estado**: PENDIENTE
+- **Impacto**: BLOCKER para projecciones de throughput de GO-TO-MARKET Phase 2
+- **Subtareas**:
+  - [ ] Estudiar RWKV-edge paper (arxiv 2412.10856) en detalle
+  - [ ] Evaluar si structured pruning aplica a modelo 0.1B (ya es pequeño)
+  - [ ] Estimar BPB impact teórico antes de implementar
+  - [ ] Decidir go/no-go para implementación
+
+### R-V07: Verificar TAM figures con fuentes primarias
+- **Estado**: PENDIENTE
+- **Impacto**: 7/10 cifras de mercado en MARKET-ANALYSIS.md no tienen fuente
+- **Subtareas**:
+  - [ ] Log archival TAM: buscar fuente de mercado (Gartner, IDC, MarketsandMarkets)
+  - [ ] Cold storage TAM: buscar fuente
+  - [ ] Cribl ARR/valuation: buscar fuente verificable (Crunchbase, TechCrunch)
+  - [ ] Edicom margin/clients: buscar fuente (Registro Mercantil, press)
+  - [ ] Actualizar MARKET-ANALYSIS.md con fuentes o marcar como no verificable
+
+---
+
 ## P3 — Optimización y Go-to-Market
 
 ### R-010: Estabilizar features experimentales en producción
@@ -228,3 +295,8 @@
 | 2026-10-27 | R-011 benchmark — Q8 6.7x-14.5x matmul, ~1.3x end-to-end, F32 FMA disabled |
 | 2026-10-27 | R-011 fix — F32 FMA rompe cross-path determinism, deshabilitado, roundtrip verificado |
 | 2026-10-27 | docs: GO-TO-MARKET-STRATEGY.md — análisis estratégico 3 fases, throughput economics |
+| 2026-10-27 | AUDIT: datos fabricados en BUSINESS-CASES.md (PACS: x-ray 3.87→6.524, dirección invertida) |
+| 2026-10-27 | AUDIT: gzip-9 BPB medido (0.55-0.99 en logs, NO 3.00 como decía el doc) |
+| 2026-10-27 | R-V02 completado — gzip9-brotli11-comparison.csv con 17 archivos medidos |
+| 2026-10-27 | Corrección masiva: BUSINESS-CASES, GO-TO-MARKET, LIMITATIONS, MARKET-ANALYSIS |
+| 2026-10-27 | Protocolo de integridad de datos: tags [MEASURED]/[CALCULATED]/[ESTIMATE]/[UNMEASURED] |

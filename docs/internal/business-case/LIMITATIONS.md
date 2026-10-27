@@ -4,18 +4,34 @@
 
 ### The Problem
 
-Redukt processes at **~120 B/s** (text) / **~20 B/s** (binary) on benchmark hardware
-(i5-1235U, Q8 quantization, ~37 tok/s Q8 / ~17 tok/s F32).
-This is **~4,000x slower than brotli-11** and **~400,000x slower than gzip-9**.
+**Audited 2026-10-27** — throughput numbers corrected with measured B/s per domain.
+
+Redukt throughput varies significantly by data type (pre-SIMD, from CSV):
+
+| Domain | B/s range | Mean B/s | tok/s range | Source |
+|---|---|---|---|---|
+| Text (EN, PL, dict, code) | 75-183 | 123 | 33-46 | [CALCULATED from f32-vs-q8.csv] |
+| Logs (apache, syslog, ssh) | 66-75 | 69 | 26-27 | [CALCULATED from f32-vs-q8.csv] |
+| XML/markup | 59-92 | 71 | 26-27 | [CALCULATED from f32-vs-q8.csv] |
+| Binary (exe, db, medical) | 27-60 | 47 | 27-47 | [CALCULATED from f32-vs-q8.csv] |
+| **All 17 files** | **27-183** | **80** | **26-47** | [CALCULATED from f32-vs-q8.csv] |
+
+Post-SIMD (R-011): ~1.3x end-to-end [MEASURED on enwik8 5KB only]. Full 17-file
+post-SIMD CSV not yet collected — see R-V01.
+
+This is **~4,000-8,000x slower than brotli-11** (~0.5-1 MB/s) [ESTIMATE for brotli speed].
 
 ### Impact by Use Case
 
-| Use case | Daily volume | Time at 62 B/s | Cores needed (24h) |
-|---|---|---|---|
-| E-invoicing (50M docs/yr) | 41 GB | 7.7 days | 8 |
-| E-invoicing (Edicom) | 82 GB | 15.3 days | 16 |
-| PACS (SAS 50 hospitals) | 2.05 TB | 383 days | 384 |
-| Log archival (bank) | 2-5 TB | 373-933 days | 373-933 |
+[CALCULATED: days = volume_bytes / (domain_B_s × 86400). Cores = ceil(days).]
+
+| Use case | Domain B/s | Daily volume | Time (1 core) | Cores needed (24h) |
+|---|---|---|---|---|
+| E-invoicing XML (50M/yr) | 71 B/s | 41 GB | 6.7 days | 7 |
+| E-invoicing XML (Edicom) | 71 B/s | 82 GB | 13.4 days | 14 |
+| PACS (SAS 50 hospitals) | 47 B/s | 2.05 TB | 505 days | 505 |
+| Log archival (bank, 2 TB) | 69 B/s | 2 TB | 336 days | 336 |
+| Log archival (bank, 5 TB) | 69 B/s | 5 TB | 839 days | 839 |
 
 ### Mitigation: Two-Tier Architecture
 
@@ -72,10 +88,14 @@ AZTH format requires our exact model + weights for decompression. Mitigation:
 
 ## High-Entropy Data
 
-Redukt performs **at par or worse** on near-random data (databases, astronomy, encrypted):
-- osdb: +32.9% worse than xz
-- sao: +3.6% worse than brotli
-- random: +0.2% (essentially identical — no compressor beats entropy)
+Redukt performs **at par or worse** on high-entropy data [MEASURED]:
+
+| File | Redukt Q8 BPB | brotli-11 BPB | Delta | Source |
+|---|---|---|---|---|
+| ooffice | 3.704 | 2.742 | +35.0% | [MEASURED: gzip9-brotli11-comparison.csv] |
+| osdb | 5.643 | 4.676 | +20.7% | [MEASURED] |
+| sao | 9.241 | 5.988 | +54.3% | [MEASURED] |
+| x-ray | 6.524 | 4.592 | +42.1% | [MEASURED] |
 
 **Mitigation**: Content-type detection in the proxy. Route high-entropy data to
 standard compressors (zstd), route compressible data to Redukt.

@@ -2,35 +2,43 @@
 
 ## Global Compression Market
 
-- Data compression market: **$1.28B** (2026), CAGR 9.2%
+- Data compression market: **$1.28B** (2026), CAGR 9.2% [UNSOURCED — no market research firm cited]
 - Drivers: cloud storage costs, regulatory retention, data growth
+
+> **AUDIT NOTE (2026-10-27)**: Multiple TAM figures in this document are UNSOURCED.
+> Tagged below. Do not use unsourced figures in external communications or decisions.
 
 ## Target Verticals
 
-### 1. Enterprise Log Archival ($5B+ TAM)
+### 1. Enterprise Log Archival (TAM: [UNSOURCED])
 
-**Pain**: 2-5 TB/day of logs, 5-year regulatory retention (BCE, CNMV, GDPR).
-**Validation**: Cribl ($390M ARR, $3.5B valuation) proves the market pays for data reduction.
-**Our advantage**: 48% better than brotli-11 on server logs, 38-39% on syslog/auth logs (benchmark proven).
+**Pain**: 2-5 TB/day of logs [UNSOURCED], 5-year regulatory retention (BCE, CNMV, GDPR).
+**Validation**: Cribl ($390M ARR [UNSOURCED — private company], $3.5B valuation [UNSOURCED]) proves the market pays for data reduction.
+**Our advantage**: -55% vs gzip-9 on apache logs, -49% syslog, -52% openssh [MEASURED: gzip9-brotli11-comparison.csv]. -48% vs brotli-11 on apache, -38% syslog, -39% openssh [MEASURED].
 **Target clients**: Banks (Bankinter, Abanca, Kutxabank), telcos (Telefonica, MasMovil), utilities.
 
-### 2. E-Invoicing Platforms ($1.1B TAM Spain by 2034)
+### 2. E-Invoicing Platforms ($1.1B TAM Spain by 2034 [SOURCED: Vocal Media — low authority])
 
 **Context**: Spain mandatory e-invoicing from July 2026 (Ley Crea y Crece, RD 238/2026).
-- 557M+ e-invoices B2B in Spain (2024), growing 21%/year
+- 500M+ e-invoices B2B in Spain (2024) [SOURCED: Silicon.es]. Note: previous version said 557M — inflated.
 - Format: XML Facturae/UBL, 6-year retention
-- Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue, 60% margin, 17K clients)
+- Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue [SOURCED: El Economista], 60% margin [UNSOURCED], 17K clients [UNSOURCED])
 
-**Our advantage**: 54% better than brotli-11 on Facturae XML (0.406 vs 0.891 BPB), 45% on UBL (0.490 vs 0.889).
+**Our advantage on XML**: -54% vs brotli-11 on Facturae (0.406 vs 0.890 BPB), -45% on UBL (0.490 vs 0.888) [MEASURED].
+**BLOCKER**: PDF = 67% of e-invoice storage. PDF compression is [UNMEASURED] — see R-V03.
 
-### 3. Medical Imaging / PACS ($3-4B TAM)
+### 3. Medical Imaging / PACS (TAM: $3-4B [UNSOURCED])
 
-**Pain**: Hospital 500 beds = 20 TB/year DICOM, growing 30%/year. 10-year retention.
-**Validation**: PetaGene charges per TB saved in genomics, similar model applicable.
-**Our advantage**: NONE — Redukt is +0.6% to +47% worse than brotli on medical imaging (Q8 verified).
-**Target**: Servicio Andaluz de Salud (50 hospitals, EUR 10B budget), Sermas (Madrid).
+> **INVALIDATED** (2026-10-27). Redukt LOSES on medical imaging.
 
-### 4. Cold/Archive Storage ($49B TAM global)
+**Measured results** [MEASURED: gzip9-brotli11-comparison.csv]:
+- x-ray: Redukt 6.524 vs brotli 4.592 → **+42.1% WORSE**
+- mr: Redukt 2.283 vs brotli 2.373 → -3.8% (marginal, within noise)
+
+**Conclusion**: Do NOT pursue this vertical. Hospital volume estimates (20 TB/year per
+500-bed hospital [UNSOURCED], 30%/year growth [UNSOURCED]) are moot.
+
+### 4. Cold/Archive Storage (TAM: $49B [UNSOURCED])
 
 **Pain**: Long-term retention of compliance data, backups, historical records.
 **Our advantage**: Best-in-class compression means less data to store/replicate/transfer.

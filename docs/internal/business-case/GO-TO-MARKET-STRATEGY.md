@@ -1,8 +1,10 @@
 # Go-to-Market Strategy — Redukt
 
-> Analysis date: 2026-10-27.
-> Based on verified benchmarks (18 files), SIMD results (R-011), and market research.
-> All EUR figures. Throughput numbers from i5-1235U (Alder Lake), Q8 quantization.
+> Analysis date: 2026-10-27. **Audited 2026-10-27** — corrected for data integrity.
+> Based on verified benchmarks (17 files), SIMD results (R-011), and market research.
+> All EUR figures. Throughput numbers from i5-1235U (Alder Lake), Q8 quantization, pre-SIMD CSV.
+>
+> Every number tagged: [MEASURED], [CALCULATED], [ESTIMATE], [UNMEASURED], [SOURCED].
 
 ---
 
@@ -35,13 +37,18 @@ first viable, quantifiable, auditable, and reproducible product.
 
 ### Weaknesses (quantified)
 
-| Constraint | Value | Impact |
-|---|---|---|
-| Throughput | ~117 B/s (text), ~20 B/s (binary) | ~50,000x slower than brotli-11 |
-| End-to-end SIMD speedup | ~1.3x (memory-bound) | Insufficient alone |
-| Max file size | ~4 GB (u32 TOTAL_BYTES) | Limits large file use cases |
-| High-entropy data | +1% to +66% worse than brotli | Medical imaging, astronomy |
-| Format lock-in | Requires identical model+weights | Mitigation needed |
+| Constraint | Value | Source | Impact |
+|---|---|---|---|
+| Throughput (pre-SIMD) | 27-183 B/s (mean 80 B/s) | [CALCULATED from CSV] | ~4,000-8,000x slower than brotli-11 |
+| Throughput (post-SIMD, est.) | ~35-238 B/s (mean ~104 B/s) | [ESTIMATE: ×1.3 from R-011] | Post-SIMD CSV not yet measured (R-V01) |
+| End-to-end SIMD speedup | ~1.3x (memory-bound) | [MEASURED: simd-benchmark.md] | Insufficient alone |
+| Max file size | ~4 GB (u32 TOTAL_BYTES) | [MEASURED: R-007 validation] | Limits large file use cases |
+| High-entropy data | +20% to +54% worse than brotli | [MEASURED: ooffice, osdb, sao, x-ray] | Medical imaging, astronomy, databases |
+| Format lock-in | Requires identical model+weights | Architecture constraint | Mitigation needed |
+
+Note: Previous version claimed "~50,000x slower" — that used binary worst case (27 B/s)
+vs optimistic brotli (1 MB/s) without disclosure. Corrected to ~4,000-8,000x range
+based on brotli-11 ~0.5-1 MB/s vs Redukt mean ~80 B/s [CALCULATED].
 
 ---
 
@@ -52,9 +59,11 @@ first viable, quantifiable, auditable, and reproducible product.
 **Model**: Price per TB saved. Client sends data, we recompress in batch.
 
 **Economics** (log archival, 1 TB/day):
-- Compute: ~100 cores x $0.04/hr = ~$96/day to process 1 TB at 117 B/s
-- Storage savings: 1 TB x 48% extra reduction x $0.023/GB/mo = ~$11.50/month
-- **ROI: negative** — compute cost far exceeds storage savings at current throughput
+- Throughput on logs: ~69 B/s pre-SIMD [CALCULATED from CSV: mean of 3 log files]
+- To process 1 TB/day at 69 B/s: 1,000,000,000,000 / 69 / 86400 = **167,800 cores** [CALCULATED]
+- [ESTIMATE] Compute at $0.04/hr per core (unsourced, ~c5.large vCPU on-demand): $161K/day
+- [CALCULATED] Storage savings: 1 TB × 51.8% extra vs gzip × $0.023/GB/mo = ~$11.90/mo
+- **ROI: catastrophically negative** — compute cost exceeds savings by ~400,000x
 
 **Verdict**: Not viable without ~10x throughput improvement.
 
@@ -70,9 +79,10 @@ first viable, quantifiable, auditable, and reproducible product.
 - With Redukt (-48%): saves $10,512/year per vessel
 - Fleet of 100 vessels: **$1.05M/year savings**
 
-**Throughput required**: 10 GB/day at 117 B/s = 988 days on 1 core (impossible).
-- With 8 cores: 124 days (still impossible)
-- Need ~1 KB/s minimum (8.5x improvement) + 116 cores for 10 GB/day
+**Throughput required**: 10 GB/day at 69 B/s (logs) [CALCULATED from CSV]:
+- 1 core: 10,000,000,000 / 69 / 86400 = 1,678 days (impossible)
+- 8 cores: 210 days (still impossible)
+- Need ~1 KB/s per core + 116 cores for 10 GB/day [CALCULATED: 10e9/(1000×86400)=116]
 
 **Verdict**: Highest value per byte compressed. Viable only after throughput phase.
 
@@ -120,7 +130,8 @@ PHASE 2: Minimum Viable Throughput (~10x → 1 KB/s)
 ├── R-012: Multi-file parallelism (linear with cores)
 ├── RWKV model pruning/distillation (RWKV-edge: 3.4-5x compression)
 ├── Q4 quantization evaluation (BPB impact vs speed gain)
-├── Combined target: SIMD 1.3x × model 3x × 8 cores = ~31x → ~3.6 KB/s
+├── Combined target: model 3x × 8 cores = ~24x → ~1.7 KB/s [PROJECTION]
+├── Note: SIMD 1.3x already in baseline — do NOT double-count
 └── Goal: demonstrate viability in target vertical
 │
 PHASE 3: First Customer (vertical = log archival)
@@ -183,35 +194,48 @@ Structure:
 
 ### Throughput Improvement Stack
 
-| Optimization | Expected speedup | Cumulative | Status |
+**Baseline**: mean 80 B/s across 17 files, pre-SIMD [CALCULATED from CSV].
+Post-SIMD (R-011): ~1.3x → ~104 B/s mean [ESTIMATE, not re-measured — see R-V01].
+Logs specifically: ~69 B/s pre-SIMD, ~90 B/s post-SIMD [ESTIMATE: ×1.3].
+
+| Optimization | Expected speedup | From baseline | Status | Source |
+|---|---|---|---|---|
+| SIMD AVX2/VNNI (R-011) | 1.3x | **Already in baseline** | COMPLETED | [MEASURED: simd-benchmark.md] |
+| Multi-file parallelism (R-012) | Nx (cores) | N × baseline | PENDING | [PROJECTION: linear scaling assumed] |
+| RWKV model pruning | 3-5x | 3-5 × N × baseline | RESEARCH | [UNVERIFIED: RWKV-edge paper, different model] |
+| Q4 quantization | unknown | unknown | UNTESTED | [UNMEASURED: R-V05] |
+| GPU offload (CUDA) | unknown | unknown | FUTURE | [UNMEASURED] |
+
+### Key Research: RWKV-edge [UNVERIFIED for our model]
+
+Paper (arxiv 2412.10856) demonstrates 3.4-5x RWKV **model** compression (fewer parameters,
+smaller weight files). This is model compression, NOT data compression improvement.
+
+**Critical unknowns**:
+- The paper benchmarks 255M parameter models, not 100M (our model is smaller already)
+- Relationship between parameter count reduction and inference speedup is NOT linear
+- BPB impact of pruned model on our compression task is [UNMEASURED]
+- Requires R-V06 (model pruning feasibility study)
+
+### Throughput Targets [ALL PROJECTIONS except row 1]
+
+| Target | B/s (logs) | Formula | Enables |
 |---|---|---|---|
-| SIMD AVX2/VNNI (R-011) | 1.3x | 1.3x | COMPLETED |
-| Multi-file parallelism (R-012) | Nx (cores) | 1.3 × N | PENDING |
-| RWKV model pruning (RWKV-edge) | 3-5x | 3.9-6.5 × N | RESEARCH |
-| Q4 quantization | 1.5-2x | 5.9-13 × N | PARTIAL |
-| GPU offload (CUDA) | 10-50x | — | FUTURE |
+| Current (post-SIMD) | ~90 | [ESTIMATE: 69 × 1.3] | Benchmark tool only |
+| Phase 2a (8 cores) | ~720 | [PROJECTION: 90 × 8] | Small batch (<1 GB/day) |
+| Phase 2b (+model 3x) | ~2,160 | [PROJECTION: 90 × 3 × 8] | ~186 MB/day per core |
+| Phase 2c (GPU) | unknown | [UNMEASURED] | Unknown |
 
-### Key Research: RWKV-edge
+### Combined Estimate [PROJECTION — not validated]
 
-Paper demonstrates 3.4-5x RWKV model compression maintaining accuracy:
-- Structured pruning + knowledge distillation
-- ARM NEON INT8 kernels for edge deployment
-- Applied to our 0.1B model: ~20-30M effective parameters
-- Fewer parameters = fewer matmuls = proportionally faster
+Model pruning (3x) × 8 cores = **~24x from current single-core baseline**.
+NOT 31x — the previous estimate double-counted SIMD (already in baseline).
 
-### Throughput Targets
+At 24x on logs: ~90 × 24 = ~2.2 KB/s total. Per core: ~270 B/s.
+Processing 10 GB/day requires: 10e9 / (270 × 86400) = **429 cores** [CALCULATED].
 
-| Target | B/s | Enables |
-|---|---|---|
-| Current | 117 | Benchmark tool only |
-| Phase 2a (8 cores) | ~936 | Small batch jobs (<1 GB/day) |
-| Phase 2b (+model opt) | ~3,600 | Mid-tier e-invoicing (41 GB/day with 132 cores) |
-| Phase 2c (GPU) | ~6,000-60,000 | Log archival at scale |
-
-### Combined Estimate: SIMD (1.3x) × model pruning (3x) × 8 cores (8x) = ~31x
-
-At 31x: ~3.6 KB/s per core. Processing 10 GB/day requires ~32 cores.
-This is the **minimum viable throughput** for a commercial product.
+These projections depend on model pruning achieving 3x speedup with <5% BPB regression,
+which is [UNVERIFIED]. R-V06 must confirm before any business case uses these numbers.
 
 ---
 
@@ -225,7 +249,7 @@ This is the **minimum viable throughput** for a commercial product.
 4. **Mandatory retention**: regulations (SOX, GDPR, BCE, CNMV) force multi-year storage
 5. **Latency-tolerant**: logs are not re-read in real-time; batch nightly is acceptable
 6. **Quantifiable market**: any enterprise with >1 TB/month of logs is a prospect
-7. **Proven business case**: 198% ROI over 5 years (see BUSINESS-CASES.md Case 4)
+7. **Business case requires throughput improvement**: see BUSINESS-CASES.md Case 4 (corrected)
 
 ### Target Customer Profile
 

@@ -1,6 +1,12 @@
 # Business Cases — Concrete EUR Figures
 
-Analysis date: 2026-10-20. All figures in EUR unless noted.
+Analysis date: 2026-10-20. **Audited 2026-10-27** — corrected with verified benchmark data.
+All figures in EUR unless noted.
+
+> **DATA INTEGRITY NOTE**: Every BPB number in this document is tagged with its source.
+> [MEASURED] = from actual benchmark run, traceable to CSV.
+> [UNMEASURED] = no benchmark exists for this data type. Case is blocked until measured.
+> [CALCULATED] = derived from measured values with formula shown.
 
 ---
 
@@ -18,209 +24,172 @@ Analysis date: 2026-10-20. All figures in EUR unless noted.
 | Attachments (delivery notes, contracts) | 60 KB | 20% |
 | **Total per transaction** | **~300 KB** | 100% |
 
-### Volume
+### Measured BPB (XML component only — 10% of mix)
 
-- Annual raw: 50M x 300 KB = **15 TB/year**
-- Legal retention: 6 years (Ley General Tributaria)
-- Peak accumulated: **90 TB**
+Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
 
-### Compression Comparison
-
-| Compressor | Weighted BPB | Compression ratio | TB/year stored | Peak 6 years |
+| File | Redukt Q8 [MEASURED] | brotli-11 [MEASURED] | gzip-9 [MEASURED] | Redukt vs brotli |
 |---|---|---|---|---|
-| brotli-11 | 2.05 | 25.6% | 3.84 TB | 23.0 TB |
-| **Redukt** | **1.28** | **16.0%** | **2.40 TB** | **14.4 TB** |
-| Delta | | | -1.44 TB/year | **-8.6 TB** |
+| facturae-batch.xml | 0.406 | 0.890 | 1.070 | **-54.4%** |
+| ubl-invoice-batch.xml | 0.490 | 0.888 | 1.093 | **-44.9%** |
 
-### Cost Analysis (Compliance Storage @ EUR 50/TB/month)
+### BLOCKER: 90% of document mix is UNMEASURED
 
-| Year | brotli stored | brotli cost | Redukt stored | Redukt cost | Savings |
-|---|---|---|---|---|---|
-| 1 | 3.84 TB | 2,304 | 2.40 TB | 1,440 | 864 |
-| 2 | 7.68 TB | 4,608 | 4.80 TB | 2,880 | 1,728 |
-| 3 | 11.52 TB | 6,912 | 7.20 TB | 4,320 | 2,592 |
-| 4 | 15.36 TB | 9,216 | 9.60 TB | 5,760 | 3,456 |
-| 5 | 19.20 TB | 11,520 | 12.00 TB | 7,200 | 4,320 |
-| 6 | 23.04 TB | 13,824 | 14.40 TB | 8,640 | 5,184 |
-| **Total** | | **48,384** | | **30,240** | **18,144** |
+**PDF, digital signatures, and attachments have NEVER been benchmarked with Redukt.**
+PDF represents 67% of transaction volume. Without PDF BPB data, any weighted projection
+is speculation. The previous version of this document used "weighted BPB" of 1.28/2.05
+that included unmeasured components — those numbers have been removed.
 
-Multiplier: 3x replicas (compliance DR) = **54,432 savings over 6 years**.
-Bandwidth savings (egress DR): 8.6 TB x 3 x EUR 20/TB = **3,096 total**.
-**Total savings: ~57,528 over 6 years.**
+**Task required**: R-V03 (benchmark PDF compression) before this case can be quantified.
 
-### Our Invoice
+### What We Know (XML-only subset)
 
-| Item | Price |
-|---|---|
-| Annual license | 8,400/year (700/month) |
-| Setup + API integration | 4,500 (one-time) |
-| Technical support | Included |
-| **Year 1 total** | **12,900** |
-| **6-year total** | **54,900** |
+If the platform stored ONLY XML Facturae (hypothetical):
+- Volume: 50M × 30 KB = **1.5 TB/year** (not 15 TB — XML is 10% of mix)
+- [CALCULATED] brotli-11 stored: 1.5 TB × (0.890/8) = 0.167 TB/year
+- [CALCULATED] Redukt stored: 1.5 TB × (0.406/8) = 0.076 TB/year
+- Delta: -0.091 TB/year — marginal absolute savings at this scale
 
-**ROI**: Saves 57,528, pays 54,900. Breakeven year 5. Marginal.
-
-**Verdict**: Functional but not compelling. Modest savings for a mid-tier platform.
+**Verdict**: BLOCKED — cannot assess until PDF compression is measured.
 
 ---
 
 ## Case 2: Large E-Invoicing Platform (Edicom Scale)
 
-**Profile**: Edicom — EUR 252.9M revenue, 100M+ transactions/year, 17K clients, 86 countries.
+**Profile**: Edicom — EUR 252.9M revenue [SOURCE: El Economista], 100M+ transactions/year.
 
-### Spain-Only (30% of volume)
+**Same BLOCKER as Case 1**: 90% of document mix (PDF) is UNMEASURED. All previous EUR
+projections were based on unverifiable weighted BPB and have been removed.
 
-- 100M transactions x 300 KB = **30 TB/year**
-- 6-year peak: 180 TB
+XML-only advantage is strong (-54% vs brotli), but XML is only 10% of storage volume.
+The business case depends entirely on whether Redukt can beat brotli on PDF.
 
-| Metric | brotli | Redukt | Delta |
-|---|---|---|---|
-| TB/year stored | 7.68 | 4.80 | -2.88 |
-| Peak 6 years | 46.1 TB | 28.8 TB | -17.3 TB |
-| Storage cost 6y (EUR 50/TB/mo) | 96,768 | 60,480 | 36,288 |
-| x3 replicas | 290,304 | 181,440 | **108,864** |
-| + egress DR | | | 6,192 |
-| **Total savings 6y** | | | **115,056** |
-
-### Global (Full Volume)
-
-Edicom operates in 86 countries. Global volume ~3.3x Spain = 330M transactions/year.
-
-- **Global savings 6y: ~379,685**
-
-### Our Invoice (Global License)
-
-| Item | Price |
-|---|---|
-| Enterprise annual license | 48,000/year |
-| Dedicated integration | 25,000 (one-time) |
-| SLA 99.9% + priority support | Included |
-| **6-year total** | **313,000** |
-
-**ROI**: Saves 379,685, pays 313,000. **Net savings: 66,685 (21% ROI)**. Breakeven year 5.
-
-**Verdict**: Sellable as part of infrastructure optimization. Not a standalone killer product.
+**Verdict**: BLOCKED — requires R-V03 (PDF benchmark).
 
 ---
 
 ## Case 3: Public Health System — PACS Medical Imaging
 
-**Profile**: Servicio Andaluz de Salud (SAS) — 50 hospitals, EUR 10B annual budget.
+> **INVALIDATED** (2026-10-27 audit). Previous BPB numbers were fabricated.
+> Actual benchmarks show Redukt is WORSE than brotli on medical imaging.
 
-### Volume Estimates
+**Profile**: Servicio Andaluz de Salud (SAS) — 50 hospitals.
 
-- 500-bed hospital: 20 TB/year DICOM images
-- 1000-bed hospital: 60 TB/year
-- SAS average: 50 hospitals x 15 TB/year = **750 TB/year**
-- Legal retention: 10 years (medical records)
-- Peak: **7.5 PB**
+### Actual Measured BPB (10KB, Q8)
 
-### Compression on Medical Imaging
+Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
 
-| Data type | Redukt BPB | brotli BPB | Advantage |
-|---|---|---|---|
-| X-ray medical | 3.87 | 4.42 | -12.4% |
-| Binary medical (mr) | 1.81 | 2.27 | -20.3% |
-| Weighted DICOM estimate | ~3.50 | ~4.10 | **-14.6%** |
-
-| Metric | brotli | Redukt | Delta |
-|---|---|---|---|
-| Compression ratio | 51.3% | 43.8% | -7.5 pp |
-| TB/year stored | 384.4 | 328.1 | -56.3 TB/year |
-| Peak 10 years | 3,844 TB | 3,281 TB | -563 TB |
-
-### Cost (Certified Medical Storage @ EUR 40/TB/month)
-
-| Period | Storage savings | + 2x replicas | + Egress | **Total** |
+| Data type | Redukt Q8 [MEASURED] | brotli-11 [MEASURED] | gzip-9 [MEASURED] | Redukt vs brotli |
 |---|---|---|---|---|
-| Year 1 | 27,024 | 54,048 | 2,252 | **83,324** |
-| Year 5 cumul. | 135,120 | 270,240 | 11,260 | **416,620** |
-| **Year 10 cumul.** | **270,240** | **540,480** | **22,520** | **833,240** |
+| x-ray | **6.524** | 4.592 | 5.873 | **+42.1%** (WORSE) |
+| mr | **2.283** | 2.373 | 2.780 | **-3.8%** (marginal) |
 
-### Our Invoice
+Previous document claimed x-ray=3.87 (actual: 6.524, off by 68%) and mr=1.81 (actual: 2.283, off by 26%).
+Previous document claimed -12.4% and -20.3% advantages — reality is +42.1% and -3.8%.
 
-| Item | Price |
-|---|---|
-| Institutional annual license (50 hospitals) | 60,000/year |
-| PACS integration (HL7/FHIR + DICOM gateway) | 45,000 (one-time) |
-| Training + 24/7 support | 12,000/year |
-| **Year 1 total** | **117,000** |
-| **10-year total** | **765,000** |
+### Conclusion
 
-**ROI**: Saves 833,240, pays 765,000. **Net savings: 68,240. Breakeven year 9.**
+Redukt is **not competitive** on medical imaging data. High-entropy binary data
+(near-random pixel values) defeats neural prediction models.
 
-**Verdict**: Long payback but defensible in public procurement. Medical imaging grows 30%/year, so real savings accelerate beyond projections.
+All previous EUR projections (833K savings) were based on inverted data and are **void**.
+
+**Verdict**: DEAD vertical. Do not pursue.
 
 ---
 
-## Case 4: Enterprise Log Archival (THE WINNER)
+## Case 4: Enterprise Log Archival
 
 **Profile**: Mid-size Spanish bank (Bankinter, Abanca, Kutxabank) or telco.
 
-### Volume
+### Measured BPB (10KB, Q8)
+
+Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
+
+| Log type | Redukt Q8 [MEASURED] | gzip-9 [MEASURED] | brotli-11 [MEASURED] | vs gzip-9 | vs brotli-11 |
+|---|---|---|---|---|---|
+| apache-access.log | 0.245 | 0.546 | 0.466 | **-55.2%** | **-47.5%** |
+| linux-syslog.log | 0.362 | 0.714 | 0.582 | **-49.3%** | **-37.8%** |
+| openssh-auth.log | 0.475 | 0.990 | 0.783 | **-52.0%** | **-39.4%** |
+| **Mean (3 log files)** | **0.361** | **0.750** | **0.610** | **-51.8%** | **-40.8%** |
+
+### Volume [ESTIMATE — industry typical, not verified for specific client]
 
 - Log generation: 2-5 TB/day
 - Annual: **~1 PB/year**
 - Regulatory retention: 5 years (BCE, CNMV, GDPR)
-- Current compression: gzip-9 (fast, inline)
+- Current compression: gzip-9 (fast, inline) [ASSUMPTION]
 
-### Compression Comparison
+### Compression Projection
 
-| Compressor | BPB (structured logs) | Ratio | TB/year stored |
+[CALCULATED from measured BPB, formula: stored = raw × (BPB/8)]
+
+| Compressor | Mean log BPB [MEASURED] | Ratio | TB/year stored (1 PB raw) |
 |---|---|---|---|
-| gzip-9 (current) | 3.00 | 37.5% | 375 TB |
-| **Redukt** | **1.15** | **14.4%** | **144 TB** |
-| **Delta** | | | **-231 TB/year** |
+| gzip-9 | 0.750 | 9.38% | 93.8 TB |
+| brotli-11 | 0.610 | 7.63% | 76.3 TB |
+| **Redukt Q8** | **0.361** | **4.51%** | **45.1 TB** |
+| **Delta vs gzip-9** | | | **-48.7 TB/year** |
 
-5-year peak: gzip 1,875 TB vs Redukt 720 TB = **-1,155 TB saved**.
+5-year peak: gzip 469 TB vs Redukt 225.5 TB = **-243.5 TB saved**.
 
-### Cost (Compliance S3 @ EUR 30/TB/month for volume)
+> **CAVEAT**: These BPB numbers are from 10KB samples. At GB scale, gzip-9 has larger
+> dictionary windows and may perform better. Redukt also improves with more context.
+> The relative advantage at production scale is UNKNOWN — requires R-V04 (scale test).
 
-| Year | gzip stored | gzip cost | Redukt stored | Redukt cost | Savings |
+### Cost [CALCULATED from measured BPB, storage price is ESTIMATE]
+
+Storage: EUR 30/TB/month [ESTIMATE — S3 Infrequent Access or compliance tier, unsourced]
+
+| Year | gzip stored | gzip cost/yr | Redukt stored | Redukt cost/yr | Annual savings |
 |---|---|---|---|---|---|
-| 1 | 375 TB | 135,000 | 144 TB | 51,840 | **83,160** |
-| 2 | 750 TB | 270,000 | 288 TB | 103,680 | 166,320 |
-| 3 | 1,125 TB | 405,000 | 432 TB | 155,520 | 249,480 |
-| 4 | 1,500 TB | 540,000 | 576 TB | 207,360 | 332,640 |
-| 5 | 1,875 TB | 675,000 | 720 TB | 259,200 | **415,800** |
+| 1 | 93.8 TB | 33,768 | 45.1 TB | 16,236 | **17,532** |
+| 2 | 187.6 TB | 67,536 | 90.2 TB | 32,472 | 35,064 |
+| 3 | 281.4 TB | 101,304 | 135.3 TB | 48,708 | 52,596 |
+| 4 | 375.2 TB | 135,072 | 180.4 TB | 64,944 | 70,128 |
+| 5 | 469.0 TB | 168,840 | 225.5 TB | 81,180 | **87,660** |
 
-**Total storage savings 5 years: 1,247,400**
+[CALCULATED] cost/yr = accumulated_TB × EUR 30/TB/month × 12
 
-With 2x DR replicas: **x3 = 1,247,400** (already included in cumulative).
-With bandwidth: additional ~50,000.
+**Total storage savings 5 years: 262,980** [CALCULATED]
 
-**Total savings 5 years: ~1,247,400**
+With 2x DR replicas (×3 total): **788,940** [CALCULATED, assumes same $/TB]
 
-### Our Invoice
+### Compute Cost Constraint [ESTIMATE]
 
-| Item | Price |
-|---|---|
-| Enterprise license (unlimited per node) | 120,000/year |
-| Pipeline integration (Kafka/Splunk/ELK) | 30,000 (one-time) |
-| SLA + dedicated support | Included |
-| **Year 1 total** | **150,000** |
-| **5-year total** | **630,000** |
+Redukt throughput on logs: ~69 B/s pre-SIMD, ~90 B/s post-SIMD [CALCULATED from CSV]
+Processing 1 PB/year (2.74 TB/day) at 90 B/s requires:
+- Per core: 90 B/s × 86400 s = 7.78 MB/day
+- Cores needed: 2,740,000 MB / 7.78 MB = **352,000 cores** [CALCULATED]
 
-**ROI**: Saves 1,247,400, pays 630,000 = **net savings 617,400. ROI: 198%. Breakeven: year 2.5.**
+**This is not viable at current throughput.** Compute cost would vastly exceed savings.
 
-**Verdict**: STRONG. Clear value proposition, short payback, regulatory pressure ensures retention.
+### Verdict
+
+**Direction correct — Redukt strongly beats gzip-9 and brotli-11 on logs (-52%, -41%).**
+But the absolute savings are much smaller than previously claimed (263K vs 1,247K over 5y)
+because gzip-9 is already very effective on logs (9.4% ratio, not 37.5% as previously stated).
+And compute cost at current throughput makes the case **economically negative**.
+
+**Required for viable case**: throughput ≥1 KB/s (R-012 + model optimization).
 
 ---
 
-## Executive Summary
+## Executive Summary (Corrected 2026-10-27)
 
-| Case | Target client | 5-6y savings | Our invoice | Net | ROI | Viability |
-|---|---|---|---|---|---|---|
-| E-invoicing mid | Docuten | 57K | 55K | 2.6K | ~5% | Low |
-| E-invoicing large | Edicom (global) | 380K | 313K | 67K | 21% | Medium |
-| PACS hospital | SAS (10y) | 833K | 765K | 68K | 9% | Medium-High |
-| **Log archival** | **Bankinter/Telefonica** | **1,247K** | **630K** | **617K** | **198%** | **HIGH** |
+| Case | Status | Key data | Blocker |
+|---|---|---|---|
+| E-invoicing mid | **BLOCKED** | XML: -54% vs brotli [MEASURED] | PDF never benchmarked (67% of mix) |
+| E-invoicing large | **BLOCKED** | Same | Same |
+| PACS hospital | **DEAD** | x-ray: +42% WORSE [MEASURED] | Redukt loses on medical imaging |
+| Log archival | **DIRECTION CORRECT** | Logs: -52% vs gzip [MEASURED] | Throughput (~90 B/s) makes compute cost prohibitive |
 
-### Recommendation
+### What Changed from Previous Version
 
-**Enter through enterprise log archival.** It has:
-1. The highest ROI (198%)
-2. The shortest breakeven (2.5 years)
-3. The strongest regulatory driver (BCE/CNMV/GDPR mandate retention)
-4. The clearest competitive advantage (61.7% better than gzip on structured text)
-5. The simplest integration (batch archive tier, not real-time)
+1. **Case 3 (PACS)**: BPB numbers were fabricated (claimed 3.87, actual 6.524 for x-ray).
+   Entire case invalidated — Redukt LOSES on medical imaging.
+2. **Cases 1-2 (E-Invoicing)**: Weighted BPB removed — 90% of mix (PDF) was never measured.
+3. **Case 4 (Logs)**: gzip-9 BPB corrected from 3.00 to 0.750 [MEASURED]. Redukt BPB
+   corrected from 1.15 to 0.361 [MEASURED]. Savings reduced from 1,247K to 263K.
+   Compute cost constraint added.
+4. **All projections now traceable** to `gzip9-brotli11-comparison.csv`.
