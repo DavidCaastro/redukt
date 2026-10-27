@@ -138,6 +138,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut ngram_scale: f32 = 0.5;
     let mut mix_eta: f32 = 0.01;
     let mut quant_str = String::new();
+    let mut emb_surgery = String::new();
     let mut verbose = false;
 
     let mut i = 0;
@@ -151,6 +152,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale")?, "--ngram-scale")?; }
             "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
+            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -173,8 +175,12 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
-    let (model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
+    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
     let v = model.config.vocab_size;
+
+    if !emb_surgery.is_empty() {
+        model.embedding_surgery(&emb_surgery);
+    }
 
     timer.start("tokenize");
     let tokens = tokenizer.encode(input_slice);
@@ -289,6 +295,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut output_path = String::new();
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut quant_str = String::new();
+    let mut emb_surgery = String::new();
     let mut verbose = false;
 
     let mut i = 0;
@@ -298,6 +305,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
+            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -335,8 +343,12 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
-    let (model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
+    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
     let v = model.config.vocab_size;
+
+    if !emb_surgery.is_empty() {
+        model.embedding_surgery(&emb_surgery);
+    }
 
     timer.start("decode");
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
@@ -581,6 +593,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     let mut max_bytes: usize = 0;
     let mut log_path = String::new();
     let mut quant_str = String::new();
+    let mut emb_surgery = String::new();
     let mut verbose = false;
 
     let mut i = 0;
@@ -591,6 +604,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
             "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
             "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
+            "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -607,8 +621,12 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
 
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
-    let (model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
+    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
     let v = model.config.vocab_size;
+
+    if !emb_surgery.is_empty() {
+        model.embedding_surgery(&emb_surgery);
+    }
 
     timer.start("tokenize");
     let tokens = tokenizer.encode(input_slice);

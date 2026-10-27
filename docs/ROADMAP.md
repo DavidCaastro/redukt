@@ -127,15 +127,57 @@
 
 ---
 
-## P3 — Futuro
+## P3 — Optimización y Go-to-Market
 
-### R-010: Determinismo cross-platform
+### R-010: Estabilizar features experimentales en producción
+- **Estado**: EN PROGRESO
+- **Impacto**: `--emb-surgery center0.3` mejora 14/18 archivos, media -1.69% BPB
+- **Contexto**: F32 vs Q8 confirmó que cuantización NO es el gap (<2.5%). Las features experimentales sí.
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/application/codec.rs`
+- **Resultados benchmark** (2026-10-27):
+  - `--emb-surgery center0.3`: MEJOR en 14/18 archivos (-1.69% media), PEOR en 4 (mr +6.2%, reymont +2.3%, ooffice +1.1%, ubl +1.7%)
+  - `--emb-surgery norm`: peor que center0.3 en todos
+  - `--emb-surgery spread`: muy malo (+29% en enwik8)
+  - `--emb-surgery center0.5`: demasiado agresivo (+9% en enwik8)
+  - `--tau 0.05..0.5`: PEOR en todos los valores (+1.1% en enwik8). DESCARTADO.
+  - Detalle: `data/benchmark/results/emb-surgery-benchmark.csv`
+- **Subtareas**:
+  - [x] Benchmark `--emb-surgery` variantes (center0.3, norm, spread, center0.1-0.5)
+  - [x] Benchmark `--tau` variantes (0, 0.05, 0.1, 0.2, 0.5) — DESCARTADO, empeora
+  - [x] Añadir `--emb-surgery` a cmd_compress, cmd_decompress, cmd_baseline
+  - [ ] Evaluar almacenar método en header (v4) para roundtrip transparente
+  - [ ] Documentar que compress/decompress deben usar el mismo `--emb-surgery`
+  - [ ] `--match` (longest-match predictor): sólo spec en docs/research/, -0.0095 BPB, bajo ROI
+  - [ ] `--hierarchical`: supersedido por AdaptiveMixer actual, no portar
+
+### R-011: Throughput — SIMD vectorización
+- **Estado**: PENDIENTE
+- **Impacto**: 2-4x throughput (AVX2 en matmul Q8/F32)
+- **Archivos**: `src/domain/quant.rs` (q8_mat_vec_mul, q4_mat_vec_mul)
+- **Subtareas**:
+  - [ ] Perfilar hotspots: mat_vec_mul dominante (>80% del tiempo)
+  - [ ] Implementar AVX2 kernel para Q8 matmul
+  - [ ] Benchmark antes/después en enwik8 10KB
+  - [ ] Evaluar portable_simd (nightly) vs raw intrinsics
+
+### R-012: Multi-file paralelismo
+- **Estado**: PENDIENTE
+- **Impacto**: Linear con cores (N archivos en paralelo, modelo por thread)
+- **Archivos**: `src/application/codec.rs`, `src/main.rs`
+- **Subtareas**:
+  - [ ] Evaluar RAM por instancia (~400 MB Q8, ~1.6 GB F32)
+  - [ ] Implementar modo batch: `redukt compress --input-dir <DIR> --output-dir <DIR> --jobs N`
+  - [ ] Thread pool con modelo pre-cargado, state por thread
+
+### R-013: Determinismo cross-platform
+- **Estado**: PENDIENTE
 - **Subtareas**:
   - [ ] Generar golden files (input → .azth → restored) en CI
   - [ ] Verificar en Windows x86, Linux x86, Linux ARM64
   - [ ] Auditar operaciones float que podrían divergir entre plataformas
 
-### R-011: Streaming decompression
+### R-014: Streaming decompression
+- **Estado**: PENDIENTE
 - **Subtareas**:
   - [ ] Evaluar viabilidad (el modelo es secuencial, pero output puede ser progresivo)
   - [ ] Útil para archivos grandes: emitir bytes conforme se decodifican
@@ -158,3 +200,7 @@
 | 2026-10-26 | feat: --quant flag, F32 vs Q8 benchmark (18 files), industry files first benchmarked |
 | 2026-10-26 | Finding: F32 vs Q8 <2.5% diff — Q8 is correct production choice (2.1x faster) |
 | 2026-10-26 | Finding: logs -48%, invoicing -54% vs brotli — strongest verticals confirmed |
+| 2026-10-27 | R-010 parcial: emb-surgery center0.3 benchmarked (14/18 mejora, -1.69% media) |
+| 2026-10-27 | R-010: --emb-surgery añadido a compress, decompress, baseline |
+| 2026-10-27 | R-010: --tau descartado (empeora BPB en todos los valores) |
+| 2026-10-27 | Roadmap reestructurado: P3 → optimización + go-to-market (R-010 a R-014) |
