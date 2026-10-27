@@ -1,17 +1,22 @@
 //! Benchmark command — self-contained compression comparison tool.
 //!
-//! Evaluates Redukt BPB on input files and compares against gzip-9, brotli-11,
-//! and zstd-19 (if available on PATH). Outputs JSON report + human-readable summary.
+//! Performs ACTUAL compression (not just cross-entropy estimation) and compares
+//! against gzip-9, brotli-11, zstd-19. All BPB values are measured identically:
+//! compressed_size * 8 / original_size.
+//!
+//! With --verify: decompresses and verifies byte-identical roundtrip.
 //!
 //! Usage:
 //!   redukt benchmark --input <FILE_OR_DIR> --output report.json [options]
 
 use crate::domain::error::{AzError, AzResult, next_arg, parse_arg, read_file};
-use crate::domain::tensor::{softmax, entropy_from_logits, Tensor};
+use crate::domain::tensor::{softmax, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
+use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
+use crate::application::codec::{cdf_from_logits, MAGIC_V3, HEADER_SIZE, CRC_SIZE};
 use crate::application::model_loader;
 use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
@@ -20,14 +25,18 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Redukt evaluation result for a single file.
+/// Redukt actual compression result for a single file.
 struct ReduktResult {
-    bpb: f64,
+    compressed_bpb: f64,
+    ce_bpb: f64,
+    compressed_size: usize,
+    coder_efficiency_pct: f64,
     tokens: usize,
     bytes_per_tok: f64,
     tok_per_sec: f64,
     bytes_per_sec: f64,
     time_s: f64,
+    roundtrip_ok: Option<bool>,
 }
 
 /// Competitor compressor result for a single file.
@@ -58,6 +67,7 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
     let mut cost_per_gb: f64 = 0.023;
     let mut retention_years: f64 = 5.0;
     let mut verbose = false;
+    let mut verify = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -93,6 +103,7 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
                 )?;
             }
             "--verbose" | "-v" => verbose = true,
+            "--verify" => verify = true,
             _ => {}
         }
         i += 1;
@@ -122,7 +133,12 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
         });
     }
 
-    eprintln!("[benchmark] files: {}, window: {} bytes", files.len(), max_bytes);
+    eprintln!(
+        "[benchmark] files: {}, window: {} bytes, verify: {}",
+        files.len(),
+        max_bytes,
+        if verify { "YES" } else { "NO" }
+    );
 
     // Load model once for all files
     eprintln!("[benchmark] loading model from {} ...", weights_dir);
@@ -169,33 +185,55 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
         let crc = crc32::crc32(data);
 
         eprintln!(
-            "[{}/{}] {} ({}, {} bytes)",
+            "[{}/{}] {} ({}, {} bytes, CRC {:08X})",
             idx + 1,
             total,
             name,
             domain,
-            data.len()
+            data.len(),
+            crc
         );
 
-        // Redukt evaluation
-        let redukt = eval_redukt(data, &model, &tokenizer);
+        // Redukt ACTUAL compression
+        let (azth, mut redukt) = compress_and_measure(data, &model, &tokenizer);
         eprintln!(
-            "  redukt:    {:.4} BPB | ratio {:.4} | {:.1} tok/s | {:.1} B/s | {:.1}s",
-            redukt.bpb,
-            redukt.bpb / 8.0,
-            redukt.tok_per_sec,
+            "  redukt:    {:.4} BPB (actual) | {:.4} BPB (ce) | {:.1}% coder eff | {:.1} B/s | {:.1}s",
+            redukt.compressed_bpb,
+            redukt.ce_bpb,
+            redukt.coder_efficiency_pct,
             redukt.bytes_per_sec,
             redukt.time_s
         );
+        eprintln!(
+            "             {} bytes -> {} bytes (ratio {:.4})",
+            data.len(),
+            redukt.compressed_size,
+            redukt.compressed_size as f64 / data.len() as f64
+        );
 
-        // Competitors
+        // Optional roundtrip verification
+        if verify {
+            eprint!("  verify:    decompressing ...");
+            let rt_ok = verify_roundtrip(&azth, data, &model, &tokenizer);
+            redukt.roundtrip_ok = Some(rt_ok);
+            if rt_ok {
+                eprintln!("\r  verify:    PASS (byte-identical roundtrip)           ");
+            } else {
+                eprintln!("\r  verify:    **FAIL** — decompressed output differs!   ");
+            }
+        }
+
+        // Competitors (all use same metric: compressed_size * 8 / input_size)
         let gzip9 = if has_gzip {
             compress_pipe(data, "gzip", &["-9"])
         } else {
             None
         };
         if let Some(ref g) = gzip9 {
-            eprintln!("  gzip-9:    {:.4} BPB ({} bytes)", g.bpb, g.compressed_size);
+            eprintln!(
+                "  gzip-9:    {:.4} BPB ({} bytes)",
+                g.bpb, g.compressed_size
+            );
         }
 
         let brotli11 = if has_brotli {
@@ -216,16 +254,18 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
             None
         };
         if let Some(ref z) = zstd19 {
-            eprintln!("  zstd-19:   {:.4} BPB ({} bytes)", z.bpb, z.compressed_size);
+            eprintln!(
+                "  zstd-19:   {:.4} BPB ({} bytes)",
+                z.bpb, z.compressed_size
+            );
         }
 
-        // Deltas
-        if let Some(ref b) = brotli11 {
-            let delta = ((redukt.bpb - b.bpb) / b.bpb) * 100.0;
-            eprintln!("  vs brotli: {:+.1}%", delta);
-        } else if let Some(ref g) = gzip9 {
-            let delta = ((redukt.bpb - g.bpb) / g.bpb) * 100.0;
-            eprintln!("  vs gzip:   {:+.1}%", delta);
+        // Delta vs best competitor (using compressed_bpb — same metric)
+        let ref_result = brotli11.as_ref().or(gzip9.as_ref());
+        if let Some(ref r) = ref_result {
+            let delta = ((redukt.compressed_bpb - r.bpb) / r.bpb) * 100.0;
+            let ref_name = if brotli11.is_some() { "brotli" } else { "gzip" };
+            eprintln!("  vs {}:  {:+.1}%", ref_name, delta);
         }
 
         results.push(FileResult {
@@ -249,23 +289,24 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
         &weights_dir,
         cost_per_gb,
         retention_years,
+        verify,
     );
     crate::domain::error::write_file(&output_path, json.as_bytes())?;
 
     // Print human-readable summary
-    print_summary(&results, cost_per_gb, retention_years, verbose);
+    print_summary(&results, verbose);
 
     eprintln!("[benchmark] report written to: {}", output_path);
     Ok(())
 }
 
-// --- Core evaluation ---
+// --- Actual compression + measurement ---
 
-fn eval_redukt(
+fn compress_and_measure(
     data: &[u8],
     model: &Rwkv7Model,
     tokenizer: &WorldTokenizer,
-) -> ReduktResult {
+) -> (Vec<u8>, ReduktResult) {
     let v = model.config.vocab_size;
     let tokens = tokenizer.encode(data);
     let total_bytes = data.len();
@@ -273,6 +314,7 @@ fn eval_redukt(
     let mut ngram = TokenNgram::new(4, v, 0.5);
     let mut bias = BiasHead::new(v, 0.30);
     let mut mixer = AdaptiveMixer::new(0.01);
+    let mut enc = RangeEncoder::new();
     let mut state = Rwkv7State::new(&model.config);
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
@@ -284,12 +326,18 @@ fn eval_redukt(
         let tok = tokens[t] as usize;
 
         if t == 0 {
-            ce_bits += -(1.0f64 / v as f64).log2();
+            let cdf = Cdf::uniform(v);
+            enc.encode_symbol(tok, &cdf);
+            let prob = 1.0 / v as f64;
+            ce_bits += -prob.log2();
         } else {
-            let h = entropy_from_logits(&logits);
-            let ng_bias = ngram.compute_bias(Some(h));
+            // Uses None for entropy gating — matches cmd_compress exactly
+            let ng_bias = ngram.compute_bias(None);
             let b_vec = bias.bias_vector();
             let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
+
+            let cdf = cdf_from_logits(&ensemble);
+            enc.encode_symbol(tok, &cdf);
 
             let tensor = Tensor::from_data(ensemble, vec![v]);
             let probs = softmax(&tensor);
@@ -298,7 +346,7 @@ fn eval_redukt(
 
             mixer.update(
                 &probs.data,
-                &ngram.compute_bias(Some(h)),
+                &ngram.compute_bias(None),
                 bias.bias_vector(),
                 tok,
             );
@@ -310,35 +358,74 @@ fn eval_redukt(
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {
             let elapsed = t_start.elapsed().as_secs_f64();
-            let bpb = ce_bits / total_bytes as f64;
             eprint!(
-                "\r  redukt:    {:.1}% | BPB {:.4} | {:.1} tok/s   ",
+                "\r  redukt:    {:.1}% | {:.1} tok/s   ",
                 100.0 * t as f64 / tokens.len() as f64,
-                bpb,
                 t as f64 / elapsed
             );
         }
     }
     eprint!("\r                                                        \r");
 
+    let compressed = enc.finish();
     let elapsed = t_start.elapsed().as_secs_f64();
-    let bpb = ce_bits / total_bytes as f64;
+
+    // Build AZTH v3 (identical to cmd_compress output)
+    let input_crc = crc32::crc32(data);
+    let mut azth = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
+    azth.extend_from_slice(MAGIC_V3);
+    azth.extend_from_slice(&(total_bytes as u32).to_le_bytes());
+    azth.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
+    azth.extend_from_slice(&0.30f32.to_le_bytes());
+    azth.extend_from_slice(&0.50f32.to_le_bytes());
+    azth.extend_from_slice(&0.01f32.to_le_bytes());
+    azth.extend_from_slice(&compressed);
+    azth.extend_from_slice(&input_crc.to_le_bytes());
+
     let tok_per_sec = tokens.len() as f64 / elapsed;
     let bytes_per_tok = total_bytes as f64 / tokens.len().max(1) as f64;
     let bytes_per_sec = tok_per_sec * bytes_per_tok;
+    let ce_bpb = ce_bits / total_bytes as f64;
+    let compressed_bpb = (azth.len() as f64 * 8.0) / total_bytes as f64;
+    let efficiency = if azth.len() > 0 {
+        (ce_bits / (azth.len() as f64 * 8.0)) * 100.0
+    } else {
+        0.0
+    };
 
-    ReduktResult {
-        bpb,
+    let result = ReduktResult {
+        compressed_bpb,
+        ce_bpb,
+        compressed_size: azth.len(),
+        coder_efficiency_pct: efficiency,
         tokens: tokens.len(),
         bytes_per_tok,
         tok_per_sec,
         bytes_per_sec,
         time_s: elapsed,
+        roundtrip_ok: None,
+    };
+
+    (azth, result)
+}
+
+/// Decompress AZTH and verify byte-identical output.
+fn verify_roundtrip(
+    azth: &[u8],
+    original: &[u8],
+    model: &Rwkv7Model,
+    tokenizer: &WorldTokenizer,
+) -> bool {
+    match crate::application::api::decompress_bytes(azth, model, tokenizer) {
+        Ok(restored) => restored == original,
+        Err(e) => {
+            eprintln!("\n  verify:    decompress error: {}", e);
+            false
+        }
     }
 }
 
 /// Compress data by piping through an external compressor.
-/// Returns None if the command is unavailable or fails.
 fn compress_pipe(data: &[u8], cmd: &str, args: &[&str]) -> Option<CompetitorResult> {
     use std::process::{Command, Stdio};
 
@@ -367,7 +454,6 @@ fn compress_pipe(data: &[u8], cmd: &str, args: &[&str]) -> Option<CompetitorResu
     })
 }
 
-/// Check if a command is available on PATH.
 fn check_available(cmd: &str) -> bool {
     use std::process::{Command, Stdio};
     Command::new(cmd)
@@ -380,7 +466,11 @@ fn check_available(cmd: &str) -> bool {
 }
 
 fn avail_str(available: bool) -> &'static str {
-    if available { "YES" } else { "NO" }
+    if available {
+        "YES"
+    } else {
+        "NO"
+    }
 }
 
 // --- File discovery ---
@@ -484,6 +574,60 @@ fn classify_domain(name: &str) -> String {
     .to_string()
 }
 
+// --- Hardware info ---
+
+fn get_cpu_name() -> String {
+    use std::process::Command;
+
+    // Windows: wmic
+    if let Ok(output) = Command::new("wmic")
+        .args(["cpu", "get", "Name", "/value"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        for line in s.lines() {
+            if let Some(name) = line.strip_prefix("Name=") {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    // Linux: /proc/cpuinfo
+    if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
+        for line in info.lines() {
+            if line.starts_with("model name") {
+                if let Some((_key, val)) = line.split_once(':') {
+                    let trimmed = val.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    "unknown".to_string()
+}
+
+fn git_short_sha() -> String {
+    use std::process::Command;
+    Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 // --- JSON output ---
 
 fn json_escape(s: &str) -> String {
@@ -504,22 +648,6 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-fn git_short_sha() -> String {
-    use std::process::Command;
-    Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 fn format_json(
     results: &[FileResult],
     input_path: &str,
@@ -527,17 +655,20 @@ fn format_json(
     weights_dir: &str,
     cost_per_gb: f64,
     retention_years: f64,
+    verify: bool,
 ) -> String {
-    let mut s = String::with_capacity(4096);
+    let mut s = String::with_capacity(8192);
     let sha = git_short_sha();
+    let cpu = get_cpu_name();
+    let logical_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
 
     s.push_str("{\n");
 
     // Metadata
     s.push_str("  \"metadata\": {\n");
-    s.push_str(&format!(
-        "    \"generator\": \"redukt benchmark\",\n"
-    ));
+    s.push_str("    \"generator\": \"redukt benchmark\",\n");
     s.push_str(&format!(
         "    \"git_commit\": \"{}\",\n",
         json_escape(&sha)
@@ -551,14 +682,31 @@ fn format_json(
         "    \"weights\": \"{}\",\n",
         json_escape(weights_dir)
     ));
+    s.push_str(&format!("    \"roundtrip_verified\": {},\n", verify));
+    s.push_str(&format!(
+        "    \"os\": \"{}\",\n",
+        std::env::consts::OS
+    ));
+    s.push_str(&format!(
+        "    \"arch\": \"{}\",\n",
+        std::env::consts::ARCH
+    ));
+    s.push_str(&format!(
+        "    \"cpu\": \"{}\",\n",
+        json_escape(&cpu)
+    ));
+    s.push_str(&format!("    \"logical_cpus\": {},\n", logical_cpus));
     s.push_str(&format!(
         "    \"cost_per_gb_month\": {},\n",
         cost_per_gb
     ));
     s.push_str(&format!(
-        "    \"retention_years\": {}\n",
+        "    \"retention_years\": {},\n",
         retention_years
     ));
+    s.push_str("    \"methodology\": \"All BPB values = compressed_size * 8 / original_size. \
+        Redukt BPB is from actual AZTH file output, not cross-entropy estimate. \
+        Competitors compressed via stdin pipe. Apples-to-apples comparison.\"\n");
     s.push_str("  },\n");
 
     // Files array
@@ -578,12 +726,30 @@ fn format_json(
 
         // Redukt
         s.push_str("      \"redukt\": {\n");
-        s.push_str(&format!("        \"bpb\": {:.6},\n", r.redukt.bpb));
+        s.push_str(&format!(
+            "        \"compressed_size\": {},\n",
+            r.redukt.compressed_size
+        ));
+        s.push_str(&format!(
+            "        \"compressed_bpb\": {:.6},\n",
+            r.redukt.compressed_bpb
+        ));
+        s.push_str(&format!(
+            "        \"ce_bpb\": {:.6},\n",
+            r.redukt.ce_bpb
+        ));
         s.push_str(&format!(
             "        \"ratio\": {:.6},\n",
-            r.redukt.bpb / 8.0
+            r.redukt.compressed_size as f64 / r.bytes.max(1) as f64
         ));
-        s.push_str(&format!("        \"tokens\": {},\n", r.redukt.tokens));
+        s.push_str(&format!(
+            "        \"coder_efficiency_pct\": {:.2},\n",
+            r.redukt.coder_efficiency_pct
+        ));
+        s.push_str(&format!(
+            "        \"tokens\": {},\n",
+            r.redukt.tokens
+        ));
         s.push_str(&format!(
             "        \"bytes_per_tok\": {:.2},\n",
             r.redukt.bytes_per_tok
@@ -597,9 +763,14 @@ fn format_json(
             r.redukt.bytes_per_sec
         ));
         s.push_str(&format!(
-            "        \"time_s\": {:.3}\n",
+            "        \"time_s\": {:.3},\n",
             r.redukt.time_s
         ));
+        match r.redukt.roundtrip_ok {
+            Some(true) => s.push_str("        \"roundtrip\": \"PASS\"\n"),
+            Some(false) => s.push_str("        \"roundtrip\": \"FAIL\"\n"),
+            None => s.push_str("        \"roundtrip\": null\n"),
+        }
         s.push_str("      },\n");
 
         // Competitors
@@ -681,7 +852,9 @@ fn write_summary_json(
     retention_years: f64,
 ) {
     let n = results.len();
-    let mean_redukt: f64 = results.iter().map(|r| r.redukt.bpb).sum::<f64>() / n as f64;
+    let mean_compressed: f64 =
+        results.iter().map(|r| r.redukt.compressed_bpb).sum::<f64>() / n as f64;
+    let mean_ce: f64 = results.iter().map(|r| r.redukt.ce_bpb).sum::<f64>() / n as f64;
     let mean_throughput: f64 =
         results.iter().map(|r| r.redukt.bytes_per_sec).sum::<f64>() / n as f64;
 
@@ -691,7 +864,14 @@ fn write_summary_json(
 
     s.push_str("  \"summary\": {\n");
     s.push_str(&format!("    \"total_files\": {},\n", n));
-    s.push_str(&format!("    \"mean_redukt_bpb\": {:.6},\n", mean_redukt));
+    s.push_str(&format!(
+        "    \"mean_redukt_compressed_bpb\": {:.6},\n",
+        mean_compressed
+    ));
+    s.push_str(&format!(
+        "    \"mean_redukt_ce_bpb\": {:.6},\n",
+        mean_ce
+    ));
     s.push_str(&format!(
         "    \"mean_throughput_bps\": {:.1},\n",
         mean_throughput
@@ -719,7 +899,7 @@ fn write_summary_json(
         ));
     }
 
-    // Storage savings projection (vs best available competitor)
+    // Storage savings (using compressed_bpb — honest metric)
     let ref_bpb = if mean_brotli > 0.0 {
         mean_brotli
     } else if mean_gzip > 0.0 {
@@ -735,7 +915,7 @@ fn write_summary_json(
         "uncompressed"
     };
 
-    let redukt_ratio = mean_redukt / 8.0;
+    let redukt_ratio = mean_compressed / 8.0;
     let ref_ratio = ref_bpb / 8.0;
     let savings_pct = if ref_ratio > 0.0 {
         (1.0 - redukt_ratio / ref_ratio) * 100.0
@@ -765,12 +945,8 @@ fn write_summary_json(
         cost_per_gb
     ));
     s.push_str(&format!(
-        "      \"retention_years\": {},\n",
+        "      \"retention_years\": {}\n",
         retention_years
-    ));
-    s.push_str(&format!(
-        "      \"note\": \"Savings are theoretical — based on BPB ratio, not actual file compression. \
-         Redukt BPB is cross-entropy (model prediction quality), not compressed file size.\"\n"
     ));
     s.push_str("    }\n");
     s.push_str("  }\n");
@@ -789,9 +965,10 @@ where
         return (0, 0.0);
     }
 
+    // Wins using compressed_bpb (actual file size, not cross-entropy)
     let wins = available
         .iter()
-        .filter(|(r, c)| r.redukt.bpb < c.bpb)
+        .filter(|(r, c)| r.redukt.compressed_bpb < c.bpb)
         .count();
     let mean = available.iter().map(|(_, c)| c.bpb).sum::<f64>() / available.len() as f64;
 
@@ -800,22 +977,19 @@ where
 
 // --- Human-readable summary ---
 
-fn print_summary(
-    results: &[FileResult],
-    _cost_per_gb: f64,
-    _retention_years: f64,
-    verbose: bool,
-) {
+fn print_summary(results: &[FileResult], verbose: bool) {
     eprintln!("================================================================");
     eprintln!("  REDUKT BENCHMARK SUMMARY");
+    eprintln!("  (all BPB = compressed_size * 8 / original_size)");
     eprintln!("================================================================");
     eprintln!();
 
-    // Header
     let has_brotli = results.iter().any(|r| r.brotli11.is_some());
     let has_gzip = results.iter().any(|r| r.gzip9.is_some());
     let has_zstd = results.iter().any(|r| r.zstd19.is_some());
+    let has_roundtrip = results.iter().any(|r| r.redukt.roundtrip_ok.is_some());
 
+    // Header
     eprint!("  {:<24} {:>6} {:>8}", "File", "Bytes", "Redukt");
     if has_gzip {
         eprint!(" {:>8}", "gzip-9");
@@ -830,6 +1004,9 @@ fn print_summary(
         eprint!(" {:>10}", "vs brotli");
     } else if has_gzip {
         eprint!(" {:>10}", "vs gzip");
+    }
+    if has_roundtrip {
+        eprint!(" {:>5}", "RT");
     }
     eprintln!();
 
@@ -846,6 +1023,9 @@ fn print_summary(
     if has_brotli || has_gzip {
         eprint!(" {:>10}", "---------");
     }
+    if has_roundtrip {
+        eprint!(" {:>5}", "----");
+    }
     eprintln!();
 
     for r in results {
@@ -853,7 +1033,7 @@ fn print_summary(
             "  {:<24} {:>6} {:>8.4}",
             truncate(&r.name, 24),
             r.bytes,
-            r.redukt.bpb
+            r.redukt.compressed_bpb
         );
         if has_gzip {
             match &r.gzip9 {
@@ -873,16 +1053,23 @@ fn print_summary(
                 None => eprint!(" {:>8}", "-"),
             }
         }
-        // Delta vs best competitor
+        // Delta vs best competitor (using compressed_bpb)
         let ref_bpb = r
             .brotli11
             .as_ref()
             .map(|b| b.bpb)
             .or_else(|| r.gzip9.as_ref().map(|g| g.bpb));
         if let Some(rb) = ref_bpb {
-            let delta = ((r.redukt.bpb - rb) / rb) * 100.0;
+            let delta = ((r.redukt.compressed_bpb - rb) / rb) * 100.0;
             let marker = if delta < 0.0 { "<<" } else { "" };
             eprint!(" {:>+8.1}% {}", delta, marker);
+        }
+        if has_roundtrip {
+            match r.redukt.roundtrip_ok {
+                Some(true) => eprint!("  OK"),
+                Some(false) => eprint!(" FAIL"),
+                None => eprint!("    -"),
+            }
         }
         eprintln!();
     }
@@ -891,18 +1078,27 @@ fn print_summary(
 
     // Aggregates
     let n = results.len();
-    let mean_redukt: f64 = results.iter().map(|r| r.redukt.bpb).sum::<f64>() / n as f64;
+    let mean_compressed: f64 =
+        results.iter().map(|r| r.redukt.compressed_bpb).sum::<f64>() / n as f64;
+    let mean_ce: f64 =
+        results.iter().map(|r| r.redukt.ce_bpb).sum::<f64>() / n as f64;
     let mean_throughput: f64 =
         results.iter().map(|r| r.redukt.bytes_per_sec).sum::<f64>() / n as f64;
+    let mean_efficiency: f64 =
+        results.iter().map(|r| r.redukt.coder_efficiency_pct).sum::<f64>() / n as f64;
 
-    eprintln!("  Mean Redukt BPB:  {:.4}", mean_redukt);
-    eprintln!("  Mean throughput:  {:.1} B/s", mean_throughput);
+    eprintln!("  Mean compressed BPB: {:.4}", mean_compressed);
+    eprintln!(
+        "  Mean cross-ent BPB: {:.4} (coder efficiency: {:.1}%)",
+        mean_ce, mean_efficiency
+    );
+    eprintln!("  Mean throughput:     {:.1} B/s", mean_throughput);
 
     if has_brotli {
         let (wins, mean) = competitor_stats(results, |r| &r.brotli11);
         let avail = results.iter().filter(|r| r.brotli11.is_some()).count();
         eprintln!(
-            "  Wins vs brotli:   {}/{} (mean brotli: {:.4})",
+            "  Wins vs brotli-11:   {}/{} (mean brotli: {:.4})",
             wins, avail, mean
         );
     }
@@ -910,7 +1106,7 @@ fn print_summary(
         let (wins, mean) = competitor_stats(results, |r| &r.gzip9);
         let avail = results.iter().filter(|r| r.gzip9.is_some()).count();
         eprintln!(
-            "  Wins vs gzip:     {}/{} (mean gzip: {:.4})",
+            "  Wins vs gzip-9:      {}/{} (mean gzip: {:.4})",
             wins, avail, mean
         );
     }
@@ -918,21 +1114,23 @@ fn print_summary(
         let (wins, mean) = competitor_stats(results, |r| &r.zstd19);
         let avail = results.iter().filter(|r| r.zstd19.is_some()).count();
         eprintln!(
-            "  Wins vs zstd:     {}/{} (mean zstd: {:.4})",
+            "  Wins vs zstd-19:     {}/{} (mean zstd: {:.4})",
             wins, avail, mean
         );
     }
 
     if verbose {
         eprintln!();
-        eprintln!("  Per-file throughput:");
+        eprintln!("  Per-file detail:");
         for r in results {
             eprintln!(
-                "    {:<24} {:.1} tok/s | {:.1} B/s | {:.2} B/tok",
+                "    {:<24} ce={:.4} comp={:.4} eff={:.1}% | {:.1} tok/s | {:.1} B/s",
                 truncate(&r.name, 24),
+                r.redukt.ce_bpb,
+                r.redukt.compressed_bpb,
+                r.redukt.coder_efficiency_pct,
                 r.redukt.tok_per_sec,
-                r.redukt.bytes_per_sec,
-                r.redukt.bytes_per_tok
+                r.redukt.bytes_per_sec
             );
         }
     }
@@ -966,7 +1164,10 @@ mod tests {
     fn classify_known_domains() {
         assert_eq!(classify_domain("enwik8"), "text/encyclopedia");
         assert_eq!(classify_domain("apache-access.log"), "logs/apache");
-        assert_eq!(classify_domain("facturae-batch.xml"), "e-invoicing/facturae");
+        assert_eq!(
+            classify_domain("facturae-batch.xml"),
+            "e-invoicing/facturae"
+        );
         assert_eq!(classify_domain("x-ray"), "medical/xray");
     }
 

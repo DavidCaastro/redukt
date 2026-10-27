@@ -275,7 +275,7 @@ fn decode_checked(
         .map_err(|e| format!("decoder error at token {}: {}", token_idx, e))
 }
 
-fn decompress_bytes(
+pub fn decompress_bytes(
     data: &[u8],
     model: &Rwkv7Model,
     tokenizer: &WorldTokenizer,
