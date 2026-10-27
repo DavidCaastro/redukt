@@ -35,7 +35,16 @@
 **Pain**: Long-term retention of compliance data, backups, historical records.
 **Our advantage**: Best-in-class compression means less data to store/replicate/transfer.
 
-### 5. Genomics ($2-5B TAM)
+### 5. Bandwidth-Constrained Niches (satellite/maritime/mining)
+
+**Pain**: Satellite bandwidth costs $1-225/GB (traditional VSAT $10-225/GB, Starlink maritime ~$6/GB).
+**Use case**: Vessels, mining sites, oil rigs transmitting logs/telemetry over expensive links.
+**Economics**: Fleet of 100 vessels transmitting 10 GB/day of logs at $6/GB = $21.9M/year bandwidth.
+With Redukt (-48%): saves **$10.5M/year** on bandwidth alone.
+**Blocker**: Throughput (~117 B/s) insufficient to process 10 GB/day even with 8 cores.
+**Status**: Highest value per byte compressed. Viable after throughput Phase 2.
+
+### 6. Genomics ($2-5B TAM)
 
 **Pain**: FASTQ/BAM files, 100GB+ per genome, growing exponentially.
 **Validation**: PetaGene, Genozip exist in this space.

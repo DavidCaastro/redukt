@@ -36,16 +36,23 @@ This is the same model used by:
 
 ### Throughput Optimization Roadmap
 
-| Optimization | Expected speedup | Effort |
-|---|---|---|
-| SIMD vectorization (AVX2) | 2-4x | Medium |
-| Multi-threaded block processing | Linear with cores | Medium |
-| Quantized RWKV (Q4/Q8 instead of F32) | 1.5-2x | Low |
-| GPU offload (future) | 10-50x | High |
-| Target: 1 KB/s | 16x total | Phase 1 |
+| Optimization | Expected speedup | Effort | Status |
+|---|---|---|---|
+| SIMD vectorization (AVX2/VNNI) | **1.3x** end-to-end | Medium | COMPLETED (R-011) |
+| Multi-threaded block processing | Linear with cores | Medium | PENDING (R-012) |
+| RWKV model pruning (RWKV-edge) | 3-5x | High | RESEARCH |
+| Q4 quantization | 1.5-2x | Low | PARTIAL (flag exists) |
+| GPU offload (CUDA) | 10-50x | High | FUTURE |
+| **Combined (no GPU)** | **~31x** (8 cores) | | **~3.6 KB/s** |
 
-Current target: **1 KB/s** (16x improvement) would make the product viable for
+SIMD results (R-011): Q8 matmul 6.7x AVX2 / 14.5x VNNI, but end-to-end only 1.3x
+due to memory-bound head matmul (48MB exceeds L3) and non-SIMD overhead (~20% of time).
+F32 FMA disabled for cross-path determinism. See `data/benchmark/results/simd-benchmark.md`.
+
+Current target: **1 KB/s** (8.5x improvement) would make the product viable for
 mid-tier e-invoicing without excessive parallelism.
+
+See `GO-TO-MARKET-STRATEGY.md` for full strategic analysis including throughput economics.
 
 ## OSI Protocol: Not Viable
 
