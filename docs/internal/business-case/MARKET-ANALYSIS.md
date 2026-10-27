@@ -10,11 +10,15 @@
 
 ## Target Verticals
 
-### 1. Enterprise Log Archival (TAM: [UNSOURCED])
+### 1. Enterprise Log Archival (TAM: $4.0-5.0B)
 
-**Pain**: 2-5 TB/day of logs [UNSOURCED], 5-year regulatory retention (BCE, CNMV, GDPR).
-**Validation**: Cribl ($390M ARR [UNSOURCED — private company], $3.5B valuation [UNSOURCED]) proves the market pays for data reduction.
+TAM sources: MarketsandMarkets $4.1B (2026), Mordor Intelligence $4.35B, Research and Markets $4.99B.
+Note: this is log MANAGEMENT market, not log ARCHIVAL specifically (narrower).
+
+**Pain**: 2-5 TB/day of logs [UNSOURCED — industry typical, not verified], 5-year retention (BCE, CNMV, GDPR).
+**Validation**: Cribl ($390M ARR Aug 2026 [SOURCED: Sacra/GlobeNewsWire], $3.5B valuation Series E Aug 2024 [SOURCED: Yahoo Finance/GlobeNewsWire], $600M raised, 43 Fortune 100 customers).
 **Our advantage**: -55% vs gzip-9 on apache logs, -49% syslog, -52% openssh [MEASURED: gzip9-brotli11-comparison.csv]. -48% vs brotli-11 on apache, -38% syslog, -39% openssh [MEASURED].
+**CAVEAT**: measured at 10KB only. At 100KB, gzip-9 improves from 0.55 to 0.44 BPB, brotli from 0.47 to 0.33. Redukt at larger sizes is [UNMEASURED] — see R-V04.
 **Target clients**: Banks (Bankinter, Abanca, Kutxabank), telcos (Telefonica, MasMovil), utilities.
 
 ### 2. E-Invoicing Platforms ($1.1B TAM Spain by 2034 [SOURCED: Vocal Media — low authority])
@@ -22,7 +26,7 @@
 **Context**: Spain mandatory e-invoicing from July 2026 (Ley Crea y Crece, RD 238/2026).
 - 500M+ e-invoices B2B in Spain (2024) [SOURCED: Silicon.es]. Note: previous version said 557M — inflated.
 - Format: XML Facturae/UBL, 6-year retention
-- Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue [SOURCED: El Economista], 60% margin [UNSOURCED], 17K clients [UNSOURCED])
+- Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue 2024 [SOURCED: Valencia Plaza/El Economista], EUR 276.6M in 2025 [SOURCED: Valencia Plaza], 60% net margin [SOURCED: El Economista Jul 2025], 15K-19K clients [SOURCED: GetLatka 15K, ZoomInfo 19K])
 
 **Our advantage on XML**: -54% vs brotli-11 on Facturae (0.406 vs 0.890 BPB), -45% on UBL (0.490 vs 0.888) [MEASURED].
 **BLOCKER**: PDF = 67% of e-invoice storage. PDF compression is [UNMEASURED] — see R-V03.
@@ -38,21 +42,24 @@
 **Conclusion**: Do NOT pursue this vertical. Hospital volume estimates (20 TB/year per
 500-bed hospital [UNSOURCED], 30%/year growth [UNSOURCED]) are moot.
 
-### 4. Cold/Archive Storage (TAM: $49B [UNSOURCED])
+### 4. Cold/Archive Storage (TAM: [UNSOURCED — $49B figure could not be verified])
 
 **Pain**: Long-term retention of compliance data, backups, historical records.
 **Our advantage**: Best-in-class compression means less data to store/replicate/transfer.
 
 ### 5. Bandwidth-Constrained Niches (satellite/maritime/mining)
 
-**Pain**: Satellite bandwidth costs $1-225/GB (traditional VSAT $10-225/GB, Starlink maritime ~$6/GB).
+**Pain**: Satellite bandwidth costs $1-225/GB [UNSOURCED — from web search, not verified against provider pricing pages].
+Starlink maritime ~$6/GB [ESTIMATE: ~$5000/mo for 1TB plan, varies by region].
 **Use case**: Vessels, mining sites, oil rigs transmitting logs/telemetry over expensive links.
-**Economics**: Fleet of 100 vessels transmitting 10 GB/day of logs at $6/GB = $21.9M/year bandwidth.
-With Redukt (-48%): saves **$10.5M/year** on bandwidth alone.
-**Blocker**: Throughput (~117 B/s) insufficient to process 10 GB/day even with 8 cores.
+**Economics** [CALCULATED from unsourced bandwidth price]:
+- Fleet of 100 vessels × 10 GB/day × $6/GB × 365 = $21.9M/year bandwidth
+- With Redukt (-48% at 10KB [MEASURED]): saves $10.5M/year on bandwidth [CALCULATED]
+- CAVEAT: -48% is measured at 10KB. Advantage at larger sizes is [UNMEASURED] (R-V04).
+**Blocker**: Throughput (~69 B/s on logs [CALCULATED]) insufficient for 10 GB/day.
 **Status**: Highest value per byte compressed. Viable after throughput Phase 2.
 
-### 6. Genomics ($2-5B TAM)
+### 6. Genomics (TAM: $2-5B [UNSOURCED])
 
 **Pain**: FASTQ/BAM files, 100GB+ per genome, growing exponentially.
 **Validation**: PetaGene, Genozip exist in this space.
@@ -69,17 +76,32 @@ With Redukt (-48%): saves **$10.5M/year** on bandwidth alone.
 
 ## Spain-Specific Market Context
 
-- AWS investing EUR 33.7B in Spain data centers (eu-south-2 Madrid)
-- Spanish cloud adoption: 41.65% paid cloud, only 13.68% migrated software
-- Key consultancies for channel: Indra/Minsait (EUR 5.46B), NTT Data Spain (15K+), Inetum (27K)
-- E-invoicing market growth: $299M (2025) -> $1,139M (2034), CAGR 16.03%
+- AWS investing EUR 33.7B in Spain data centers (eu-south-2 Madrid) [UNSOURCED — verifiable via press]
+- Spanish cloud adoption: 41.65% paid cloud, only 13.68% migrated software [UNSOURCED]
+- Key consultancies for channel: Indra/Minsait (EUR 5.46B), NTT Data Spain (15K+), Inetum (27K) [UNSOURCED]
+- E-invoicing market growth: $299M (2025) -> $1,139M (2034), CAGR 16.03% [SOURCED: Vocal Media — low authority]
 
-## Sources
+## Sources (verified 2026-10-27)
 
+### Verified with primary sources
+- MarketsandMarkets: Log Management Market $4.1B by 2026 (press release)
+- Mordor Intelligence: Log Management Market $4.35B in 2026
+- Research and Markets: Log Management Market $4.99B in 2026
+- Valencia Plaza (Jul 2025): Edicom EUR 252.9M revenue 2024, EUR 276.6M in 2025
+- El Economista (Jul 2025): Edicom 60% net margin, EUR 151.4M profit
+- GlobeNewsWire (Feb 2026): Cribl surpasses $300M ARR
+- Sacra (Aug 2026): Cribl $390M ARR, $3.5B valuation
 - Silicon.es: Spain 500M+ e-invoices (2024)
-- El Economista: Edicom EUR 252.9M revenue
-- Valencia Plaza: Edicom international expansion
-- Vocal Media: Spain e-invoicing $1,139M by 2034
-- Purview: PACS storage costs $180K/300TB
-- QSS Technosoft: Hospital PACS $2M overspend analysis
+
+### Low authority / unverified
+- Vocal Media: Spain e-invoicing $1,139M by 2034 (user-generated content platform)
+- Purview: PACS storage costs $180K/300TB (vendor blog)
+- QSS Technosoft: Hospital PACS $2M overspend analysis (vendor)
 - Cloud Storage Explorer: 2026 pricing comparison
+
+### Not found / could not verify
+- $49B cold/archive data storage TAM — no credible source found
+- $2-5B genomics TAM — no credible source found
+- 2-5 TB/day enterprise log generation — industry typical but no specific source
+- Hospital 20 TB/year DICOM — no specific source
+- 30%/year medical imaging growth — no specific source

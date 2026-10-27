@@ -183,8 +183,9 @@ Requirements:
 Structure:
 1. Problem: archival storage costs growing faster than capacity
 2. Approach: neural compression (RWKV-7 + Context Mixing + Arithmetic Coding)
-3. Results: 13/18 files beat brotli-11, -48% on logs, -54% on XML
-4. Limitations: throughput (~117 B/s), high-entropy data, format lock-in
+3. Results: 13/17 files beat brotli-11 [MEASURED], -48% on logs, -54% on XML (at 10KB)
+4. Limitations: throughput (mean 80 B/s pre-SIMD [CALCULATED]), high-entropy data, format lock-in
+5. **CAVEAT**: All BPB results measured at 10KB. Scale behavior unknown (R-V04).
 5. Architecture: two-tier (fast compressor inline → Redukt batch archival)
 6. Reproducibility: all benchmarks runnable with public tools
 

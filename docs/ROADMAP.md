@@ -158,12 +158,21 @@
   - [ ] Actualizar BUSINESS-CASES.md Cases 1-2 con datos medidos
 
 ### R-V04: Test de escala (BPB vs tamaño de archivo)
-- **Estado**: PENDIENTE
+- **Estado**: EN PROGRESO (gzip/brotli medidos, Redukt pendiente)
 - **Impacto**: Benchmarks actuales son a 10KB. No sabemos si la ventaja crece o decrece.
+- **Resultado parcial** (gzip-9 y brotli-11 en apache-access.log, MEDIDO):
+  - 1KB: gzip 1.760, brotli 1.592
+  - 10KB: gzip 0.546, brotli 0.466
+  - 50KB: gzip 0.463, brotli 0.353
+  - 100KB: gzip 0.445, brotli 0.328
+  - **Ambos mejoran significativamente con más datos** (brotli: 1.59→0.33, -79%)
+  - Detalle: `data/benchmark/results/scale-test-apache.csv`
+- **CRITICAL**: Si Redukt no mejora proporcionalmente, la ventaja de -48% a 10KB
+  podría reducirse sustancialmente a 100KB+. Esto afecta TODOS los business cases.
 - **Subtareas**:
-  - [ ] Medir BPB a 1KB, 10KB, 100KB, 1MB para apache-access.log
-  - [ ] Medir gzip-9 y brotli-11 a los mismos tamaños
-  - [ ] Documentar curva de convergencia
+  - [x] Medir gzip-9 y brotli-11 a 1KB, 10KB, 50KB, 100KB
+  - [ ] Medir Redukt Q8 a 1KB, 10KB, 50KB, 100KB (requiere weights + model run)
+  - [ ] Documentar curva de convergencia comparativa
 
 ### R-V05: Evaluar Q4 quantization BPB
 - **Estado**: PENDIENTE
@@ -183,14 +192,14 @@
   - [ ] Decidir go/no-go para implementación
 
 ### R-V07: Verificar TAM figures con fuentes primarias
-- **Estado**: PENDIENTE
-- **Impacto**: 7/10 cifras de mercado en MARKET-ANALYSIS.md no tienen fuente
-- **Subtareas**:
-  - [ ] Log archival TAM: buscar fuente de mercado (Gartner, IDC, MarketsandMarkets)
-  - [ ] Cold storage TAM: buscar fuente
-  - [ ] Cribl ARR/valuation: buscar fuente verificable (Crunchbase, TechCrunch)
-  - [ ] Edicom margin/clients: buscar fuente (Registro Mercantil, press)
-  - [ ] Actualizar MARKET-ANALYSIS.md con fuentes o marcar como no verificable
+- **Estado**: COMPLETADO (parcial — 4/7 verificados, 3 sin fuente)
+- **Resultados**:
+  - [x] Log management TAM: **$4.0-5.0B** (MarketsandMarkets $4.1B, Mordor $4.35B, R&M $4.99B)
+  - [x] Cribl: **$390M ARR** Aug 2026 (Sacra), **$3.5B val** Series E (GlobeNewsWire). CONFIRMADO.
+  - [x] Edicom: **EUR 252.9M** revenue 2024, EUR 276.6M 2025 (Valencia Plaza). **60% net margin** (El Economista Jul 2025). 15K-19K clients. CONFIRMADO.
+  - [x] Cold/archive data storage TAM: **NO ENCONTRADO** — "$49B" sin fuente verificable
+  - [x] Genomics TAM: **NO ENCONTRADO** — "$2-5B" sin fuente verificable
+  - [x] MARKET-ANALYSIS.md actualizado con fuentes verificadas y tags
 
 ---
 

@@ -1,0 +1,5 @@
+file,bytes,gzip9_compressed,gzip9_bpb,brotli11_compressed,brotli11_bpb,redukt_q8_bpb,redukt_vs_brotli_pct
+apache-access.log,1000,220,1.7600,199,1.5920,UNMEASURED,UNMEASURED
+apache-access.log,10000,683,0.5464,583,0.4664,0.244821,-47.5
+apache-access.log,50000,2892,0.4627,2203,0.3525,UNMEASURED,UNMEASURED
+apache-access.log,100000,5561,0.4449,4095,0.3276,UNMEASURED,UNMEASURED
