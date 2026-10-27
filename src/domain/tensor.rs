@@ -221,7 +221,10 @@ unsafe fn hsum_i32_avx2(v: __m256i) -> i32 {
 }
 
 /// Horizontal sum of 8 x f32 lanes in __m256.
+/// Not dispatched in production (F32 FMA breaks cross-path determinism).
+/// Kept for benchmarks and future opt-in use.
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 #[target_feature(enable = "avx2")]
 unsafe fn hsum_f32_avx(v: __m256) -> f32 {
     let hi = _mm256_extractf128_ps::<1>(v);
@@ -593,7 +596,10 @@ pub fn l2_normalize_per_head_inplace(x: &mut [f32], num_heads: usize, head_size:
 }
 
 /// AVX2+FMA kernel for f32 mat-vec: 8-wide FMA with 4-row ILP.
+/// NOT dispatched in production — FMA rounding breaks cross-path determinism.
+/// Kept for benchmarks and future opt-in use (e.g., --fast-math flag).
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
     let rows = mat.shape[0];
@@ -656,16 +662,12 @@ unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) 
 }
 
 /// f32 mat-vec into pre-allocated output: out = mat @ vec.
-/// Dispatches to AVX2+FMA if available, otherwise scalar 4-row ILP.
-/// Set REDUKT_NO_SIMD=1 to force scalar path (benchmarking).
+/// Always uses scalar path for bit-exact cross-platform determinism.
+/// FMA kernel exists (`mat_vec_mul_avx2_fma_into`) but is NOT dispatched
+/// because FMA rounding differs from scalar, breaking roundtrip when
+/// compress/decompress use different SIMD tiers. Q8 SIMD IS bit-exact
+/// (integer accumulation) and provides the main throughput gain.
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
-    #[cfg(target_arch = "x86_64")]
-    if !no_simd_override() {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            unsafe { mat_vec_mul_avx2_fma_into(out, mat, vec) };
-            return;
-        }
-    }
     mat_vec_mul_scalar_into(out, mat, vec);
 }
 
@@ -1007,6 +1009,109 @@ mod tests {
             assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-2,
                 "row {}: scalar={} avx2={}", i, out_scalar[i], out_avx2[i]);
         }
+    }
+
+    // ---- Bit-exact tests for cross-path determinism ----
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_q8_avx2_bit_exact() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat_f32 = make_test_matrix(768, 768);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(768);
+        let mut v_q = vec![0i8; 768];
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+
+        let mut out_scalar = vec![0.0f32; 768];
+        q8_mat_vec_mul_scalar_into(&mut out_scalar, &mat_q8, &v_q, v_scale);
+
+        let mut out_avx2 = vec![0.0f32; 768];
+        unsafe { q8_mat_vec_mul_avx2_into(&mut out_avx2, &mat_q8, &v_q, v_scale) };
+
+        let mut mismatches = 0;
+        for i in 0..768 {
+            if out_scalar[i].to_bits() != out_avx2[i].to_bits() {
+                if mismatches < 5 {
+                    eprintln!("  row {}: scalar={:e} (0x{:08x}) avx2={:e} (0x{:08x}) delta={:e}",
+                        i, out_scalar[i], out_scalar[i].to_bits(),
+                        out_avx2[i], out_avx2[i].to_bits(),
+                        (out_scalar[i] - out_avx2[i]).abs());
+                }
+                mismatches += 1;
+            }
+        }
+        eprintln!("Q8 AVX2 bit-exact: {}/768 mismatches", mismatches);
+        assert_eq!(mismatches, 0, "Q8 AVX2 must be bit-exact with scalar");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_q8_vnni_bit_exact() {
+        if !is_x86_feature_detected!("avxvnni") { return; }
+
+        let mat_f32 = make_test_matrix(768, 768);
+        let mat_q8 = Q8Tensor::from_f32(&mat_f32);
+        let v = make_test_vec(768);
+        let mut v_q = vec![0i8; 768];
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+
+        let mut out_scalar = vec![0.0f32; 768];
+        q8_mat_vec_mul_scalar_into(&mut out_scalar, &mat_q8, &v_q, v_scale);
+
+        let mut out_vnni = vec![0.0f32; 768];
+        unsafe { q8_mat_vec_mul_vnni_into(&mut out_vnni, &mat_q8, &v_q, v_scale) };
+
+        let mut mismatches = 0;
+        for i in 0..768 {
+            if out_scalar[i].to_bits() != out_vnni[i].to_bits() {
+                if mismatches < 5 {
+                    eprintln!("  row {}: scalar={:e} (0x{:08x}) vnni={:e} (0x{:08x}) delta={:e}",
+                        i, out_scalar[i], out_scalar[i].to_bits(),
+                        out_vnni[i], out_vnni[i].to_bits(),
+                        (out_scalar[i] - out_vnni[i]).abs());
+                }
+                mismatches += 1;
+            }
+        }
+        eprintln!("Q8 VNNI bit-exact: {}/768 mismatches", mismatches);
+        assert_eq!(mismatches, 0, "Q8 VNNI must be bit-exact with scalar");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_bit_exact() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+
+        let mat = make_test_matrix(768, 768);
+        let v = make_test_vec(768);
+
+        let mut out_scalar = vec![0.0f32; 768];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 768];
+        unsafe { mat_vec_mul_avx2_fma_into(&mut out_avx2, &mat, &v) };
+
+        let mut mismatches = 0;
+        for i in 0..768 {
+            if out_scalar[i].to_bits() != out_avx2[i].to_bits() {
+                if mismatches < 5 {
+                    eprintln!("  row {}: scalar={:e} (0x{:08x}) avx2={:e} (0x{:08x}) delta={:e}",
+                        i, out_scalar[i], out_scalar[i].to_bits(),
+                        out_avx2[i], out_avx2[i].to_bits(),
+                        (out_scalar[i] - out_avx2[i]).abs());
+                }
+                mismatches += 1;
+            }
+        }
+        eprintln!("F32 AVX2+FMA bit-exact: {}/768 mismatches", mismatches);
+        // F32 FMA is NOT expected to be bit-exact (FMA rounding + float non-associativity).
+        // This is WHY mat_vec_mul_into does NOT dispatch to FMA — it would break
+        // cross-path roundtrip. The kernel exists for future opt-in use only.
+        assert!(mismatches > 0, "F32 FMA should NOT be bit-exact (confirms design decision)");
     }
 
     // ---- Throughput benchmarks (run with --ignored --nocapture) ----

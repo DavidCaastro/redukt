@@ -156,14 +156,15 @@
 - **Archivos**: `src/domain/tensor.rs`
 - **Resultados micro-benchmark** (i5-1235U Alder Lake, release, 768×768 Q8):
   - Scalar: 97.2 μs → AVX2: 14.5 μs (**6.7x**) → VNNI: 6.7 μs (**14.5x**)
-  - F32: Scalar 80.5 μs → AVX2+FMA: 50.4 μs (**1.6x**)
   - Head 65536×768: Scalar 4.2ms → VNNI 3.2ms (**1.32x**, memory-bound)
+- **Bit-exact verification**: Q8 AVX2 0/768 mismatches, Q8 VNNI 0/768 mismatches
+- **F32 FMA deshabilitado**: 733/768 bit-mismatches → rompe roundtrip cross-path
+- **Cross-path roundtrip**: PASS (SIMD→scalar y scalar→SIMD, byte-identical, CRC OK)
+- **BPB**: 1.281205 idéntico scalar/SIMD (0 delta)
 - **Resultados end-to-end** (enwik8 5KB, Q8, 3 rondas):
-  - Scalar: 32.3 tok/s → SIMD: 37.9 tok/s (**+17% throughput**)
-  - Compress: 32.5 → 36.9 tok/s (**+14%**)
-  - BPB difference: 0.1% (FMA rounding, acceptable)
+  - Scalar ~26 tok/s → SIMD ~35 tok/s (**~1.3x throughput**)
   - Detalle: `data/benchmark/results/simd-benchmark.md`
-- **Dispatch**: VNNI > AVX2 > scalar (runtime `is_x86_feature_detected!`)
+- **Dispatch Q8**: VNNI > AVX2 > scalar (F32 siempre scalar)
 - **REDUKT_NO_SIMD=1**: env var para forzar scalar (benchmarking)
 - **Subtareas**:
   - [x] Perfilar hotspots: mat_vec_mul dominante (>80% del tiempo via PhaseTimer)
@@ -224,4 +225,5 @@
 | 2026-10-27 | R-010: --tau descartado (empeora BPB en todos los valores) |
 | 2026-10-27 | Roadmap reestructurado: P3 → optimización + go-to-market (R-010 a R-014) |
 | 2026-10-27 | R-011 completado — AVX2 Q8/F32 kernels + 3-tier dispatch + 9 tests, 74 total |
-| 2026-10-27 | R-011 benchmark — Q8 matmul 6.7x-14.5x, end-to-end +17% throughput (32→38 tok/s) |
+| 2026-10-27 | R-011 benchmark — Q8 6.7x-14.5x matmul, ~1.3x end-to-end, F32 FMA disabled |
+| 2026-10-27 | R-011 fix — F32 FMA rompe cross-path determinism, deshabilitado, roundtrip verificado |
