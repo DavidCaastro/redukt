@@ -223,6 +223,20 @@
 
 ## P3 — Optimización y Go-to-Market
 
+> **Principio rector**: las optimizaciones de throughput tienen interdependencias en
+> degradación de BPB. Se secuencian de menor a mayor riesgo, con quality gates entre cada paso.
+>
+> **Presupuesto de degradación BPB**: máximo **+5% combinado** sobre Q8 baseline en logs
+> (vertical prioritario). Si se supera, STOP — la ventaja competitiva (-48% vs brotli)
+> se erosiona. A +10% la ventaja cae a -43%, aún viable pero con margen reducido.
+>
+> **Interdependencias documentadas**:
+> - KV caching + Multi-file parallelism: **independientes**, 0% BPB loss cada una
+> - SVD pruning: **degrada BPB** (-1pp NLP ≈ est. +2-5% BPB compresión) [ESTIMATE]
+> - Parallel segments: **degrada BPB** (pérdida de contexto en fronteras) [UNMEASURED]
+> - SVD + Parallel segments combinados: **degradación compuesta**, no aditiva [UNMEASURED]
+> - Cada paso debe medirse individualmente Y acumulado contra el presupuesto
+
 ### R-010: Estabilizar features experimentales en producción
 - **Estado**: EN PROGRESO
 - **Impacto**: `--emb-surgery center0.3` mejora 14/18 archivos, media -1.69% BPB
@@ -274,14 +288,93 @@
   - [x] Evaluar portable_simd: descartado (requiere nightly, raw intrinsics son estables)
   - [x] 74 tests totales pasando (70 unit + 4 integration), 3 ignored benchmarks
 
-### R-012: Multi-file paralelismo
+### Secuencia de throughput — orden por riesgo de degradación BPB
+
+> Cada paso incluye un quality gate: medir BPB en los 3 archivos de log + enwik8.
+> Si la degradación acumulada supera +5% en logs → STOP, no proceder al siguiente.
+
+#### Paso 1: R-015 — KV Batch Caching (0% BPB risk)
 - **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — elimina cómputo redundante, no cambia predicciones
+- **Speedup estimado**: 2-3x [ESTIMATE — arquitectural, no medido]
+- **Impacto**: Cachear estados KV del RWKV entre tokens para evitar recálculo
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`
+- **Subtareas**:
+  - [ ] Perfilar con PhaseTimer: identificar % de tiempo en recálculo de estados
+  - [ ] Implementar KV state cache en RWKV forward pass
+  - [ ] Benchmark pre/post: tok/s y B/s en 3 logs + enwik8
+  - [ ] **Quality gate**: verificar BPB idéntico pre/post (debe ser 0.000 delta)
+  - [ ] Roundtrip test: compress → decompress → diff byte-identical
+
+#### Paso 2: R-012 — Multi-file paralelismo (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — cada archivo se procesa independientemente
+- **Speedup estimado**: Nx con N cores [PROJECTION: linear scaling]
 - **Impacto**: Linear con cores (N archivos en paralelo, modelo por thread)
 - **Archivos**: `src/application/codec.rs`, `src/main.rs`
 - **Subtareas**:
-  - [ ] Evaluar RAM por instancia (~400 MB Q8, ~1.6 GB F32)
+  - [ ] Evaluar RAM por instancia (~400 MB Q8, ~1.6 GB F32) [ESTIMATE]
   - [ ] Implementar modo batch: `redukt compress --input-dir <DIR> --output-dir <DIR> --jobs N`
   - [ ] Thread pool con modelo pre-cargado, state por thread
+  - [ ] Benchmark: 1, 2, 4, 8 jobs en corpus de 8+ archivos de log
+  - [ ] **Quality gate**: verificar BPB idéntico single-thread vs multi-thread (debe ser 0.000 delta)
+  - [ ] Medir RAM real por thread y documentar requisitos
+
+#### Paso 3: R-016 — SVD Pruning del modelo RWKV (BPB risk: +2-5%)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: MEDIO — reduce capacidad del modelo, degrada predicciones
+- **Speedup estimado**: 3.5-4.8x [SOURCED: RWKV-edge paper, pero en NLP no compresión]
+- **Presupuesto BPB consumido**: este paso solo, máximo +5%. Si consume +5%, no queda margen para R-017.
+- **Dependencia**: R-V06 (factibilidad completada, SVD conditional GO)
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`, scripts de pruning offline
+- **Subtareas**:
+  - [ ] Implementar SVD rank-384 en TimeMix projections (offline, genera nuevos weights)
+  - [ ] Benchmark BPB: 3 logs + enwik8 + facturae con modelo pruned vs baseline
+  - [ ] Benchmark throughput: tok/s y B/s con modelo pruned
+  - [ ] **Quality gate BPB**: si degradación >+5% en logs → reducir agresividad (rank-512, rank-448)
+  - [ ] **Quality gate combinado**: medir BPB con R-015 + R-012 + R-016 todos activos
+  - [ ] Si pasa gates: generar weights pruned y añadir a `weights/MANIFEST.md`
+  - [ ] Documentar BPB delta exacto por archivo [MEASURED]
+  - [ ] Roundtrip test con modelo pruned
+
+#### Paso 4: R-017 — Parallel Segment Compression (BPB risk: variable)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: ALTO — divide el archivo en segmentos, cada uno pierde contexto previo
+- **Speedup estimado**: 2-4x [ESTIMATE — depende de tamaño de segmento]
+- **Presupuesto BPB restante**: +5% total menos lo consumido por R-016
+- **PRECONDICIÓN**: solo proceder si R-016 dejó margen en el presupuesto de +5%
+- **Archivos**: `src/application/codec.rs`, `src/domain/coder.rs`
+- **Subtareas**:
+  - [ ] Diseñar formato de segmentos en AZTH (v4: segment offsets en header)
+  - [ ] Implementar split → compress parallel → merge
+  - [ ] Benchmark BPB por tamaño de segmento: 1KB, 4KB, 16KB, 64KB
+  - [ ] **Quality gate BPB**: degradación del segmenting solo (sin SVD) en logs
+  - [ ] **Quality gate COMBINADO**: R-015 + R-012 + R-016 + R-017 todos activos
+  - [ ] Si degradación combinada >+5% en logs → ajustar tamaño de segmento o ABORT R-017
+  - [ ] Roundtrip test con segmentos paralelos
+  - [ ] Documentar curva: tamaño segmento vs BPB loss vs speedup [MEASURED]
+
+### Resumen de throughput proyectado (secuencia acumulativa)
+
+> Todos los valores son [PROJECTION] salvo la fila "Current" que es [MEASURED].
+> La degradación BPB es [ESTIMATE] — debe medirse en cada paso.
+
+| Paso | Optimización | Speedup | B/s acum. (logs) | BPB risk acum. | Gate |
+|---|---|---|---|---|---|
+| Current | SIMD Q8 baseline | 1x | ~62 B/s [MEASURED] | 0% | — |
+| R-015 | + KV caching | 2-3x | ~124-186 B/s | 0% | BPB = 0 delta |
+| R-012 | + 8 cores | 8x | ~992-1488 B/s | 0% | BPB = 0 delta |
+| R-016 | + SVD pruning | 3-5x | ~2976-7440 B/s | +2-5% | BPB ≤ +5% |
+| R-017 | + Parallel segments | 2-4x | ~5952-29760 B/s | +3-8%? | BPB ≤ +5% total |
+
+**Nota crítica**: Los speedups multiplicativos son teóricos. En la práctica:
+- R-015 × R-016 podrían ser sub-multiplicativos (ambos tocan inference path)
+- R-012 es genuinamente multiplicativo (paralelismo puro)
+- R-017 tiene overhead de merge y cold-start por segmento
+- El gate de +5% BPB puede forzar STOP antes de R-017
+
+**Target mínimo viable**: R-015 + R-012 (8 cores) = ~1 KB/s sin degradación BPB.
+Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
 
 ### R-013: Determinismo cross-platform
 - **Estado**: PENDIENTE
@@ -333,3 +426,7 @@
 | 2026-10-27 | R-V05 completado — Q4 RECHAZADO: +13.3% BPB, 7.6x más lento que Q8 |
 | 2026-10-27 | R-V06 completado — model pruning: SVD conditional GO, distillation NO-GO, Q4 NO-GO |
 | 2026-10-27 | R-V07 completado — Cribl/Edicom/log TAM verificados. Cold/genomics TAM sin fuente |
+| 2026-10-27 | P3 reformulado: secuencia por riesgo BPB, quality gates, presupuesto +5% degradación |
+| 2026-10-27 | R-015 (KV caching), R-016 (SVD pruning), R-017 (parallel segments) añadidos |
+| 2026-10-27 | R-012 reposicionado: paso 2 (0% BPB risk, antes de tocar modelo) |
+| 2026-10-27 | Interdependencias documentadas: SVD + parallel segments = degradación compuesta |
