@@ -16,6 +16,7 @@ fn main() {
         "hybrid-eval" => application::codec::cmd_hybrid_eval(&args[2..]),
         "baseline" => application::codec::cmd_baseline(&args[2..]),
         "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
+        "benchmark" => application::benchmark::cmd_benchmark(&args[2..]),
         "api" => { application::api::cmd_api(&args[2..]); Ok(()) }
         "--help" | "-h" | "help" => { print_usage(); Ok(()) }
         other => {
@@ -40,6 +41,7 @@ fn print_usage() {
     eprintln!("  decompress  Decompress an AZTH file to original");
     eprintln!("  hybrid-eval Evaluate BPB with full ensemble (no output file)");
     eprintln!("  baseline    Evaluate BPB with RWKV-only (no ensemble)");
+    eprintln!("  benchmark   Evaluate compression vs gzip/brotli/zstd (JSON report)");
     eprintln!("  cm-eval     Spectral analysis of weight matrices");
     eprintln!("  api         Start HTTP API server");
     eprintln!();
@@ -48,6 +50,7 @@ fn print_usage() {
     eprintln!("  redukt decompress  --input <FILE> --output <FILE> [--weights <DIR>]");
     eprintln!("  redukt hybrid-eval --input <FILE> [options] [--log <FILE>]");
     eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
+    eprintln!("  redukt benchmark   --input <FILE_OR_DIR> --output <JSON> [options]");
     eprintln!("  redukt cm-eval     --output <FILE> [--weights <DIR>]");
     eprintln!("  redukt api         [--host <ADDR>] [--port <PORT>] [--weights <DIR>]");
     eprintln!();
