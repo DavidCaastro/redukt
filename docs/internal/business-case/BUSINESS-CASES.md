@@ -120,16 +120,14 @@ All previous EUR projections (833K savings) were based on inverted data and are 
 
 Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
 
-| Log type | Redukt BPB | gzip-9 [MEASURED] | brotli-11 [MEASURED] | vs gzip-9 | vs brotli-11 | Note |
-|---|---|---|---|---|---|---|
-| apache-access.log | **0.309** | 0.546 | 0.466 | **-43.4%** | **-33.8%** | actual AZTH [MEASURED 2026-10-28] |
-| linux-syslog.log | 0.362 (ce) | 0.714 | 0.582 | pending | pending | cross-entropy, needs re-measurement |
-| openssh-auth.log | 0.475 (ce) | 0.990 | 0.783 | pending | pending | cross-entropy, needs re-measurement |
+| Log type | Redukt BPB [MEASURED] | gzip-9 [MEASURED] | brotli-11 [MEASURED] | vs gzip-9 | vs brotli-11 |
+|---|---|---|---|---|---|
+| apache-access.log | **0.309** | 0.546 | 0.466 | **-43.4%** | **-33.8%** |
+| linux-syslog.log | **0.426** | 0.714 | 0.582 | **-40.3%** | **-26.7%** |
+| openssh-auth.log | **0.538** | 0.990 | 0.783 | **-45.7%** | **-31.3%** |
+| **Mean (3 log files)** | **0.424** | **0.750** | **0.610** | **-43.5%** | **-30.5%** |
 
-> **Note**: Only apache-access.log has been verified with actual AZTH compression.
-> The other two log files use cross-entropy BPB (5-20% lower than actual). The mean
-> below uses apache actual BPB and the other two as cross-entropy — it will increase
-> when all files are re-measured.
+All values from actual AZTH compression, measured 2026-10-28. Roundtrip-verified.
 
 ### Volume [ESTIMATE — industry typical, not verified for specific client]
 
@@ -142,18 +140,16 @@ Source: `data/benchmark/results/gzip9-brotli11-comparison.csv`
 
 [CALCULATED from measured BPB, formula: stored = raw × (BPB/8)]
 
-| Compressor | Log BPB | Ratio | TB/year stored (1 PB raw) | Note |
-|---|---|---|---|---|
-| gzip-9 | 0.750 [MEASURED] | 9.38% | 93.8 TB | mean of 3 files |
-| brotli-11 | 0.610 [MEASURED] | 7.63% | 76.3 TB | mean of 3 files |
-| **Redukt Q8** | **0.309** | **3.86%** | **38.6 TB** | apache only [MEASURED actual compression] |
-| **Delta vs gzip-9** | | | **-55.2 TB/year** | based on apache only; will change when all 3 measured |
+| Compressor | Mean log BPB [MEASURED] | Ratio | TB/year stored (1 PB raw) |
+|---|---|---|---|
+| gzip-9 | 0.750 | 9.38% | 93.8 TB |
+| brotli-11 | 0.610 | 7.63% | 76.3 TB |
+| **Redukt Q8** | **0.424** | **5.30%** | **53.0 TB** |
+| **Delta vs gzip-9** | | | **-40.8 TB/year** |
 
-5-year peak: gzip 469 TB vs Redukt 193 TB = **-276 TB saved** (apache rate).
+5-year peak: gzip 469 TB vs Redukt 265 TB = **-204 TB saved**.
 
-> **CAVEAT**: This projection uses only apache-access.log actual compression BPB (0.309).
-> When syslog and openssh are re-measured, the mean Redukt BPB will likely be higher
-> (estimated ~0.40-0.45 BPB based on their higher cross-entropy values).
+All Redukt BPB from actual AZTH compression (mean of 3 log files), measured 2026-10-28.
 
 > **R-V04 RESULT** [MEASURED]: Scale test on apache-access.log shows:
 > - 10KB: Redukt 0.245 vs brotli 0.466 = -47.5%
@@ -169,17 +165,17 @@ Storage: EUR 30/TB/month [ESTIMATE — S3 Infrequent Access or compliance tier, 
 
 | Year | gzip stored | gzip cost/yr | Redukt stored | Redukt cost/yr | Annual savings |
 |---|---|---|---|---|---|
-| 1 | 93.8 TB | 33,768 | 45.1 TB | 16,236 | **17,532** |
-| 2 | 187.6 TB | 67,536 | 90.2 TB | 32,472 | 35,064 |
-| 3 | 281.4 TB | 101,304 | 135.3 TB | 48,708 | 52,596 |
-| 4 | 375.2 TB | 135,072 | 180.4 TB | 64,944 | 70,128 |
-| 5 | 469.0 TB | 168,840 | 225.5 TB | 81,180 | **87,660** |
+| 1 | 93.8 TB | 33,768 | 53.0 TB | 19,080 | **14,688** |
+| 2 | 187.6 TB | 67,536 | 106.0 TB | 38,160 | 29,376 |
+| 3 | 281.4 TB | 101,304 | 159.0 TB | 57,240 | 44,064 |
+| 4 | 375.2 TB | 135,072 | 212.0 TB | 76,320 | 58,752 |
+| 5 | 469.0 TB | 168,840 | 265.0 TB | 95,400 | **73,440** |
 
 [CALCULATED] cost/yr = accumulated_TB × EUR 30/TB/month × 12
 
-**Total storage savings 5 years: 262,980** [CALCULATED]
+**Total storage savings 5 years: 220,320** [CALCULATED]
 
-With 2x DR replicas (×3 total): **788,940** [CALCULATED, assumes same $/TB]
+With 2x DR replicas (×3 total): **660,960** [CALCULATED, assumes same $/TB]
 
 ### Compute Cost Constraint [ESTIMATE]
 
@@ -192,8 +188,8 @@ Processing 1 PB/year (2.74 TB/day) at 132 B/s requires:
 
 ### Verdict
 
-**Direction correct — Redukt strongly beats gzip-9 and brotli-11 on logs (-43%, -34% on apache, actual compression).**
-But compute cost at current throughput (~132 B/s) makes the case **economically negative**.
+**Direction correct — Redukt strongly beats gzip-9 and brotli-11 on logs (-44% vs gzip, -31% vs brotli, mean of 3 log files, actual compression).**
+But compute cost at current throughput (~80 B/s mean on logs) makes the case **economically negative**.
 
 **Required for viable case**: throughput ≥1 KB/s (R-015 + R-012 + model optimization).
 
@@ -206,7 +202,7 @@ But compute cost at current throughput (~132 B/s) makes the case **economically 
 | E-invoicing mid | **BLOCKED** | XML: -48% vs brotli (actual compression) [MEASURED] | PDF never benchmarked (67% of mix) |
 | E-invoicing large | **BLOCKED** | Same | Same |
 | PACS hospital | **DEAD** | x-ray: +42% WORSE [MEASURED ce_bpb] | Redukt loses on medical imaging |
-| Log archival | **DIRECTION CORRECT** | Logs: -34% vs brotli (actual compression) [MEASURED] | Throughput (~132 B/s) makes compute cost prohibitive |
+| Log archival | **DIRECTION CORRECT** | Logs: -31% vs brotli (mean 3 files, actual) [MEASURED] | Throughput (~80 B/s mean) makes compute cost prohibitive |
 
 ### What Changed from Previous Version
 

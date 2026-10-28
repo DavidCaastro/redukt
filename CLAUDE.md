@@ -166,25 +166,29 @@ Use `--quant f32|q8|q4|auto` to force quantization level.
 - **coder efficiency**: 95.3% on enwik8 (varies 80-95% by file)
 - **baseline (RWKV-only)**: 1.4067 BPB
 
-### Verified Results (actual compression, 10KB, roundtrip-verified)
+### Strongest Results (actual AZTH compression, 10KB)
 | File | Redukt BPB | brotli-11 | Δ | Coder eff. |
 |---|---|---|---|---|
 | apache-access.log | **0.309** | 0.466 | **-34%** | 80.3% |
 | facturae-batch.xml | **0.462** | 0.890 | **-48%** | 88.4% |
+| ubl-invoice-batch.xml | **0.558** | 0.888 | **-37%** | 87.9% |
+| samba | **1.319** | 2.220 | **-41%** | 96.1% |
 | enwik8 | **1.345** | 2.352 | **-43%** | 95.3% |
 
-### Cross-Entropy BPB (hybrid-eval, 10KB, Q8) — pending re-measurement with actual compression
-Note: ce_bpb is 5-20% lower than actual compressed BPB due to coder overhead.
+### Full Silesia + Industry (18 files, actual compression, 10KB Q8)
+| File | BPB | vs brotli | File | BPB | vs brotli |
+|---|---|---|---|---|---|
+| apache-access.log | 0.309 | -34% | samba | 1.319 | -41% |
+| linux-syslog.log | 0.426 | -27% | enwik8 | 1.345 | -43% |
+| facturae-batch.xml | 0.462 | -48% | dickens | 1.829 | -34% |
+| openssh-auth.log | 0.538 | -31% | webster | 1.809 | -36% |
+| ubl-invoice-batch.xml | 0.558 | -37% | reymont | 1.918 | -10% |
+| nci | 0.680 | -7% | mozilla | 2.063 | +2% |
+| xml | 0.705 | -22% | mr | 2.402 | +1% |
 
-| File | ce_bpb | File | ce_bpb |
-|---|---|---|---|
-| xml | 0.640 | samba | 1.266 |
-| nci | 0.596 | dickens | 1.779 |
-| webster | 1.760 | mozilla | 1.965 |
-| reymont | 1.808 | mr | 2.283 |
-| ooffice | 3.704 | x-ray | 6.524 |
-
-Benchmark data in `data/benchmark/`. Raw CSV in `data/benchmark/results/`.
+Loses: ooffice +38%, osdb +22%, x-ray +44%, sao +55%.
+Wins 12/18 files. Coder efficiency: 80-99% (lower on more compressible files).
+Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 Reproducible: `redukt benchmark --input <FILE> --output report.json --verify`
 
 ## Process Safety (Windows)

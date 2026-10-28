@@ -6,7 +6,7 @@ Mixing and arithmetic coding.
 
 ## Highlights
 
-- **Best-in-class compression**: 48% smaller than brotli-11 on e-invoicing, 34% on server logs
+- **Best-in-class compression**: 48% smaller than brotli-11 on e-invoicing, 34% on server logs (actual compression)
 - **18 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
 - **Zero dependencies**: Pure Rust, single binary, CPU-only
 - **Deterministic**: Bit-identical decompression guaranteed (CRC-32 verified)
@@ -38,20 +38,23 @@ weights all prediction sources per-byte.
 Input → Tokenize → [RWKV-7 + CM ensemble + LSTM mixer] → Arithmetic Coder → .azth
 ```
 
-## Performance (Verified Q8, 10KB window, actual AZTH compression)
+## Performance (18 files, Q8, 10KB, actual AZTH compression)
 
-All BPB = `compressed_size × 8 / original_size` (actual file output, not cross-entropy estimate).
+All BPB = `compressed_size × 8 / original_size` (actual file output, not cross-entropy).
 
 | File | Domain | Redukt BPB | brotli-11 | vs brotli |
 |---|---|---|---|---|
 | apache-access.log | Server logs | **0.31** | 0.47 | **-34%** |
 | facturae-batch.xml | E-invoicing | **0.46** | 0.89 | **-48%** |
+| ubl-invoice-batch.xml | E-invoicing UBL | **0.56** | 0.89 | **-37%** |
+| xml | XML markup | **0.70** | 0.90 | **-22%** |
+| samba | Source code | **1.32** | 2.22 | **-41%** |
 | enwik8 | Text/encyclopedia | **1.34** | 2.35 | **-43%** |
+| dickens | Text/literature | **1.83** | 2.78 | **-34%** |
 
-Roundtrip-verified (byte-identical decompression, CRC-32 checked).
-Coder efficiency: 80-95% depending on file compressibility (header overhead dominates on very small compressed outputs).
-Throughput: ~47 tok/s Q8 SIMD (~150 B/s). Batch/archival workloads.
-F32 vs Q8: <2.5% BPB difference, Q8 is 2.1x faster. See `data/benchmark/results/`.
+Wins 12/18 files. Loses on high-entropy data (medical imaging, astronomy, databases, executables).
+Throughput: ~47 tok/s Q8 SIMD (~60 B/s mean). Batch/archival workloads.
+Full results: `data/benchmark/results/actual-compression-benchmark.csv`.
 
 ## Requirements
 

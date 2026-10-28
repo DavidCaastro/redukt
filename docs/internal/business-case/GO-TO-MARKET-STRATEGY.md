@@ -33,13 +33,13 @@ first viable, quantifiable, auditable, and reproducible product.
 | BPB enwik8 10KB (cross-entropy) | 1.2812 | `data/benchmark/results/f32-vs-q8.csv` |
 | vs brotli-11 on logs | **-34%** | apache-access.log actual compression [MEASURED 2026-10-28] |
 | vs brotli-11 on XML | **-48%** | facturae-batch.xml actual compression [MEASURED 2026-10-28] |
-| Wins vs brotli-11 | 3/3 verified | 15 files pending re-measurement |
+| Wins vs brotli-11 | 12/18 files | All 18 measured with actual compression [2026-10-28] |
 | Coder efficiency | 80-95% | varies by file compressibility [MEASURED 2026-10-28] |
 | Integrity | CRC-32 + bounds check | AZTH v3 (R-001 to R-004) |
 | Error handling | Result<> propagation | R-006, zero panics in codec |
 | SIMD speedup (Q8 matmul) | 6.7x AVX2, 14.5x VNNI | R-011 micro-benchmark |
 | Cross-path determinism | Bit-exact (Q8 SIMD) | R-011 roundtrip validation |
-| Test suite | 74 pass (70 unit + 4 integration) | `cargo test` |
+| Test suite | 82 pass (82 unit + 4 integration) | `cargo test` |
 
 ### Weaknesses (quantified)
 

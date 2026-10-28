@@ -19,50 +19,63 @@
 > (experimental features). Production results below use standard defaults only.
 > F32 vs Q8 comparison (`--quant f32` vs `--quant q8`) confirmed <2.5% difference.
 
-## Verified Results (Actual AZTH Compression, Roundtrip-Verified, 2026-10-28)
+## Production Results (Actual AZTH Compression, 18 files, 2026-10-28)
 
-BPB = `compressed_size × 8 / original_size`. Roundtrip = compress → decompress → byte-identical.
+BPB = `compressed_size × 8 / original_size`. All measured with `redukt benchmark --bytes 10000`.
+Industry files roundtrip-verified (`--verify`). Competitors piped via stdin (brotli -q 11, gzip -9).
+Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 
-| File | Category | Redukt BPB [MEASURED] | brotli-11 [MEASURED] | gzip-9 [MEASURED] | vs brotli | Coder eff. | Roundtrip |
+### Industry Files
+
+| File | Category | Redukt BPB | brotli-11 | gzip-9 | vs brotli | Coder eff. | RT |
 |---|---|---|---|---|---|---|---|
 | apache-access.log | Server logs | **0.309** | 0.466 | 0.546 | **-33.8%** | 80.3% | PASS |
+| linux-syslog.log | System logs | **0.426** | 0.582 | 0.714 | **-26.7%** | 86.3% | PASS |
 | facturae-batch.xml | E-invoicing | **0.462** | 0.890 | 1.070 | **-48.1%** | 88.4% | PASS |
-| enwik8 | Text/encyclopedia | **1.345** | 2.352 | 2.972 | **-42.8%** | 95.3% | PASS |
+| openssh-auth.log | Auth logs | **0.538** | 0.783 | 0.990 | **-31.3%** | 88.4% | PASS |
+| ubl-invoice-batch.xml | E-invoicing UBL | **0.558** | 0.888 | 1.093 | **-37.2%** | 87.9% | PASS |
 
-### Cross-Entropy Results (hybrid-eval, pending re-measurement with actual compression)
+### Silesia Corpus + enwik8
 
-> **WARNING**: These BPB values are cross-entropy estimates (ce_bpb), NOT actual compressed file
-> size. Actual compressed BPB is typically 5-20% higher due to coder overhead. Do NOT compare
-> directly with competitor BPB (which IS actual file size). Re-measurement pending.
+| File | Category | Redukt BPB | brotli-11 | gzip-9 | vs brotli | Coder eff. |
+|---|---|---|---|---|---|---|
+| nci | Scientific | **0.680** | 0.734 | 0.934 | **-7.4%** | 88.1% |
+| xml | Markup | **0.705** | 0.901 | 1.075 | **-21.8%** | 90.0% |
+| samba | Code | **1.319** | 2.220 | 2.884 | **-40.6%** | 96.1% |
+| enwik8 | Text/encyclopedia | **1.345** | 2.352 | 2.972 | **-42.8%** | 95.3% |
+| webster | Reference | **1.809** | 2.809 | 3.661 | **-35.6%** | 97.2% |
+| dickens | Text/literature | **1.829** | 2.778 | 3.621 | **-34.2%** | 97.2% |
+| reymont | Text/polish | **1.918** | 2.136 | 2.387 | **-10.2%** | 94.4% |
+| mozilla | Binary | 2.063 | 2.021 | 2.374 | +2.1% | 95.2% |
+| mr | Medical img | 2.402 | 2.373 | 2.780 | +1.2% | 95.2% |
+| ooffice | Executable | 3.779 | 2.742 | 2.910 | +37.8% | 98.0% |
+| osdb | Database | 5.717 | 4.676 | 4.967 | +22.3% | 98.7% |
+| x-ray | Medical img | 6.608 | 4.592 | 5.873 | +43.9% | 98.6% |
+| sao | Astronomy | 9.254 | 5.988 | 6.389 | +54.5% | 99.8% |
 
-| File | Category | Redukt ce_bpb | brotli-11 | Note |
-|---|---|---|---|---|
-| linux-syslog.log | System logs | 0.362 | 0.582 | needs actual compression |
-| openssh-auth.log | Auth logs | 0.475 | 0.783 | needs actual compression |
-| ubl-invoice-batch.xml | E-invoicing UBL | 0.490 | 0.889 | needs actual compression |
-| nci | Scientific | 0.596 | 0.57 | needs actual compression |
-| xml | Markup | 0.640 | 0.89 | needs actual compression |
-| samba | Code | 1.266 | 1.61 | needs actual compression |
-| dickens | Text/literature | 1.779 | 2.11 | needs actual compression |
-| webster | Reference | 1.760 | 2.10 | needs actual compression |
-| reymont | Text/polish | 1.808 | 1.89 | needs actual compression |
-| mozilla | Binary | 1.964 | 2.31 | needs actual compression |
-| mr | Medical img | 2.283 | 2.27 | needs actual compression |
-| ooffice | Executable | 3.704 | 3.32 | needs actual compression |
-| x-ray | Medical img | 6.524 | 4.44 | needs actual compression |
-| osdb | Database | 5.643 | 3.08 | needs actual compression |
-| sao | Astronomy | 9.241 | 5.57 | needs actual compression |
-
-## Summary Statistics (based on 3 verified files)
+## Summary Statistics (all 18 files, actual compression)
 
 | Metric | Value |
 |---|---|
-| Files verified with actual compression | **3/18** |
-| All 3 verified files beat brotli-11 | **3/3 (100%)** |
-| Best advantage (verified) | facturae-batch.xml: **-48.1%** |
-| Weakest advantage (verified) | apache-access.log: **-33.8%** |
-| Coder efficiency range | 80-95% (lower on more compressible files) |
-| Pending re-measurement | 15 files |
+| Files where Redukt wins vs brotli | **12/18 (67%)** |
+| Files where Redukt loses vs brotli | 6/18 (executables, medical, high-entropy) |
+| Mean advantage (winning files only) | **-31.7%** |
+| Best advantage | facturae-batch.xml: **-48.1%** |
+| Worst loss | sao astronomy: +54.5% (near-random data) |
+| Coder efficiency range | 80.3% (apache) to 99.8% (sao) |
+
+## Category Analysis (actual compression)
+
+| Category | Files | Redukt mean BPB | brotli mean BPB | Advantage |
+|---|---|---|---|---|
+| **Server/auth logs** | 3 | 0.424 | 0.610 | **-30.5%** |
+| **E-invoicing XML** | 2 | 0.510 | 0.889 | **-42.6%** |
+| Text/Literature | 4 | 1.851 | 2.519 | **-26.5%** |
+| Structured markup | 2 | 0.693 | 0.818 | **-15.3%** |
+| Source code | 1 | 1.319 | 2.220 | **-40.6%** |
+| Binary/Executable | 2 | 2.921 | 2.382 | +22.6% |
+| Medical imaging | 2 | 4.505 | 3.483 | +29.4% |
+| High-entropy | 2 | 7.484 | 5.332 | +40.4% |
 
 ## F32 vs Q8 Quantization Comparison
 

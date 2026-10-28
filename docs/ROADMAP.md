@@ -433,4 +433,7 @@ Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
 | 2026-10-28 | CORRECCIÓN: benchmark usa compresión real (AZTH) en vez de cross-entropy. BPB real 5-20% mayor. |
 | 2026-10-28 | Cifras corregidas: logs -34% vs brotli (antes -48%), facturae -48% (antes -54%), enwik8 -43% (antes -30%) |
 | 2026-10-28 | Coder efficiency: 80-95% (varía por archivo), no ~95% uniforme como se estimaba |
-| 2026-10-28 | Throughput medido: ~47 tok/s, ~150 B/s (post-SIMD, mejorado vs ~23 tok/s anterior) |
+| 2026-10-28 | Throughput medido: ~25-47 tok/s, ~27-164 B/s (varía por archivo) |
+| 2026-10-28 | 18 archivos completos con compresión real: 12/18 wins vs brotli (antes 13/18 con ce_bpb) |
+| 2026-10-28 | mozilla flipped: -15% (ce) → +2.1% (actual). nci flipped: +4.6% (ce) → -7.4% (actual) |
+| 2026-10-28 | CSV completo: `data/benchmark/results/actual-compression-benchmark.csv` |
