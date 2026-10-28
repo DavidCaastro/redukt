@@ -70,5 +70,6 @@ fn print_usage() {
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");
+    eprintln!("  --svd-rank <K>       SVD rank for TimeMix projections (0=off, e.g. 256/384)");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
 }

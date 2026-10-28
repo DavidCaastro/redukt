@@ -1,0 +1,9 @@
+test,rank,pct_dims,bpb,delta_bpb_pct,flops_ratio,rel_err_key,rel_err_value,rel_err_recep,rel_err_output,verdict
+baseline,768,100.0,1.278184,0.0,1.00,,,,,"current production"
+svd,750,97.6,1.322547,3.47,1.95,8.6e-3,9.8e-3,3.1e-2,1.9e-2,"FAIL: exceeds +3% AND 1.95x slower"
+svd,700,91.1,1.342732,5.05,1.82,7.1e-2,9.4e-2,1.7e-1,1.7e-1,"FAIL: exceeds +3% AND 1.82x slower"
+svd,384,50.0,2.053165,60.58,1.00,4.9e-1,1.1e+0,6.2e-1,7.0e-1,"FAIL: catastrophic BPB loss"
+notes,,,,,,"Break-even FLOPs at rank=D/2=384. Any rank>384 is slower than original."
+notes,,,,,,"RWKV-7 0.1B weight matrices have high effective rank — not amenable to SVD."
+notes,,,,,,"RWKV-edge paper NLP accuracy does NOT transfer to compression BPB."
+notes,,,,,,"R-016 ABORTED — no viable rank satisfies both quality and speed constraints."

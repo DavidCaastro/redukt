@@ -513,30 +513,41 @@
   - 3 jobs: 64.8s mean (2.8 files/min) → **1.64x** [MEASURED]
   - Sub-lineal por memory bandwidth contention — escala mejor con más files
 
-#### Paso 4: R-016 — SVD Pruning del modelo RWKV (BPB risk: +2-3%)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: MEDIO — reduce capacidad del modelo, degrada predicciones
-- **Speedup estimado**: 3.5-4.8x [SOURCED: RWKV-edge paper, pero en NLP no compresión]
-- **Presupuesto BPB consumido**: este paso solo, máximo **+3%**. Si consume +3%, no queda margen para R-017.
-- **Dependencia**: R-V06 (factibilidad completada, SVD conditional GO)
-- **Archivos**: `src/infrastructure/rwkv7/model.rs`, scripts de pruning offline
+#### Paso 4: R-016 — SVD Pruning del modelo RWKV — ABORTADO
+- **Estado**: ABORTADO (2026-10-28)
+- **Riesgo BPB**: FATAL — RWKV-7 0.1B tiene rango efectivo alto, SVD no es viable
+- **Resultado**: `data/benchmark/results/r016-svd-pruning-evaluation.csv`
+- **Implementación**: Randomized SVD (Halko-Martinsson-Tropp) + Jacobi eigen con eigenvectores
+- **Archivos**: `src/domain/spectral.rs` (truncated_svd_f32), `src/infrastructure/rwkv7/model.rs` (SvdProjection)
+- **Hallazgos** [MEASURED]:
+  - Baseline: 1.2782 BPB (enwik8 10KB, Q8)
+  - Rank-750 (97.6%): 1.3225 BPB (+3.47%) AND **1.95x SLOWER** → FAIL
+  - Rank-700 (91.1%): 1.3427 BPB (+5.05%) AND **1.82x SLOWER** → FAIL
+  - Rank-384 (50.0%): 2.0532 BPB (+60.6%) → catastrophic quality loss
+  - **Break-even FLOPs at rank=D/2=384**: two D×k matmuls = one D×D matmul. Any rank>384 is SLOWER.
+  - Reconstruction relative errors (layer 0): key 8.6e-3, value 9.8e-3, receptance 3.1e-2, output 1.9e-2
+- **Root cause**: RWKV-7 0.1B weight matrices have high effective rank (flat singular value spectrum).
+  RWKV-edge paper NLP accuracy metrics (+1pp at rank-384) do NOT transfer to compression BPB (+60.6%).
+  No rank satisfies BOTH quality (<+3% BPB) AND speed (>1.0x) constraints simultaneously.
+- **Decisión**: ABORTADO. Código SVD se mantiene en codebase (compilable, tested) pero `--svd-rank` no viable.
 - **Subtareas**:
-  - [ ] Implementar SVD rank-384 en TimeMix projections (offline, genera nuevos weights)
-  - [ ] Benchmark BPB: 3 logs + enwik8 + facturae con modelo pruned vs baseline
-  - [ ] Benchmark throughput: tok/s y B/s con modelo pruned
-  - [ ] **Quality gate BPB**: si degradación >+3% en logs → reducir agresividad (rank-512, rank-448)
-  - [ ] **Quality gate combinado**: medir BPB con R-018 + R-019 + R-021 + R-015 + R-012 + R-016 todos activos
-  - [ ] Si pasa gates: generar weights pruned y añadir a `weights/MANIFEST.md`
-  - [ ] Documentar BPB delta exacto por archivo [MEASURED]
-  - [ ] Roundtrip test con modelo pruned
+  - [x] Implementar truncated_svd_f32 (Halko-Martinsson-Tropp randomized SVD)
+  - [x] Implementar jacobi_eigen_full (eigenvectors via rotation accumulation)
+  - [x] SvdProjection struct con Q8 re-quantization de factores
+  - [x] SVD dispatch en time_mixing_scratch (Steps 2 y 12)
+  - [x] `--svd-rank` CLI flag en compress y hybrid-eval
+  - [x] Benchmark: rank 384/700/750 vs baseline → NINGUNO viable
+  - [x] **Quality gate FAILED**: +3.47% BPB en MEJOR caso (rank-750), AND 1.95x slower
+  - [x] Documentar resultados en CSV con verdict por configuración
 
-#### Paso 5: R-017 — Parallel Segment Compression (BPB risk: variable) — ESTRICTAMENTE CONDICIONAL
-- **Estado**: PENDIENTE
+#### Paso 5: R-017 — Parallel Segment Compression (BPB risk: variable) — BLOQUEADO
+- **Estado**: BLOQUEADO (R-016 abortado → sin precedente de tolerancia BPB en modelo)
 - **Riesgo BPB**: ALTO — divide el archivo en segmentos, cada uno pierde contexto previo
 - **Speedup estimado**: 2-4x [ESTIMATE — depende de tamaño de segmento]
-- **Presupuesto BPB restante**: +3% total menos lo consumido por R-016
-- **PRECONDICIÓN**: solo proceder si R-016 dejó margen en el presupuesto de +3%.
-  Con el presupuesto reducido, es probable que R-016 consuma todo el margen y R-017 no proceda.
+- **Presupuesto BPB restante**: +3% íntegro (R-016 no consumió nada — abortado)
+- **NOTA**: R-016 demostró que la tolerancia BPB del modelo es extremadamente baja.
+  Context loss en fronteras de segmento probablemente cause degradación similar o peor.
+  Requiere evaluación empírica independiente antes de proceder.
 - **Archivos**: `src/application/codec.rs`, `src/domain/coder.rs`
 - **Subtareas**:
   - [ ] Diseñar formato de segmentos en AZTH (v4: segment offsets en header)
@@ -562,8 +573,8 @@
 | R-022 ✅ | + SIMD transcendentals | 1.23x | ~285-330 B/s [MEASURED: +23.2% A/B] | -0.13% | BPB -0.13% (improved) |
 | R-015 ✅ | + Rank-1 factorization | 2.35x | ~670 B/s [MEASURED: 94.8 tok/s A/B] | ±0.25% | BPB ±0.25% (noise) |
 | R-012 ✅ | + N threads | 1.64x (3T) | ~1100 B/s (3T) [MEASURED] | 0% | BPB bit-exact |
-| R-016 | + SVD pruning | 3-5x | ~10125-28350 B/s | +2-3% | BPB ≤ +3% |
-| R-017 | + Parallel segments | 2-4x | ~20250-113400 B/s | +3%? | BPB ≤ +3% total |
+| R-016 ❌ | ~~SVD pruning~~ | N/A | ABORTADO [MEASURED: +3.5% AND 1.95x slower] | N/A | FAILED |
+| R-017 ⏸ | Parallel segments | 2-4x | BLOQUEADO (requiere evaluación BPB independiente) | +?% | Pendiente |
 
 **Nota crítica**: Los speedups multiplicativos son teóricos. En la práctica:
 - R-018 no mejora throughput, pero reduce BPB → amplía el margen competitivo
@@ -572,15 +583,17 @@
 - R-015 × R-016 podrían ser sub-multiplicativos (ambos tocan inference path)
 - R-012 es sub-lineal en cores (1.64x con 3 threads [MEASURED], memory-bound bottleneck)
 - R-017 tiene overhead de merge y cold-start por segmento
-- El gate de **+3%** BPB probablemente fuerza STOP antes de R-017
+- R-016 ABORTADO: SVD no viable para RWKV-7 0.1B (alto rango efectivo, BPB catastrófico)
+- R-017 BLOQUEADO: requiere evaluación BPB independiente tras fracaso de R-016
 - R-HW1 (HardwareGovernor) es ortogonal — no afecta throughput peak pero protege hardware
 
 **Target mínimo viable**: R-021 ✅ + R-022 ✅ + R-015 ✅ + R-012 ✅ = done.
 **Achieved**: 94.8 tok/s single-thread × 1.64x (3 threads) = **~155 tok/s aggregate** [MEASURED].
 ~1.1 KB/s (3T). Con más cores/archivos, scaling continúa. Sin degradación BPB.
 
-**Secuencia revisada (2026-10-28)**: R-018 ✅ → R-019 → R-021 ✅ → R-022 ✅ → R-015 ✅ → R-012 ✅ → R-016 → R-017.
-Todas las optimizaciones 0% BPB risk completadas. Siguiente: modelo (R-016, R-017 — requieren quality gates BPB).
+**Secuencia revisada (2026-10-28)**: R-018 ✅ → R-019 ✅ → R-021 ✅ → R-022 ✅ → R-015 ✅ → R-012 ✅ → R-016 ❌ ABORT.
+Todas las optimizaciones 0% BPB risk completadas. R-016 (SVD) evaluado y abortado empíricamente.
+R-017 (parallel segments) bloqueado — requiere evaluación independiente.
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
 ### R-013: Determinismo cross-platform
@@ -670,3 +683,6 @@ R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de
 | 2026-10-28 | R-012: roundtrip verified (decompress byte-identical, CRC D28BAB1C) |
 | 2026-10-28 | R-012: Rwkv7State::reset() + Scratch::reset_perf() añadidos para batch reuse |
 | 2026-10-28 | Todas las optimizaciones 0% BPB risk completadas (R-018/R-021/R-022/R-015/R-012) |
+| 2026-10-28 | R-016 ABORTADO: SVD evaluado empíricamente, +3.47% BPB AND 1.95x slower (MEJOR caso) |
+| 2026-10-28 | R-016: RWKV-7 0.1B alto rango efectivo, RWKV-edge NLP accuracy ≠ compression BPB |
+| 2026-10-28 | R-017 BLOQUEADO: precondición R-016 fallida, requiere evaluación BPB independiente |

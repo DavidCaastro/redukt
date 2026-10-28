@@ -390,6 +390,186 @@ fn jacobi_eigenvalues(s: &mut [f64], n: usize) -> Vec<f64> {
     (0..n).map(|i| s[i * n + i]).collect()
 }
 
+// ─── A6: Truncated SVD via Randomized Algorithm ───
+
+/// Compute rank-k truncated SVD of a matrix (rows × cols, f64, row-major).
+/// Returns (A, B) as f32 where A is (rows × k) and B is (k × cols),
+/// such that W ≈ A·B. Absorbs singular values into A.
+///
+/// Uses Halko-Martinsson-Tropp randomized SVD:
+/// 1. Random projection Y = W·Ω
+/// 2. QR of Y → orthonormal basis Q
+/// 3. Small matrix B_hat = Q^T·W
+/// 4. SVD of B_hat via eigendecomposition of B_hat·B_hat^T
+/// 5. Reconstruct U = Q·U_hat, then A = U·diag(σ), B = V^T
+pub fn truncated_svd_f32(
+    data: &[f64], rows: usize, cols: usize, rank: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    assert!(rank > 0 && rank <= rows.min(cols));
+    let p = 10.min(rows.min(cols) - rank); // oversampling
+    let q = rank + p;
+    let mut rng = Rng::new(42);
+
+    // Step 1: Y = W · Ω where Ω is (cols × q) random Gaussian
+    let omega: Vec<f64> = (0..cols * q).map(|_| rng.next_normal()).collect();
+    let mut y = vec![0.0f64; rows * q]; // (rows × q)
+    for r in 0..rows {
+        let row_start = r * cols;
+        for j in 0..q {
+            let mut sum = 0.0;
+            for c in 0..cols {
+                sum += data[row_start + c] * omega[c * q + j];
+            }
+            y[r * q + j] = sum;
+        }
+    }
+
+    // Step 2: QR via modified Gram-Schmidt → Q is (rows × q) orthonormal
+    gram_schmidt_columns(&mut y, rows, q);
+    // y is now Q
+
+    // Step 3: B_hat = Q^T · W → (q × cols)
+    let mut b_hat = vec![0.0f64; q * cols]; // (q × cols)
+    for j in 0..q {
+        for c in 0..cols {
+            let mut sum = 0.0;
+            for r in 0..rows {
+                sum += y[r * q + j] * data[r * cols + c];
+            }
+            b_hat[j * cols + c] = sum;
+        }
+    }
+
+    // Step 4: SVD of B_hat (q × cols) via eigendecomposition of B_hat · B_hat^T (q × q)
+    let mut gram = vec![0.0f64; q * q]; // (q × q)
+    for i in 0..q {
+        for j in i..q {
+            let mut sum = 0.0;
+            for c in 0..cols {
+                sum += b_hat[i * cols + c] * b_hat[j * cols + c];
+            }
+            gram[i * q + j] = sum;
+            gram[j * q + i] = sum;
+        }
+    }
+
+    // Jacobi eigendecomposition with eigenvectors
+    let (eigenvalues, eigenvecs) = jacobi_eigen_full(&mut gram, q);
+
+    // Sort eigenvalues descending, reorder eigenvectors
+    let mut idx: Vec<usize> = (0..q).collect();
+    idx.sort_by(|&a, &b| eigenvalues[b].partial_cmp(&eigenvalues[a])
+        .unwrap_or(std::cmp::Ordering::Equal));
+
+    // σ_i = sqrt(max(0, λ_i)), U_hat = eigenvectors (columns of gram after Jacobi)
+    // V^T_i = (1/σ_i) · U_hat_i^T · B_hat → row vector (1 × cols)
+    // U_i = Q · U_hat_i → column vector (rows × 1)
+
+    // Build A = U · diag(σ) → (rows × rank), and B = V^T → (rank × cols)
+    let mut a_out = vec![0.0f32; rows * rank];
+    let mut b_out = vec![0.0f32; rank * cols];
+
+    for ki in 0..rank {
+        let orig_col = idx[ki];
+        let lambda = eigenvalues[orig_col];
+        let sigma = if lambda > 0.0 { lambda.sqrt() } else { 0.0 };
+
+        // U_k = Q · u_hat_k → (rows,)
+        // A_k = U_k * σ_k
+        for r in 0..rows {
+            let mut sum = 0.0;
+            for j in 0..q {
+                sum += y[r * q + j] * eigenvecs[j * q + orig_col];
+            }
+            a_out[r * rank + ki] = (sum * sigma) as f32;
+        }
+
+        // V^T_k = (1/σ_k) · u_hat_k^T · B_hat → (cols,)
+        if sigma > 1e-30 {
+            let inv_sigma = 1.0 / sigma;
+            for c in 0..cols {
+                let mut sum = 0.0;
+                for j in 0..q {
+                    sum += eigenvecs[j * q + orig_col] * b_hat[j * cols + c];
+                }
+                b_out[ki * cols + c] = (sum * inv_sigma) as f32;
+            }
+        }
+    }
+
+    (a_out, b_out)
+}
+
+/// Jacobi eigenvalue algorithm that also computes eigenvectors.
+/// Returns (eigenvalues, eigenvectors) where eigenvectors is n×n row-major,
+/// with the j-th eigenvector in column j (i.e., eigenvecs[i*n + j] = v_j[i]).
+fn jacobi_eigen_full(s: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let max_sweeps = 50;
+    let eps = 1e-12;
+
+    // Initialize eigenvector matrix as identity
+    let mut v = vec![0.0f64; n * n];
+    for i in 0..n { v[i * n + i] = 1.0; }
+
+    for _sweep in 0..max_sweeps {
+        let mut off_sq = 0.0;
+        let mut diag_sq = 0.0;
+        for i in 0..n {
+            diag_sq += s[i * n + i] * s[i * n + i];
+            for j in (i + 1)..n {
+                off_sq += 2.0 * s[i * n + j] * s[i * n + j];
+            }
+        }
+        if off_sq < eps * eps * diag_sq { break; }
+
+        for i in 0..(n - 1) {
+            for j in (i + 1)..n {
+                let sij = s[i * n + j];
+                if sij.abs() < eps * (s[i * n + i].abs() + s[j * n + j].abs()).max(1e-30) {
+                    continue;
+                }
+
+                let tau = (s[j * n + j] - s[i * n + i]) / (2.0 * sij);
+                let t = if tau.abs() > 1e15 {
+                    1.0 / (2.0 * tau)
+                } else {
+                    tau.signum() / (tau.abs() + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let sc = c * t;
+
+                let sii = s[i * n + i];
+                let sjj = s[j * n + j];
+                s[i * n + i] = sii - t * sij;
+                s[j * n + j] = sjj + t * sij;
+                s[i * n + j] = 0.0;
+                s[j * n + i] = 0.0;
+
+                for k in 0..n {
+                    if k == i || k == j { continue; }
+                    let ski = s[k * n + i];
+                    let skj = s[k * n + j];
+                    s[k * n + i] = c * ski - sc * skj;
+                    s[i * n + k] = s[k * n + i];
+                    s[k * n + j] = sc * ski + c * skj;
+                    s[j * n + k] = s[k * n + j];
+                }
+
+                // Apply same rotation to eigenvector columns
+                for k in 0..n {
+                    let vki = v[k * n + i];
+                    let vkj = v[k * n + j];
+                    v[k * n + i] = c * vki - sc * vkj;
+                    v[k * n + j] = sc * vki + c * vkj;
+                }
+            }
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i * n + i]).collect();
+    (eigenvalues, v)
+}
+
 // ─── Profile result types ───
 
 pub struct MatrixProfile {
@@ -476,6 +656,115 @@ impl DecayProfile {
             self.decay_mean, self.decay_std, self.decay_min, self.decay_max,
             hist.join(","),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncated_svd_half_rank() {
+        // 64×64 random matrix, SVD at rank 32 (50%) should retain >90% energy
+        let n = 64;
+        let k = 32;
+        let mut rng = Rng::new(789);
+        let data: Vec<f64> = (0..n * n).map(|_| rng.next_normal()).collect();
+
+        let (a, b) = truncated_svd_f32(&data, n, n, k);
+
+        let mut sq_err = 0.0f64;
+        let mut sq_orig = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let mut approx = 0.0f64;
+                for s in 0..k {
+                    approx += a[i * k + s] as f64 * b[s * n + j] as f64;
+                }
+                let err = data[i * n + j] - approx;
+                sq_err += err * err;
+                sq_orig += data[i * n + j] * data[i * n + j];
+            }
+        }
+        let rel_err = (sq_err / sq_orig).sqrt();
+        eprintln!("half-rank 64x64: rel_err = {:.6e}", rel_err);
+        // A random 64x64 matrix at rank-32 should retain ~71% of Frobenius norm
+        // (for standard Gaussian, expected energy at rank k/n is ~k/n)
+        // rel_err should be ~sqrt(1 - k/n) ≈ sqrt(0.5) ≈ 0.707
+        assert!(rel_err < 0.9, "half-rank rel_err={:.6e} too large", rel_err);
+    }
+
+    #[test]
+    fn test_truncated_svd_reconstruction() {
+        // Random-ish 16×16 matrix, SVD at full rank should be near-perfect
+        let n = 16;
+        let mut rng = Rng::new(123);
+        let data: Vec<f64> = (0..n * n).map(|_| rng.next_normal()).collect();
+
+        let (a, b) = truncated_svd_f32(&data, n, n, n);
+        let mut max_err = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let mut approx = 0.0f64;
+                for k in 0..n {
+                    approx += a[i * n + k] as f64 * b[k * n + j] as f64;
+                }
+                let err = (data[i * n + j] - approx).abs();
+                if err > max_err { max_err = err; }
+            }
+        }
+        eprintln!("full-rank SVD reconstruction max_err = {:.6e}", max_err);
+        assert!(max_err < 0.1, "full-rank SVD max_err={:.6e} too large", max_err);
+    }
+
+    #[test]
+    fn test_truncated_svd_energy_retention() {
+        // 32×32 matrix with known spectrum: first 8 singular values large, rest small
+        let n = 32;
+        let k = 8;
+        let mut rng = Rng::new(456);
+
+        // Create U, S, V^T with controlled spectrum
+        let mut u_mat = vec![0.0f64; n * n];
+        for i in 0..n { for j in 0..n { u_mat[i * n + j] = rng.next_normal(); } }
+        gram_schmidt_columns(&mut u_mat, n, n);
+
+        let mut v_mat = vec![0.0f64; n * n];
+        for i in 0..n { for j in 0..n { v_mat[i * n + j] = rng.next_normal(); } }
+        gram_schmidt_columns(&mut v_mat, n, n);
+
+        // Spectrum: first k values = 10.0, rest = 0.1
+        let mut data = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for s in 0..n {
+                    let sigma = if s < k { 10.0 } else { 0.1 };
+                    sum += u_mat[i * n + s] * sigma * v_mat[j * n + s];
+                }
+                data[i * n + j] = sum;
+            }
+        }
+
+        // SVD at rank k should capture most energy
+        let (a, b) = truncated_svd_f32(&data, n, n, k);
+        let mut sq_err = 0.0f64;
+        let mut sq_orig = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let mut approx = 0.0f64;
+                for s in 0..k {
+                    approx += a[i * k + s] as f64 * b[s * n + j] as f64;
+                }
+                let err = data[i * n + j] - approx;
+                sq_err += err * err;
+                sq_orig += data[i * n + j] * data[i * n + j];
+            }
+        }
+        let rel_err = (sq_err / sq_orig).sqrt();
+        eprintln!("energy retention: relative error = {:.6e}", rel_err);
+        // With spectrum 10:0.1, rank-8 should capture >99% of energy
+        assert!(rel_err < 0.05, "rel_err={:.6e} too large", rel_err);
     }
 }
 
