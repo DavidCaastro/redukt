@@ -72,10 +72,13 @@ Head is ~12% — single 65536x768 matmul, DRAM-bound but only ~3ms/token.
 - Measured DRAM: **20.61 GB/s** = 48% efficiency [MEASURED]
 - At DDR4-3200 (if XMP enabled): theoretical 51.2 GB/s, estimated practical ~24.8 GB/s
 
-### DRAM demand from Redukt:
+### DRAM demand from Redukt (corrected 2026-10-28):
 - Head matmul: 48MB * 39 tok/s = ~1.87 GB/s [CALCULATED]
-- DRAM utilization: 1.87 / 20.6 = **9%** [CALCULATED]
-- **DRAM bandwidth is NOT the bottleneck** at current throughput
+- Layer weights: ~82MB * 39 tok/s = ~3.2 GB/s [CALCULATED: layers > L2 1.25MB, streamed from DRAM]
+- Total DRAM demand: ~5.1 GB/s [CALCULATED: 1.87 + 3.2]
+- DRAM utilization: 5.1 / 20.6 = **~25%** [CALCULATED]
+- **DRAM bandwidth is not saturated** but is a significant factor (~1/4 of available BW)
+- Note: original calculation (9%) only counted head matmul, omitting layer weight traffic
 
 ---
 

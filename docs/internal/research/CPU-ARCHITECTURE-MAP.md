@@ -92,7 +92,8 @@
            v
   +--DRAM: 32GB DDR4 @ 2667--+  <-- ~76 ns
   | BW medido 64MB: 20.6 GB/s |  [MEASURED]
-  | Utilizacion Redukt: 9%     |  [CALCULATED: 1.87/20.6]
+  | Demanda Redukt: ~5.1 GB/s  |  [CALCULATED: ~130MB/tok * 39 tok/s]
+  | Utilizacion Redukt: ~25%   |  [CALCULATED: 5.1/20.6]
   +----------------------------+
 ```
 
@@ -190,8 +191,10 @@ MEDICION REAL: E-core ~8% mas lento que P-core (<< 3-4x)
 | Ngram hash tables       | ~512 KB | L2       | 0                        |
 +-------------------------+---------+----------+--------------------------+
 | Head weights (Q8)       | 48 MB   | DRAM     | 48MB * 39 tok/s = 1.87GB/s|
+| Layer weights (Q8)*     | ~82 MB  | DRAM     | 82MB * 39 tok/s = 3.2GB/s |
 | Embedding table         | 48 MB   | DRAM     | 768B/tok (negligible)    |
-| Total modelo Q8         | 130 MB  | DRAM     | ~9% of 20.6 GB/s        |
+| Total modelo Q8         | 130 MB  | DRAM     | ~5.1 GB/s = ~25% of 20.6 |
+*Layer weights > L2 (1.25MB) → streamed from DRAM each token
 +=========================+=========+==========+==========================+
 ```
 
