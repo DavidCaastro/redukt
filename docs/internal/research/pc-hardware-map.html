@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redukt — Full PC Hardware Map (Dell Vostro 3520)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg3: #21262d;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+    --cpu: #1f6feb;
+    --storage: #238636;
+    --memory: #8957e5;
+    --display: #d29922;
+    --network: #58a6ff;
+    --audio: #f778ba;
+    --power: #db6d28;
+    --io: #3fb950;
+    --thermal: #f85149;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+  .header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .chip {
+    font-size: 12px; padding: 2px 8px; border-radius: 12px;
+    background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+  }
+  .header .measured {
+    background: rgba(63,185,80,0.15); border-color: var(--green); color: var(--green);
+  }
+
+  .tabs {
+    display: flex;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    gap: 0;
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 10px 16px;
+    cursor: pointer;
+    color: var(--text2);
+    border-bottom: 2px solid transparent;
+    font-size: 13px;
+    transition: all 0.2s;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .content { padding: 24px; max-width: 1440px; margin: 0 auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* === BLOCK DIAGRAM === */
+  .block-grid {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 24px;
+    min-height: 700px;
+  }
+  .block-svg-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow: auto;
+  }
+  .block-svg-wrap svg { width: 100%; height: auto; }
+  .info-panel {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-y: auto;
+    max-height: 750px;
+  }
+  .info-panel h3 { color: var(--accent); margin-bottom: 8px; font-size: 16px; }
+  .info-panel .subtitle { color: var(--text2); font-size: 12px; margin-bottom: 16px; }
+  .info-row {
+    display: flex; justify-content: space-between; padding: 6px 0;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .info-row .label { color: var(--text2); }
+  .info-row .value { color: var(--text); font-weight: 500; text-align: right; }
+  .info-section { margin-top: 16px; }
+  .info-section h4 { color: var(--text2); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 1px; margin-bottom: 8px; }
+  .tag-measured { color: var(--green); font-size: 10px; font-weight: 600; }
+  .tag-sourced { color: var(--accent); font-size: 10px; font-weight: 600; }
+  .tag-warning { color: var(--yellow); font-size: 10px; font-weight: 600; }
+  .tag-critical { color: var(--red); font-size: 10px; font-weight: 600; }
+
+  /* SVG interactive elements */
+  .hw-block {
+    cursor: pointer;
+    transition: opacity 0.2s, filter 0.2s;
+  }
+  .hw-block:hover { filter: brightness(1.3); }
+  .hw-block.selected { filter: brightness(1.4) drop-shadow(0 0 6px rgba(88,166,255,0.5)); }
+
+  /* === STORAGE TAB === */
+  .storage-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h3 { font-size: 15px; margin-bottom: 4px; }
+  .card .sub { color: var(--text2); font-size: 12px; margin-bottom: 12px; }
+  .bar-container { margin: 8px 0; }
+  .bar-label { font-size: 12px; color: var(--text2); margin-bottom: 4px;
+    display: flex; justify-content: space-between; }
+  .bar-bg {
+    height: 20px; background: var(--bg3); border-radius: 4px; overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%; border-radius: 4px; transition: width 0.6s ease;
+    position: relative;
+  }
+  .bar-fill span {
+    position: absolute; right: 6px; top: 2px; font-size: 11px; font-weight: 600;
+  }
+
+  /* === PORTS TAB === */
+  .ports-container { display: flex; flex-direction: column; gap: 20px; }
+  .port-side {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px;
+  }
+  .port-side h3 { margin-bottom: 12px; font-size: 15px; }
+  .port-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 140px;
+    gap: 12px; padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; align-items: center;
+  }
+  .port-icon {
+    width: 36px; height: 24px; border-radius: 4px; display: inline-flex;
+    align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
+    color: #fff; margin-right: 8px;
+  }
+  .port-speed { text-align: right; font-family: monospace; color: var(--text2); }
+
+  /* === THERMAL TAB === */
+  .thermal-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  .thermal-visual {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; min-height: 400px;
+  }
+
+  /* === NETWORK TAB === */
+  .net-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+  /* === POWER TAB === */
+  .power-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .gauge-container { text-align: center; padding: 20px 0; }
+  .gauge-svg { width: 200px; height: 120px; }
+
+  /* Full width card */
+  .card-full { grid-column: 1 / -1; }
+
+  /* Tooltip */
+  .tooltip {
+    position: fixed; background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; font-size: 12px; pointer-events: none;
+    z-index: 1000; max-width: 300px; display: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .block-grid, .storage-layout, .thermal-grid, .net-grid, .power-grid {
+      grid-template-columns: 1fr;
+    }
+    .port-row { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* Bus path animation */
+  @keyframes busFlow {
+    0% { stroke-dashoffset: 20; }
+    100% { stroke-dashoffset: 0; }
+  }
+  .bus-animated {
+    stroke-dasharray: 10 10;
+    animation: busFlow 1s linear infinite;
+  }
+
+  /* PCIe lane viz */
+  .lane-block {
+    display: inline-block; width: 8px; height: 20px; margin: 1px;
+    border-radius: 2px;
+  }
+  .lane-used { background: var(--green); }
+  .lane-free { background: var(--bg3); }
+
+  /* Search/filter */
+  .search-bar {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; color: var(--text); font-size: 13px; width: 100%;
+    margin-bottom: 16px; outline: none;
+  }
+  .search-bar:focus { border-color: var(--accent); }
+  .search-bar::placeholder { color: var(--text2); }
+
+  /* Spec table */
+  .spec-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .spec-table th {
+    text-align: left; padding: 8px; color: var(--text2); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .spec-table td {
+    padding: 8px; border-bottom: 1px solid var(--border);
+  }
+  .spec-table tr:hover { background: rgba(88,166,255,0.05); }
+  .spec-table .mono { font-family: monospace; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Dell Vostro 3520 — Full Hardware Map</h1>
+  <span class="chip">Alder Lake-U</span>
+  <span class="chip">32 GB DDR4</span>
+  <span class="chip">NVMe QLC 512GB</span>
+  <span class="chip measured">MEASURED 2026-10-28</span>
+</div>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-tab="overview">System Block</div>
+  <div class="tab" data-tab="storage">Storage</div>
+  <div class="tab" data-tab="memory">Memory</div>
+  <div class="tab" data-tab="display">Display</div>
+  <div class="tab" data-tab="network">Network</div>
+  <div class="tab" data-tab="audio">Audio</div>
+  <div class="tab" data-tab="power">Power</div>
+  <div class="tab" data-tab="ports">Ports &amp; I/O</div>
+  <div class="tab" data-tab="pci">PCI Devices</div>
+  <div class="tab" data-tab="thermal">Thermal</div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<div class="content">
+
+<!-- ======================== TAB 1: SYSTEM BLOCK DIAGRAM ======================== -->
+<div class="panel active" id="panel-overview">
+  <div class="block-grid">
+    <div class="block-svg-wrap">
+      <svg viewBox="0 0 800 720" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background -->
+        <rect width="800" height="720" fill="#161b22" rx="8"/>
+        <text x="400" y="25" text-anchor="middle" fill="#8b949e" font-size="11"
+          font-family="monospace">Dell Vostro 3520 — Motherboard HDL5B (LA-L947P)</text>
+
+        <!-- CPU -->
+        <g class="hw-block" data-id="cpu" onclick="showInfo('cpu')">
+          <rect x="280" y="45" width="240" height="100" rx="6"
+            fill="#1a2332" stroke="#1f6feb" stroke-width="2"/>
+          <text x="400" y="72" text-anchor="middle" fill="#58a6ff"
+            font-size="13" font-weight="600">Intel Core i5-1235U</text>
+          <text x="400" y="90" text-anchor="middle" fill="#8b949e" font-size="10">
+            Alder Lake-U — 2P+8E / 12T</text>
+          <text x="400" y="106" text-anchor="middle" fill="#8b949e" font-size="10">
+            Intel 7 (10nm ESF) — 15W TDP</text>
+          <text x="400" y="122" text-anchor="middle" fill="#3fb950" font-size="9">
+            Iris Xe G7 (80 EU) integrated</text>
+          <text x="400" y="138" text-anchor="middle" fill="#58a6ff" font-size="9">
+            >> Click for CPU details (see cpu-architecture-map.html) <<</text>
+        </g>
+
+        <!-- Memory Controller (inside CPU) -->
+        <line x1="340" y1="145" x2="340" y2="175" stroke="#8957e5"
+          stroke-width="2" class="bus-animated"/>
+        <line x1="460" y1="145" x2="460" y2="175" stroke="#8957e5"
+          stroke-width="2" class="bus-animated"/>
+
+        <!-- RAM -->
+        <g class="hw-block" data-id="memory" onclick="showInfo('memory')">
+          <rect x="220" y="175" width="160" height="65" rx="5"
+            fill="#1a1a2e" stroke="#8957e5" stroke-width="1.5"/>
+          <text x="300" y="197" text-anchor="middle" fill="#bc8cff"
+            font-size="11" font-weight="600">DIMM A — 16 GB</text>
+          <text x="300" y="212" text-anchor="middle" fill="#8b949e" font-size="9">
+            Crucial DDR4-3200</text>
+          <text x="300" y="226" text-anchor="middle" fill="#d29922" font-size="9">
+            Running @ 2667 MT/s [!]</text>
+        </g>
+        <g class="hw-block" data-id="memory" onclick="showInfo('memory')">
+          <rect x="420" y="175" width="160" height="65" rx="5"
+            fill="#1a1a2e" stroke="#8957e5" stroke-width="1.5"/>
+          <text x="500" y="197" text-anchor="middle" fill="#bc8cff"
+            font-size="11" font-weight="600">DIMM B — 16 GB</text>
+          <text x="500" y="212" text-anchor="middle" fill="#8b949e" font-size="9">
+            Crucial DDR4-3200</text>
+          <text x="500" y="226" text-anchor="middle" fill="#d29922" font-size="9">
+            Running @ 2667 MT/s [!]</text>
+        </g>
+
+        <!-- PCH / Platform Controller Hub (inside SoC for U-series) -->
+        <line x1="400" y1="145" x2="400" y2="265" stroke="#30363d" stroke-width="2"/>
+        <g class="hw-block" data-id="pch" onclick="showInfo('pch')">
+          <rect x="250" y="265" width="300" height="55" rx="5"
+            fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+          <text x="400" y="288" text-anchor="middle" fill="#c9d1d9"
+            font-size="12" font-weight="600">PCH (integrated in SoC)</text>
+          <text x="400" y="304" text-anchor="middle" fill="#8b949e" font-size="9">
+            PCIe 4.0 x4 (NVMe) + PCIe 3.0 x1 (WiFi) + USB 3.2 + SATA + I2C + SPI</text>
+        </g>
+
+        <!-- Bus lines from PCH -->
+        <!-- PCIe 4.0 x4 to NVMe -->
+        <line x1="310" y1="320" x2="310" y2="370" stroke="#238636"
+          stroke-width="2" class="bus-animated"/>
+        <text x="310" y="348" text-anchor="middle" fill="#3fb950" font-size="8">
+          PCIe 4.0 x4</text>
+
+        <!-- PCIe 3.0 x1 to WiFi (CNVi) -->
+        <line x1="400" y1="320" x2="400" y2="370" stroke="#58a6ff"
+          stroke-width="1.5" class="bus-animated"/>
+        <text x="400" y="348" text-anchor="middle" fill="#58a6ff" font-size="8">
+          CNVi</text>
+
+        <!-- USB / SATA / I2C -->
+        <line x1="490" y1="320" x2="490" y2="370" stroke="#3fb950"
+          stroke-width="1.5" class="bus-animated"/>
+        <text x="490" y="348" text-anchor="middle" fill="#3fb950" font-size="8">
+          USB 3.2</text>
+
+        <!-- HD Audio -->
+        <line x1="580" y1="290" x2="680" y2="290" stroke="#f778ba"
+          stroke-width="1.5" class="bus-animated"/>
+        <text x="630" y="283" text-anchor="middle" fill="#f778ba" font-size="8">
+          HDA/SST</text>
+
+        <!-- NVMe SSD -->
+        <g class="hw-block" data-id="nvme" onclick="showInfo('nvme')">
+          <rect x="220" y="370" width="180" height="60" rx="5"
+            fill="#162216" stroke="#238636" stroke-width="1.5"/>
+          <text x="310" y="392" text-anchor="middle" fill="#3fb950"
+            font-size="11" font-weight="600">Samsung BM9C1</text>
+          <text x="310" y="406" text-anchor="middle" fill="#8b949e" font-size="9">
+            512 GB NVMe QLC</text>
+          <text x="310" y="420" text-anchor="middle" fill="#8b949e" font-size="9">
+            PCIe Gen4 x4 — 5000/4300 MB/s</text>
+        </g>
+
+        <!-- WiFi -->
+        <g class="hw-block" data-id="wifi" onclick="showInfo('wifi')">
+          <rect x="340" y="370" width="120" height="60" rx="5"
+            fill="#162233" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="400" y="392" text-anchor="middle" fill="#58a6ff"
+            font-size="10" font-weight="600">Intel AC 9462</text>
+          <text x="400" y="406" text-anchor="middle" fill="#8b949e" font-size="9">
+            WiFi 5 (1x1) 433Mbps</text>
+          <text x="400" y="420" text-anchor="middle" fill="#8b949e" font-size="9">
+            BT 5.1 — CNVi</text>
+        </g>
+
+        <!-- USB Hub / Ports -->
+        <g class="hw-block" data-id="ports" onclick="showInfo('ports')">
+          <rect x="480" y="370" width="130" height="60" rx="5"
+            fill="#16221c" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="545" y="392" text-anchor="middle" fill="#3fb950"
+            font-size="10" font-weight="600">USB 3.2 Gen1 Hub</text>
+          <text x="545" y="406" text-anchor="middle" fill="#8b949e" font-size="9">
+            2x USB-A + 1x USB-C</text>
+          <text x="545" y="420" text-anchor="middle" fill="#8b949e" font-size="9">
+            5 Gbps per port</text>
+        </g>
+
+        <!-- Audio Codec -->
+        <g class="hw-block" data-id="audio" onclick="showInfo('audio')">
+          <rect x="640" y="265" width="140" height="55" rx="5"
+            fill="#221622" stroke="#f778ba" stroke-width="1.5"/>
+          <text x="710" y="287" text-anchor="middle" fill="#f778ba"
+            font-size="10" font-weight="600">Cirrus Logic</text>
+          <text x="710" y="301" text-anchor="middle" fill="#8b949e" font-size="9">
+            CS42L42 Audio Codec</text>
+          <text x="710" y="315" text-anchor="middle" fill="#8b949e" font-size="9">
+            24-bit/192kHz + SST</text>
+        </g>
+
+        <!-- Display outputs from CPU -->
+        <line x1="520" y1="95" x2="660" y2="95" stroke="#d29922"
+          stroke-width="1.5" class="bus-animated"/>
+        <text x="590" y="88" text-anchor="middle" fill="#d29922" font-size="8">
+          eDP 1.4 / HDMI 1.4 / DP 1.4</text>
+
+        <!-- Display panel -->
+        <g class="hw-block" data-id="display" onclick="showInfo('display')">
+          <rect x="640" y="45" width="145" height="55" rx="5"
+            fill="#222216" stroke="#d29922" stroke-width="1.5"/>
+          <text x="712" y="67" text-anchor="middle" fill="#d29922"
+            font-size="10" font-weight="600">LG LP156WFJ-SPB3</text>
+          <text x="712" y="82" text-anchor="middle" fill="#8b949e" font-size="9">
+            15.6" IPS 1080p 120Hz</text>
+          <text x="712" y="96" text-anchor="middle" fill="#f85149" font-size="8">
+            52% sRGB only</text>
+        </g>
+
+        <!-- HDMI -->
+        <g class="hw-block" data-id="hdmi" onclick="showInfo('hdmi')">
+          <rect x="640" y="110" width="145" height="40" rx="5"
+            fill="#222216" stroke="#d29922" stroke-width="1"/>
+          <text x="712" y="130" text-anchor="middle" fill="#d29922"
+            font-size="10" font-weight="500">HDMI 1.4</text>
+          <text x="712" y="143" text-anchor="middle" fill="#f85149" font-size="8">
+            Max 4K@30Hz (no 2.0!)</text>
+        </g>
+
+        <!-- Ethernet (Realtek) -->
+        <line x1="250" y1="290" x2="130" y2="290" stroke="#58a6ff"
+          stroke-width="1" class="bus-animated"/>
+        <g class="hw-block" data-id="ethernet" onclick="showInfo('ethernet')">
+          <rect x="20" y="265" width="140" height="55" rx="5"
+            fill="#162233" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="90" y="287" text-anchor="middle" fill="#58a6ff"
+            font-size="10" font-weight="600">Realtek RTL8168</text>
+          <text x="90" y="301" text-anchor="middle" fill="#8b949e" font-size="9">
+            Gigabit Ethernet</text>
+          <text x="90" y="315" text-anchor="middle" fill="#8b949e" font-size="9">
+            RJ-45 — 1 Gbps</text>
+        </g>
+
+        <!-- Battery / Power -->
+        <g class="hw-block" data-id="battery" onclick="showInfo('battery')">
+          <rect x="20" y="460" width="200" height="65" rx="5"
+            fill="#221c16" stroke="#db6d28" stroke-width="1.5"/>
+          <text x="120" y="482" text-anchor="middle" fill="#db6d28"
+            font-size="11" font-weight="600">Battery — 41 Wh</text>
+          <text x="120" y="497" text-anchor="middle" fill="#8b949e" font-size="9">
+            3-cell Li-Polymer (11.25V)</text>
+          <text x="120" y="512" text-anchor="middle" fill="#d29922" font-size="9">
+            Health: 80.2% (32.5/40.6 Wh)</text>
+        </g>
+
+        <!-- Power Adapter -->
+        <line x1="120" y1="525" x2="120" y2="560" stroke="#db6d28"
+          stroke-width="1.5"/>
+        <g class="hw-block" data-id="charger" onclick="showInfo('charger')">
+          <rect x="30" y="560" width="180" height="45" rx="5"
+            fill="#221c16" stroke="#db6d28" stroke-width="1"/>
+          <text x="120" y="580" text-anchor="middle" fill="#db6d28"
+            font-size="10" font-weight="500">AC Adapter 65W</text>
+          <text x="120" y="595" text-anchor="middle" fill="#8b949e" font-size="9">
+            19.5V / 3.34A barrel jack</text>
+        </g>
+
+        <!-- Thermal -->
+        <g class="hw-block" data-id="thermal" onclick="showInfo('thermal')">
+          <rect x="20" y="370" width="180" height="60" rx="5"
+            fill="#221616" stroke="#f85149" stroke-width="1.5"/>
+          <text x="110" y="392" text-anchor="middle" fill="#f85149"
+            font-size="10" font-weight="600">Thermal System</text>
+          <text x="110" y="406" text-anchor="middle" fill="#8b949e" font-size="9">
+            1 Fan + 1 Heatpipe</text>
+          <text x="110" y="420" text-anchor="middle" fill="#3fb950" font-size="9">
+            0% throttle @ 330s [MEASURED]</text>
+        </g>
+
+        <!-- Peripherals area -->
+        <g class="hw-block" data-id="peripherals" onclick="showInfo('peripherals')">
+          <rect x="300" y="460" width="180" height="60" rx="5"
+            fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="390" y="482" text-anchor="middle" fill="#c9d1d9"
+            font-size="10" font-weight="600">Input Devices</text>
+          <text x="390" y="497" text-anchor="middle" fill="#8b949e" font-size="9">
+            ELAN I2C Touchpad</text>
+          <text x="390" y="512" text-anchor="middle" fill="#8b949e" font-size="9">
+            PS/2 Keyboard — Integrated Webcam</text>
+        </g>
+
+        <!-- Internal controllers -->
+        <g class="hw-block" data-id="controllers" onclick="showInfo('controllers')">
+          <rect x="510" y="460" width="170" height="60" rx="5"
+            fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="595" y="482" text-anchor="middle" fill="#c9d1d9"
+            font-size="10" font-weight="600">Platform Controllers</text>
+          <text x="595" y="497" text-anchor="middle" fill="#8b949e" font-size="9">
+            GNA 3.0 / ME / VMD</text>
+          <text x="595" y="512" text-anchor="middle" fill="#8b949e" font-size="9">
+            SMBus / SPI Flash / Serial IO</text>
+        </g>
+
+        <!-- PCIe lane summary -->
+        <rect x="20" y="640" width="760" height="65" rx="5"
+          fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+        <text x="400" y="660" text-anchor="middle" fill="#8b949e"
+          font-size="11" font-weight="600">PCIe Lane Allocation (i5-1235U: 12 CPU + 12 PCH lanes)</text>
+        <text x="400" y="678" text-anchor="middle" fill="#3fb950" font-size="10">
+          NVMe: 4 lanes (Gen4) | iGPU: 0 (integrated) | WiFi: CNVi (shared) | Ethernet: PCIe 3.0 x1</text>
+        <text x="400" y="694" text-anchor="middle" fill="#8b949e" font-size="9">
+          USB-C DP Alt Mode: 4 lanes (Gen3, DP 1.4) | Remaining: reserved/unused</text>
+      </svg>
+    </div>
+
+    <!-- Info panel -->
+    <div class="info-panel" id="info-panel">
+      <h3 id="info-title">System Overview</h3>
+      <div class="subtitle" id="info-subtitle">Click any component to see details</div>
+      <div id="info-content">
+        <div class="info-section">
+          <h4>System Identity</h4>
+          <div class="info-row"><span class="label">Model</span><span class="value">Dell Vostro 3520</span></div>
+          <div class="info-row"><span class="label">Motherboard</span><span class="value">HDL5B (LA-L947P)</span></div>
+          <div class="info-row"><span class="label">BIOS</span><span class="value">Insyde Corp</span></div>
+          <div class="info-row"><span class="label">Segment</span><span class="value">Budget Business Laptop</span></div>
+        </div>
+        <div class="info-section">
+          <h4>Key Specs</h4>
+          <div class="info-row"><span class="label">CPU</span><span class="value">i5-1235U (12T)</span></div>
+          <div class="info-row"><span class="label">RAM</span><span class="value">32 GB DDR4</span></div>
+          <div class="info-row"><span class="label">Storage</span><span class="value">512 GB NVMe</span></div>
+          <div class="info-row"><span class="label">Display</span><span class="value">15.6" FHD 120Hz</span></div>
+          <div class="info-row"><span class="label">Battery</span><span class="value">41 Wh (80.2%)</span></div>
+        </div>
+        <div class="info-section">
+          <h4>Redukt Relevance</h4>
+          <div class="info-row"><span class="label">Throughput</span>
+            <span class="value tag-measured">~39 tok/s sustained</span></div>
+          <div class="info-row"><span class="label">Bottleneck</span>
+            <span class="value tag-critical">TimeMix scalar 74-88%</span></div>
+          <div class="info-row"><span class="label">DRAM BW used</span>
+            <span class="value">9% of 20.6 GB/s</span></div>
+          <div class="info-row"><span class="label">All cores usable</span>
+            <span class="value tag-measured">10/10 (&lt;8% delta)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 2: STORAGE ======================== -->
+<div class="panel" id="panel-storage">
+  <div class="storage-layout">
+    <div class="card">
+      <h3 style="color:var(--storage)">Samsung PM9C1 (MZAL4512HBLU)</h3>
+      <div class="sub">NVMe SSD — M.2 2230 — PCIe Gen4 x4</div>
+      <div class="info-section">
+        <h4>Specifications</h4>
+        <div class="info-row"><span class="label">Capacity</span><span class="value">512 GB</span></div>
+        <div class="info-row"><span class="label">NAND Type</span><span class="value tag-warning">QLC (4 bits/cell)</span></div>
+        <div class="info-row"><span class="label">Controller</span><span class="value">Samsung Pablo</span></div>
+        <div class="info-row"><span class="label">Interface</span><span class="value">PCIe 4.0 x4 NVMe 1.4</span></div>
+        <div class="info-row"><span class="label">Form Factor</span><span class="value">M.2 2230</span></div>
+        <div class="info-row"><span class="label">DRAM Buffer</span><span class="value tag-warning">HMB (Host Memory Buffer)</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Sequential Performance <span class="tag-sourced">[SOURCED: Samsung spec]</span></h4>
+        <div class="bar-container">
+          <div class="bar-label"><span>Read</span><span>5,000 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:71%;background:var(--storage)">
+            <span>5 GB/s</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>Write</span><span>4,300 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:61%;background:var(--green)">
+            <span>4.3 GB/s</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>Max PCIe 4.0 x4</span><span>~7,880 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--bg3)">
+            <span style="color:var(--text2)">theoretical</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--storage)">Random IOPS & QLC Considerations</h3>
+      <div class="sub">Performance characteristics for Redukt workload</div>
+      <div class="info-section">
+        <h4>Random IOPS <span class="tag-sourced">[SOURCED]</span></h4>
+        <div class="info-row"><span class="label">Random Read 4K</span><span class="value">500K IOPS</span></div>
+        <div class="info-row"><span class="label">Random Write 4K</span><span class="value">480K IOPS</span></div>
+      </div>
+      <div class="info-section">
+        <h4>QLC Characteristics</h4>
+        <div class="info-row"><span class="label">SLC Cache</span><span class="value">~30-50 GB (dynamic)</span></div>
+        <div class="info-row"><span class="label">Post-cache write</span><span class="value tag-warning">~800-1200 MB/s</span></div>
+        <div class="info-row"><span class="label">Endurance (TBW)</span><span class="value tag-warning">~150 TBW (low for QLC)</span></div>
+        <div class="info-row"><span class="label">Power (active)</span><span class="value">~3.5W</span></div>
+        <div class="info-row"><span class="label">Power (idle)</span><span class="value">~30mW (L1.2)</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Redukt Impact</h4>
+        <div class="info-row"><span class="label">Read throughput</span>
+          <span class="value tag-measured">~150 B/s (CPU-bound)</span></div>
+        <div class="info-row"><span class="label">SSD utilization</span>
+          <span class="value">~0.003%</span></div>
+        <div class="info-row"><span class="label">Bottleneck?</span>
+          <span class="value" style="color:var(--green)">NO — CPU is bottleneck</span></div>
+      </div>
+    </div>
+
+    <div class="card card-full">
+      <h3>Storage Bandwidth Stack</h3>
+      <div class="sub">From SSD to CPU — measured and theoretical</div>
+      <div style="margin-top:12px">
+        <div class="bar-container">
+          <div class="bar-label"><span>SSD Sequential Read</span><span>5,000 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--storage)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>PCIe 4.0 x4 Theoretical</span><span>7,880 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--bg3)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>DRAM BW (measured)</span><span>20,600 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--memory)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>L3 BW (measured)</span><span>57,200 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--purple)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>L2 BW (measured)</span><span>63,400 MB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--cpu)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>Redukt actual I/O demand</span>
+            <span style="color:var(--red)">~0.00015 MB/s (150 B/s)</span></div>
+          <div class="bar-bg"><div class="bar-fill"
+            style="width:0.5%;min-width:4px;background:var(--red)"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 3: MEMORY ======================== -->
+<div class="panel" id="panel-memory">
+  <div class="storage-layout">
+    <div class="card">
+      <h3 style="color:var(--memory)">DIMM Configuration</h3>
+      <div class="sub">Crucial CT16G4SFRA32A x2 — Dual Channel</div>
+      <div class="info-section">
+        <h4>Module Specs <span class="tag-sourced">[SOURCED: Crucial]</span></h4>
+        <div class="info-row"><span class="label">Total Capacity</span><span class="value">32 GB (2x16GB)</span></div>
+        <div class="info-row"><span class="label">Type</span><span class="value">DDR4 SO-DIMM</span></div>
+        <div class="info-row"><span class="label">Rated Speed</span><span class="value">3200 MT/s (PC4-25600)</span></div>
+        <div class="info-row"><span class="label">Actual Speed</span>
+          <span class="value tag-warning">2667 MT/s [MEASURED]</span></div>
+        <div class="info-row"><span class="label">Voltage</span><span class="value">1.2V</span></div>
+        <div class="info-row"><span class="label">CAS Latency</span><span class="value">CL22</span></div>
+        <div class="info-row"><span class="label">Timings</span><span class="value">22-22-22</span></div>
+        <div class="info-row"><span class="label">Ranks</span><span class="value">1Rx8 per DIMM</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--memory)">Bandwidth Analysis</h3>
+      <div class="sub">Measured vs Theoretical</div>
+      <div class="info-section">
+        <h4>Measured Bandwidth <span class="tag-measured">[PROTO-04]</span></h4>
+        <div class="bar-container">
+          <div class="bar-label"><span>L2 (1 MB)</span><span>63.4 GB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--cpu)">
+            <span>63.4</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>L3 (4 MB)</span><span>57.2 GB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:90%;background:var(--purple)">
+            <span>57.2</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>DRAM (64 MB)</span><span>20.6 GB/s</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:32%;background:var(--orange)">
+            <span>20.6</span></div></div>
+        </div>
+      </div>
+      <div class="info-section">
+        <h4>XMP Analysis</h4>
+        <div class="info-row"><span class="label">Current speed</span>
+          <span class="value tag-warning">2667 MT/s</span></div>
+        <div class="info-row"><span class="label">With XMP</span>
+          <span class="value">3200 MT/s (+20%)</span></div>
+        <div class="info-row"><span class="label">BW gain</span>
+          <span class="value">~24.8 vs 20.6 GB/s</span></div>
+        <div class="info-row"><span class="label">Action</span>
+          <span class="value tag-warning">Enable XMP in BIOS</span></div>
+      </div>
+    </div>
+
+    <div class="card card-full">
+      <h3>Memory Map — Where Redukt Lives</h3>
+      <div class="sub">Data residency by cache level <span class="tag-measured">[PROTO-03/04]</span></div>
+      <table class="spec-table" style="margin-top:12px">
+        <tr><th>Data</th><th>Size</th><th>Resides In</th><th>DRAM Demand</th></tr>
+        <tr><td>Token vector (input)</td><td class="mono">768 B</td><td>L1d</td><td>0</td></tr>
+        <tr><td>Accumulators i32</td><td class="mono">3 KB</td><td>Regs/L1</td><td>0</td></tr>
+        <tr><td>RWKV state (per layer)</td><td class="mono">~24 KB</td><td>L1d</td><td>0</td></tr>
+        <tr><td>TimeMix weights (Q8)</td><td class="mono">576 KB</td><td>L2</td><td>0</td></tr>
+        <tr><td>ChannelMix weights (Q8)</td><td class="mono">576 KB</td><td>L2</td><td>0</td></tr>
+        <tr><td>LoRA matrices (F32)</td><td class="mono">~96 KB</td><td>L2</td><td>0</td></tr>
+        <tr><td>Ngram hash tables</td><td class="mono">~512 KB</td><td>L2</td><td>0</td></tr>
+        <tr><td style="color:var(--orange)">Head weights (Q8)</td>
+          <td class="mono" style="color:var(--orange)">48 MB</td>
+          <td style="color:var(--orange)">DRAM</td>
+          <td style="color:var(--orange)">1.87 GB/s (9%)</td></tr>
+        <tr><td>Embedding table</td><td class="mono">48 MB</td><td>DRAM</td><td>negligible</td></tr>
+        <tr style="font-weight:600"><td>Total model (Q8)</td><td class="mono">130 MB</td><td>DRAM</td>
+          <td>~9% of 20.6 GB/s</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 4: DISPLAY ======================== -->
+<div class="panel" id="panel-display">
+  <div class="storage-layout">
+    <div class="card">
+      <h3 style="color:var(--display)">Internal Panel — LG LP156WFJ-SPB3</h3>
+      <div class="sub">15.6" IPS LCD — eDP 1.4 interface</div>
+      <div class="info-section">
+        <h4>Panel Specs <span class="tag-sourced">[SOURCED: LG Display]</span></h4>
+        <div class="info-row"><span class="label">Resolution</span><span class="value">1920x1080 (FHD)</span></div>
+        <div class="info-row"><span class="label">Refresh Rate</span><span class="value">120 Hz</span></div>
+        <div class="info-row"><span class="label">Panel Type</span><span class="value">IPS (In-Plane Switching)</span></div>
+        <div class="info-row"><span class="label">Backlight</span><span class="value">WLED edge-lit</span></div>
+        <div class="info-row"><span class="label">Brightness</span><span class="value">250 nits (typical)</span></div>
+        <div class="info-row"><span class="label">Contrast</span><span class="value">1000:1 (typical)</span></div>
+        <div class="info-row"><span class="label">Color Depth</span><span class="value">6-bit + FRC (8-bit effective)</span></div>
+        <div class="info-row"><span class="label">Color Gamut</span>
+          <span class="value tag-critical">~52% sRGB / ~36% DCI-P3</span></div>
+        <div class="info-row"><span class="label">Response Time</span><span class="value">25ms (GtG)</span></div>
+        <div class="info-row"><span class="label">Surface</span><span class="value">Anti-glare (matte)</span></div>
+        <div class="info-row"><span class="label">Interface</span><span class="value">eDP 1.4, 30-pin</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--display)">External Display Support</h3>
+      <div class="sub">GPU: Intel Iris Xe Graphics (80 EU)</div>
+      <div class="info-section">
+        <h4>Video Outputs</h4>
+        <div class="info-row"><span class="label">HDMI</span>
+          <span class="value tag-warning">1.4 (4K@30Hz max)</span></div>
+        <div class="info-row"><span class="label">USB-C DP</span>
+          <span class="value">DP 1.4 Alt Mode</span></div>
+        <div class="info-row"><span class="label">Max External</span><span class="value">4K@60Hz via USB-C</span></div>
+        <div class="info-row"><span class="label">Simultaneous</span><span class="value">Int + 2 external</span></div>
+      </div>
+      <div class="info-section">
+        <h4>iGPU Specs <span class="tag-sourced">[SOURCED: Intel ARK]</span></h4>
+        <div class="info-row"><span class="label">GPU</span><span class="value">Iris Xe G7 (80 EU)</span></div>
+        <div class="info-row"><span class="label">Base/Max Clock</span><span class="value">300 / 1250 MHz</span></div>
+        <div class="info-row"><span class="label">Shared Memory</span><span class="value">Up to 16 GB</span></div>
+        <div class="info-row"><span class="label">Decode</span><span class="value">AV1/H.265/H.264/VP9</span></div>
+        <div class="info-row"><span class="label">Encode</span><span class="value">H.265/H.264 (HW)</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Limitation Notes</h4>
+        <div class="info-row"><span class="label">No Thunderbolt</span>
+          <span class="value tag-warning">Despite CPU support</span></div>
+        <div class="info-row"><span class="label">HDMI 1.4 only</span>
+          <span class="value tag-critical">CPU supports HDMI 2.0</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 5: NETWORK ======================== -->
+<div class="panel" id="panel-network">
+  <div class="net-grid">
+    <div class="card">
+      <h3 style="color:var(--network)">Intel Wireless-AC 9462</h3>
+      <div class="sub">WiFi 5 + Bluetooth 5.1 — CNVi interface</div>
+      <div class="info-section">
+        <h4>WiFi Specs <span class="tag-sourced">[SOURCED: Intel]</span></h4>
+        <div class="info-row"><span class="label">Standard</span><span class="value">802.11ac (WiFi 5)</span></div>
+        <div class="info-row"><span class="label">Bands</span><span class="value">2.4 GHz + 5 GHz</span></div>
+        <div class="info-row"><span class="label">Spatial Streams</span>
+          <span class="value tag-warning">1x1 (single antenna)</span></div>
+        <div class="info-row"><span class="label">Max PHY Rate</span>
+          <span class="value">433 Mbps (80MHz, 5GHz)</span></div>
+        <div class="info-row"><span class="label">Channel Width</span><span class="value">20/40/80 MHz</span></div>
+        <div class="info-row"><span class="label">Security</span><span class="value">WPA3-Personal/Enterprise</span></div>
+        <div class="info-row"><span class="label">Interface</span><span class="value">CNVi (integrated in PCH)</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Bluetooth</h4>
+        <div class="info-row"><span class="label">Version</span><span class="value">5.1</span></div>
+        <div class="info-row"><span class="label">Profiles</span><span class="value">A2DP, HFP, HID, LE</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Limitations</h4>
+        <div class="info-row"><span class="label">No WiFi 6</span>
+          <span class="value tag-warning">Entry-level card</span></div>
+        <div class="info-row"><span class="label">No 160MHz</span>
+          <span class="value tag-warning">Max 80MHz channels</span></div>
+        <div class="info-row"><span class="label">1x1 MIMO</span>
+          <span class="value tag-warning">Half of 2x2 throughput</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--network)">Realtek RTL8168 Gigabit Ethernet</h3>
+      <div class="sub">Wired LAN — PCIe interface</div>
+      <div class="info-section">
+        <h4>Specifications</h4>
+        <div class="info-row"><span class="label">Speed</span><span class="value">10/100/1000 Mbps</span></div>
+        <div class="info-row"><span class="label">Interface</span><span class="value">PCIe 2.1 x1</span></div>
+        <div class="info-row"><span class="label">Connector</span><span class="value">RJ-45</span></div>
+        <div class="info-row"><span class="label">WoL</span><span class="value">Supported</span></div>
+        <div class="info-row"><span class="label">PXE Boot</span><span class="value">Supported</span></div>
+        <div class="info-row"><span class="label">Jumbo Frames</span><span class="value">Up to 9K</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Redukt Network Relevance</h4>
+        <div class="info-row"><span class="label">API mode</span>
+          <span class="value">~150 B/s output</span></div>
+        <div class="info-row"><span class="label">Network bottleneck?</span>
+          <span class="value" style="color:var(--green)">NEVER — CPU-bound</span></div>
+        <div class="info-row"><span class="label">Batch transfer</span>
+          <span class="value">1 Gbps &gt;&gt; compression speed</span></div>
+      </div>
+    </div>
+
+    <div class="card card-full">
+      <h3>Network Bandwidth Comparison</h3>
+      <div class="sub">All speeds relative to Redukt throughput</div>
+      <div style="margin-top:12px">
+        <div class="bar-container">
+          <div class="bar-label"><span>Redukt output</span><span>~150 B/s = 0.0012 Mbps</span></div>
+          <div class="bar-bg"><div class="bar-fill"
+            style="width:0.5%;min-width:4px;background:var(--red)"></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>WiFi 5 (1x1, real-world)</span><span>~200 Mbps</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:20%;background:var(--network)">
+            <span>200</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>WiFi 5 (1x1, theoretical)</span><span>433 Mbps</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:43%;background:var(--accent)">
+            <span>433</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>Gigabit Ethernet</span><span>1,000 Mbps</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--network)">
+            <span>1000</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 6: AUDIO ======================== -->
+<div class="panel" id="panel-audio">
+  <div class="storage-layout">
+    <div class="card">
+      <h3 style="color:var(--audio)">Cirrus Logic CS42L42</h3>
+      <div class="sub">Audio Codec — HDA / Intel SST interface</div>
+      <div class="info-section">
+        <h4>DAC Specifications <span class="tag-sourced">[SOURCED: Cirrus Logic]</span></h4>
+        <div class="info-row"><span class="label">Type</span><span class="value">Low-Power Stereo Codec</span></div>
+        <div class="info-row"><span class="label">DAC Resolution</span><span class="value">24-bit</span></div>
+        <div class="info-row"><span class="label">Max Sample Rate</span><span class="value">192 kHz</span></div>
+        <div class="info-row"><span class="label">SNR (DAC)</span><span class="value">114 dB</span></div>
+        <div class="info-row"><span class="label">THD+N</span><span class="value">-100 dB</span></div>
+        <div class="info-row"><span class="label">Headphone Amp</span><span class="value">Integrated, Class-H</span></div>
+      </div>
+      <div class="info-section">
+        <h4>ADC Specifications</h4>
+        <div class="info-row"><span class="label">ADC Resolution</span><span class="value">24-bit</span></div>
+        <div class="info-row"><span class="label">SNR (ADC)</span><span class="value">104 dB</span></div>
+        <div class="info-row"><span class="label">Mic Support</span><span class="value">DMIC + Analog</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--audio)">Audio Pipeline</h3>
+      <div class="sub">Intel Smart Sound Technology integration</div>
+      <div class="info-section">
+        <h4>Signal Chain</h4>
+        <div class="info-row"><span class="label">DSP</span><span class="value">Intel SST (cAVS)</span></div>
+        <div class="info-row"><span class="label">Interface</span><span class="value">SoundWire / I2S</span></div>
+        <div class="info-row"><span class="label">Speakers</span><span class="value">2x stereo (down-firing)</span></div>
+        <div class="info-row"><span class="label">Combo Jack</span><span class="value">3.5mm TRRS (CTIA)</span></div>
+        <div class="info-row"><span class="label">Microphone</span><span class="value">1x digital array mic</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Redukt Relevance</h4>
+        <div class="info-row"><span class="label">Audio compression?</span>
+          <span class="value" style="color:var(--text2)">Not applicable</span></div>
+        <div class="info-row"><span class="label">CPU impact</span>
+          <span class="value" style="color:var(--green)">SST offloads DSP</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 7: POWER ======================== -->
+<div class="panel" id="panel-power">
+  <div class="power-grid">
+    <div class="card">
+      <h3 style="color:var(--power)">Battery — 41 Wh Li-Polymer</h3>
+      <div class="sub">3-cell, 11.25V nominal</div>
+      <div class="info-section">
+        <h4>Battery Health <span class="tag-measured">[MEASURED]</span></h4>
+        <div class="info-row"><span class="label">Design Capacity</span><span class="value">40,590 mWh</span></div>
+        <div class="info-row"><span class="label">Full Charge</span>
+          <span class="value tag-warning">32,546 mWh</span></div>
+        <div class="info-row"><span class="label">Health</span>
+          <span class="value tag-warning">80.2%</span></div>
+        <div class="bar-container" style="margin-top:8px">
+          <div class="bar-label"><span>Battery Health</span><span>80.2%</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:80.2%;background:var(--yellow)">
+            <span>80.2%</span></div></div>
+        </div>
+      </div>
+      <div class="info-section">
+        <h4>Chemistry</h4>
+        <div class="info-row"><span class="label">Type</span><span class="value">Li-Polymer (LiPo)</span></div>
+        <div class="info-row"><span class="label">Cells</span><span class="value">3S1P</span></div>
+        <div class="info-row"><span class="label">Voltage</span><span class="value">11.25V nominal</span></div>
+        <div class="info-row"><span class="label">Manufacturer</span><span class="value">BYD (Dell OEM)</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--power)">Power Budget</h3>
+      <div class="sub">CPU power levels and system draw</div>
+      <div class="info-section">
+        <h4>CPU Power Levels <span class="tag-sourced">[SOURCED: Intel ARK]</span></h4>
+        <div class="info-row"><span class="label">PL1 (sustained)</span><span class="value">15W</span></div>
+        <div class="info-row"><span class="label">PL2 (burst)</span><span class="value">55W (28-56s Tau)</span></div>
+        <div class="info-row"><span class="label">PL4 (peak)</span><span class="value">~64W (sub-ms)</span></div>
+        <div class="info-row"><span class="label">Idle (package)</span><span class="value">~1-3W</span></div>
+      </div>
+      <div class="info-section">
+        <h4>System Power Estimate</h4>
+        <div class="info-row"><span class="label">CPU (Redukt)</span><span class="value">~12-15W</span></div>
+        <div class="info-row"><span class="label">Display (50%)</span><span class="value">~3-4W</span></div>
+        <div class="info-row"><span class="label">SSD (active)</span><span class="value">~3.5W</span></div>
+        <div class="info-row"><span class="label">RAM (2 DIMMs)</span><span class="value">~3W</span></div>
+        <div class="info-row"><span class="label">WiFi + misc</span><span class="value">~2W</span></div>
+        <div class="info-row" style="font-weight:600"><span class="label">Total estimate</span>
+          <span class="value">~25-28W</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Battery Life (Redukt workload)</h4>
+        <div class="info-row"><span class="label">At 80% health</span>
+          <span class="value">~70-80 min (32.5 Wh / 25W)</span></div>
+        <div class="info-row"><span class="label">Adapter</span>
+          <span class="value">65W barrel (19.5V/3.34A)</span></div>
+      </div>
+    </div>
+
+    <div class="card card-full">
+      <h3>Power Distribution</h3>
+      <div class="sub">Estimated power draw during Redukt compression</div>
+      <div style="margin-top:12px">
+        <div class="bar-container">
+          <div class="bar-label"><span>CPU (single-core Redukt)</span><span>~12-15W</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:58%;background:var(--cpu)">
+            <span>15W</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>Display (50% brightness)</span><span>~3-4W</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:15%;background:var(--display)">
+            <span>4W</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>SSD (active R/W)</span><span>~3.5W</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:13%;background:var(--storage)">
+            <span>3.5W</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>RAM (2x16GB)</span><span>~3W</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:12%;background:var(--memory)">
+            <span>3W</span></div></div>
+        </div>
+        <div class="bar-container">
+          <div class="bar-label"><span>WiFi + peripherals</span><span>~2W</span></div>
+          <div class="bar-bg"><div class="bar-fill" style="width:8%;background:var(--network)">
+            <span>2W</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 8: PORTS & I/O ======================== -->
+<div class="panel" id="panel-ports">
+  <div class="ports-container">
+    <div class="port-side">
+      <h3>Left Side</h3>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--power)">DC</span> Power</div>
+        <div>Barrel jack 4.5mm, 19.5V / 3.34A</div>
+        <div class="port-speed">65W</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--display)">HDMI</span> HDMI</div>
+        <div>HDMI 1.4 — max 4K@30Hz <span class="tag-warning">(no 2.0)</span></div>
+        <div class="port-speed">10.2 Gbps</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--io)">USB-A</span> USB 3.2</div>
+        <div>USB-A 3.2 Gen1 (Type-A)</div>
+        <div class="port-speed">5 Gbps</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--accent)">USB-C</span> USB-C</div>
+        <div>USB 3.2 Gen1 + DP 1.4 Alt Mode <span class="tag-warning">(no TB)</span></div>
+        <div class="port-speed">5 Gbps + DP</div>
+      </div>
+    </div>
+
+    <div class="port-side">
+      <h3>Right Side</h3>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--io)">USB-A</span> USB 3.2</div>
+        <div>USB-A 3.2 Gen1 (Type-A)</div>
+        <div class="port-speed">5 Gbps</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--audio)">AUX</span> Audio</div>
+        <div>3.5mm combo jack (headphone + mic, CTIA)</div>
+        <div class="port-speed">Analog</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--network)">RJ45</span> Ethernet</div>
+        <div>Realtek RTL8168 Gigabit Ethernet</div>
+        <div class="port-speed">1 Gbps</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--text2)">SD</span> Card</div>
+        <div>SD card reader (if present)</div>
+        <div class="port-speed">UHS-I</div>
+      </div>
+    </div>
+
+    <div class="port-side">
+      <h3>Internal Connectors</h3>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--storage)">M.2</span> NVMe</div>
+        <div>M.2 2230 slot — PCIe Gen4 x4</div>
+        <div class="port-speed">~7.9 GB/s</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--network)">M.2</span> WiFi</div>
+        <div>M.2 2230 — CNVi (Intel integrated)</div>
+        <div class="port-speed">CNVi</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--memory)">SO-DIMM</span> RAM</div>
+        <div>2x SO-DIMM DDR4 slots (both populated)</div>
+        <div class="port-speed">DDR4-3200</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--display)">eDP</span> Display</div>
+        <div>eDP 1.4 — 30-pin connector to LCD panel</div>
+        <div class="port-speed">8.1 Gbps</div>
+      </div>
+      <div class="port-row">
+        <div><span class="port-icon" style="background:var(--power)">BAT</span> Battery</div>
+        <div>Internal battery connector — 3-cell LiPo</div>
+        <div class="port-speed">41 Wh</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== TAB 9: PCI DEVICES ======================== -->
+<div class="panel" id="panel-pci">
+  <input type="text" class="search-bar" id="pci-search"
+    placeholder="Filter PCI devices... (e.g. 'NVMe', 'USB', 'Intel')"
+    oninput="filterPCI()">
+  <div class="card">
+    <h3>PCI/PCIe Device Tree</h3>
+    <div class="sub">All enumerated PCI devices on this system</div>
+    <table class="spec-table" id="pci-table" style="margin-top:12px">
+      <tr><th>Device</th><th>Type</th><th>Vendor</th><th>Bus</th><th>Notes</th></tr>
+      <tr><td>Host Bridge</td><td>Bridge</td><td>Intel</td><td class="mono">00:00.0</td><td>Alder Lake PCIe root</td></tr>
+      <tr><td>Iris Xe Graphics</td><td>VGA</td><td>Intel</td><td class="mono">00:02.0</td><td>80 EU, shared memory</td></tr>
+      <tr><td>GNA 3.0</td><td>Accel</td><td>Intel</td><td class="mono">00:08.0</td><td>Gaussian Neural Accelerator</td></tr>
+      <tr><td>Crashlog Controller</td><td>System</td><td>Intel</td><td class="mono">00:0a.0</td><td>Telemetry/debug</td></tr>
+      <tr><td>Serial IO I2C #0</td><td>I2C</td><td>Intel</td><td class="mono">00:15.0</td><td>Touchpad (ELAN)</td></tr>
+      <tr><td>Serial IO I2C #1</td><td>I2C</td><td>Intel</td><td class="mono">00:15.1</td><td>Sensors/peripherals</td></tr>
+      <tr><td>Intel ME (HECI)</td><td>Comm</td><td>Intel</td><td class="mono">00:16.0</td><td>Management Engine</td></tr>
+      <tr><td>Serial IO UART #0</td><td>UART</td><td>Intel</td><td class="mono">00:1e.0</td><td>Debug/serial console</td></tr>
+      <tr><td>Serial IO SPI #0</td><td>SPI</td><td>Intel</td><td class="mono">00:1f.5</td><td>BIOS SPI flash</td></tr>
+      <tr><td>USB 3.2 xHCI</td><td>USB</td><td>Intel</td><td class="mono">00:14.0</td><td>All USB ports (3A + 1C)</td></tr>
+      <tr><td>Shared SRAM</td><td>RAM</td><td>Intel</td><td class="mono">00:14.2</td><td>USB/audio shared buffer</td></tr>
+      <tr><td>CNVi WiFi</td><td>Network</td><td>Intel</td><td class="mono">00:14.3</td><td>AC 9462 (WiFi 5 + BT)</td></tr>
+      <tr><td>PCIe Root Port #1</td><td>Bridge</td><td>Intel</td><td class="mono">00:1c.0</td><td>Ethernet downstream</td></tr>
+      <tr><td>Realtek RTL8168</td><td>Ethernet</td><td>Realtek</td><td class="mono">01:00.0</td><td>Gigabit Ethernet</td></tr>
+      <tr><td>VMD Controller</td><td>RAID</td><td>Intel</td><td class="mono">00:0e.0</td><td>Volume Management Device</td></tr>
+      <tr><td>Samsung BM9C1</td><td>NVMe</td><td>Samsung</td><td class="mono">VMD</td><td>512GB QLC, PCIe 4.0 x4</td></tr>
+      <tr><td>ISA Bridge (LPC)</td><td>Bridge</td><td>Intel</td><td class="mono">00:1f.0</td><td>Legacy I/O bridge</td></tr>
+      <tr><td>SMBus Controller</td><td>SMBus</td><td>Intel</td><td class="mono">00:1f.4</td><td>System management bus</td></tr>
+      <tr><td>HD Audio (SST)</td><td>Audio</td><td>Intel</td><td class="mono">00:1f.3</td><td>Smart Sound Technology</td></tr>
+      <tr><td>Thermal Subsystem</td><td>Thermal</td><td>Intel</td><td class="mono">00:12.0</td><td>DTS thermal monitoring</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ======================== TAB 10: THERMAL ======================== -->
+<div class="panel" id="panel-thermal">
+  <div class="thermal-grid">
+    <div class="card">
+      <h3 style="color:var(--thermal)">Cooling System</h3>
+      <div class="sub">Budget single-pipe design</div>
+      <div class="info-section">
+        <h4>Physical Components</h4>
+        <div class="info-row"><span class="label">Heatpipes</span>
+          <span class="value tag-warning">1 (single pipe)</span></div>
+        <div class="info-row"><span class="label">Fans</span><span class="value">1x blower fan</span></div>
+        <div class="info-row"><span class="label">Heatsink</span><span class="value">Aluminum fin stack</span></div>
+        <div class="info-row"><span class="label">TIM</span><span class="value">Thermal paste (standard)</span></div>
+        <div class="info-row"><span class="label">Exhaust</span><span class="value">Left side vent</span></div>
+      </div>
+      <div class="info-section">
+        <h4>Design Limitations</h4>
+        <div class="info-row"><span class="label">CPU TDP</span><span class="value">15W (PL1)</span></div>
+        <div class="info-row"><span class="label">Burst TDP</span><span class="value">55W (PL2, 28-56s)</span></div>
+        <div class="info-row"><span class="label">Sustained cooling</span>
+          <span class="value" style="color:var(--green)">Adequate for PL1</span></div>
+        <div class="info-row"><span class="label">Burst cooling</span>
+          <span class="value tag-warning">Limited at 55W</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="color:var(--thermal)">Sustained Thermal Test</h3>
+      <div class="sub">PROTO-08: 330 seconds continuous compression
+        <span class="tag-measured">[MEASURED]</span></div>
+      <div class="info-section">
+        <h4>Throughput Over Time</h4>
+      </div>
+      <svg viewBox="0 0 340 180" style="width:100%;margin-top:8px">
+        <rect width="340" height="180" fill="#0d1117" rx="4"/>
+        <!-- Grid -->
+        <line x1="40" y1="20" x2="40" y2="150" stroke="#21262d" stroke-width="1"/>
+        <line x1="40" y1="150" x2="320" y2="150" stroke="#21262d" stroke-width="1"/>
+        <line x1="40" y1="85" x2="320" y2="85" stroke="#21262d" stroke-width="0.5" stroke-dasharray="4"/>
+        <line x1="40" y1="20" x2="320" y2="20" stroke="#21262d" stroke-width="0.5" stroke-dasharray="4"/>
+        <!-- Y axis labels -->
+        <text x="35" y="155" text-anchor="end" fill="#8b949e" font-size="8">37</text>
+        <text x="35" y="90" text-anchor="end" fill="#8b949e" font-size="8">39</text>
+        <text x="35" y="25" text-anchor="end" fill="#8b949e" font-size="8">40</text>
+        <text x="8" y="90" text-anchor="middle" fill="#8b949e" font-size="7"
+          transform="rotate(-90,8,90)">tok/s</text>
+        <!-- X axis labels -->
+        <text x="40" y="165" text-anchor="middle" fill="#8b949e" font-size="7">0s</text>
+        <text x="110" y="165" text-anchor="middle" fill="#8b949e" font-size="7">60s</text>
+        <text x="180" y="165" text-anchor="middle" fill="#8b949e" font-size="7">150s</text>
+        <text x="250" y="165" text-anchor="middle" fill="#8b949e" font-size="7">250s</text>
+        <text x="320" y="165" text-anchor="middle" fill="#8b949e" font-size="7">330s</text>
+        <!-- Data line: 38.9 -> 39.1 -> 39.0 -> 39.1 -> 39.2 tok/s -->
+        <!-- Map: 37=150, 40=20, range=3 tok/s = 130px. 38.9 = 150 - (1.9/3)*130 = 67.7 -->
+        <polyline points="40,68 110,63 180,67 250,63 320,59"
+          fill="none" stroke="#3fb950" stroke-width="2"/>
+        <!-- Data points -->
+        <circle cx="40" cy="68" r="3" fill="#3fb950"/>
+        <circle cx="110" cy="63" r="3" fill="#3fb950"/>
+        <circle cx="180" cy="67" r="3" fill="#3fb950"/>
+        <circle cx="250" cy="63" r="3" fill="#3fb950"/>
+        <circle cx="320" cy="59" r="3" fill="#3fb950"/>
+        <!-- Labels -->
+        <text x="40" y="60" text-anchor="middle" fill="#3fb950" font-size="7">38.9</text>
+        <text x="110" y="55" text-anchor="middle" fill="#3fb950" font-size="7">39.1</text>
+        <text x="180" y="59" text-anchor="middle" fill="#3fb950" font-size="7">39.0</text>
+        <text x="250" y="55" text-anchor="middle" fill="#3fb950" font-size="7">39.1</text>
+        <text x="320" y="51" text-anchor="middle" fill="#3fb950" font-size="7">39.2</text>
+        <!-- Conclusion -->
+        <text x="180" y="175" text-anchor="middle" fill="#3fb950" font-size="8"
+          font-weight="600">0% thermal degradation — stable 38.8 tok/s avg</text>
+      </svg>
+      <div class="info-section" style="margin-top:12px">
+        <div class="info-row"><span class="label">Duration</span><span class="value">330.9 seconds</span></div>
+        <div class="info-row"><span class="label">Tokens processed</span><span class="value">12,830</span></div>
+        <div class="info-row"><span class="label">Avg throughput</span>
+          <span class="value tag-measured">38.8 tok/s</span></div>
+        <div class="info-row"><span class="label">Thermal throttle</span>
+          <span class="value" style="color:var(--green)">NONE detected</span></div>
+        <div class="info-row"><span class="label">Conclusion</span>
+          <span class="value" style="color:var(--green)">PL1=15W adequate</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /content -->
+
+<script>
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// Component info data
+const componentInfo = {
+  cpu: {
+    title: 'Intel Core i5-1235U',
+    subtitle: 'Alder Lake-U — 12th Gen',
+    sections: [
+      { title: 'Core Configuration', rows: [
+        ['Architecture', 'Alder Lake (Intel 7)'],
+        ['P-Cores', '2x Golden Cove (HT) @ 4.4 GHz'],
+        ['E-Cores', '8x Gracemont @ 3.3 GHz'],
+        ['Total Threads', '12 (4P + 8E)'],
+        ['L3 Cache', '12 MB shared'],
+      ]},
+      { title: 'Redukt Performance [MEASURED]', rows: [
+        ['Sustained tok/s', '38.8 (330s test)'],
+        ['P vs E delta', '<8% (scalar-dominated)'],
+        ['Usable cores', '10/10 for multi-file'],
+        ['Bottleneck', 'TimeMix scalar 74-88%'],
+        ['SIMD benefit (e2e)', '+15% only'],
+      ]},
+      { title: 'Power', rows: [
+        ['PL1 (sustained)', '15W'],
+        ['PL2 (burst)', '55W'],
+        ['Thermal throttle', '0% over 330s'],
+      ]},
+    ]
+  },
+  memory: {
+    title: 'DDR4 — 32 GB Dual Channel',
+    subtitle: 'Crucial CT16G4SFRA32A x2',
+    sections: [
+      { title: 'Configuration', rows: [
+        ['Total', '32 GB (2x16GB)'],
+        ['Type', 'DDR4 SO-DIMM'],
+        ['Rated', '3200 MT/s (PC4-25600)'],
+        ['Actual', '2667 MT/s (XMP off!)'],
+        ['CAS Latency', 'CL22 (22-22-22)'],
+        ['Voltage', '1.2V'],
+      ]},
+      { title: 'Bandwidth [MEASURED]', rows: [
+        ['DRAM (64MB)', '20.6 GB/s'],
+        ['L3 (4MB)', '57.2 GB/s'],
+        ['L2 (1MB)', '63.4 GB/s'],
+        ['Redukt demand', '1.87 GB/s (9%)'],
+      ]},
+    ]
+  },
+  pch: {
+    title: 'Platform Controller Hub',
+    subtitle: 'Integrated in Alder Lake-U SoC',
+    sections: [
+      { title: 'Interfaces', rows: [
+        ['PCIe 4.0', '4 lanes (NVMe)'],
+        ['PCIe 3.0', 'Multiple ports (Ethernet, etc)'],
+        ['USB 3.2', 'xHCI controller (3 ports)'],
+        ['CNVi', 'WiFi/BT integrated'],
+        ['HD Audio', 'SST (Smart Sound)'],
+        ['I2C', 'Serial IO (touchpad, sensors)'],
+        ['SPI', 'BIOS flash interface'],
+        ['SMBus', 'System management'],
+      ]},
+    ]
+  },
+  nvme: {
+    title: 'Samsung PM9C1 (BM9C1)',
+    subtitle: '512 GB NVMe QLC — PCIe Gen4 x4',
+    sections: [
+      { title: 'Performance [SOURCED]', rows: [
+        ['Seq Read', '5,000 MB/s'],
+        ['Seq Write', '4,300 MB/s'],
+        ['Random Read', '500K IOPS'],
+        ['Random Write', '480K IOPS'],
+        ['NAND', 'QLC (4 bits/cell)'],
+        ['Controller', 'Samsung Pablo'],
+        ['Buffer', 'HMB (no DRAM)'],
+      ]},
+      { title: 'Redukt Impact', rows: [
+        ['I/O demand', '~150 B/s (negligible)'],
+        ['SSD utilization', '~0.003%'],
+        ['Bottleneck?', 'NO — CPU bound'],
+      ]},
+    ]
+  },
+  wifi: {
+    title: 'Intel Wireless-AC 9462',
+    subtitle: 'WiFi 5 + BT 5.1 — CNVi',
+    sections: [
+      { title: 'WiFi', rows: [
+        ['Standard', '802.11ac (WiFi 5)'],
+        ['Streams', '1x1 (433 Mbps max)'],
+        ['Bands', '2.4 + 5 GHz'],
+        ['Channel', 'Up to 80 MHz'],
+        ['Security', 'WPA3'],
+      ]},
+      { title: 'Bluetooth', rows: [
+        ['Version', '5.1'],
+        ['Profiles', 'A2DP, HFP, HID, LE'],
+      ]},
+    ]
+  },
+  ports: {
+    title: 'USB 3.2 Gen1 Hub',
+    subtitle: 'Intel xHCI Controller',
+    sections: [
+      { title: 'External Ports', rows: [
+        ['USB-A #1', '3.2 Gen1 (5 Gbps) — Left'],
+        ['USB-A #2', '3.2 Gen1 (5 Gbps) — Right'],
+        ['USB-C', '3.2 Gen1 + DP 1.4 Alt — Left'],
+      ]},
+      { title: 'Limitations', rows: [
+        ['No Thunderbolt', 'Despite CPU support'],
+        ['No USB4', 'Budget motherboard'],
+        ['No USB 3.2 Gen2', 'All Gen1 (5 Gbps)'],
+      ]},
+    ]
+  },
+  audio: {
+    title: 'Cirrus Logic CS42L42',
+    subtitle: 'Audio Codec — 24-bit/192kHz',
+    sections: [
+      { title: 'DAC', rows: [
+        ['Resolution', '24-bit / 192 kHz'],
+        ['SNR', '114 dB'],
+        ['THD+N', '-100 dB'],
+        ['Amp', 'Class-H headphone'],
+      ]},
+      { title: 'System', rows: [
+        ['DSP', 'Intel SST (offloaded)'],
+        ['Speakers', '2x stereo down-firing'],
+        ['Jack', '3.5mm TRRS combo (CTIA)'],
+        ['Mic', '1x digital array'],
+      ]},
+    ]
+  },
+  display: {
+    title: 'LG LP156WFJ-SPB3',
+    subtitle: '15.6" IPS 1080p 120Hz',
+    sections: [
+      { title: 'Panel', rows: [
+        ['Resolution', '1920x1080'],
+        ['Refresh', '120 Hz'],
+        ['Type', 'IPS'],
+        ['Brightness', '250 nits'],
+        ['Color', '52% sRGB (poor)'],
+        ['Depth', '6-bit + FRC'],
+        ['Response', '25ms GtG'],
+      ]},
+    ]
+  },
+  hdmi: {
+    title: 'HDMI 1.4 Output',
+    subtitle: 'Downgraded from CPU capability',
+    sections: [
+      { title: 'Specs', rows: [
+        ['Version', '1.4 (NOT 2.0)'],
+        ['Max resolution', '4K@30Hz'],
+        ['Bandwidth', '10.2 Gbps'],
+        ['CPU supports', 'HDMI 2.0 (wasted)'],
+      ]},
+    ]
+  },
+  ethernet: {
+    title: 'Realtek RTL8168',
+    subtitle: 'Gigabit Ethernet — PCIe',
+    sections: [
+      { title: 'Specs', rows: [
+        ['Speed', '10/100/1000 Mbps'],
+        ['Interface', 'PCIe 2.1 x1'],
+        ['Connector', 'RJ-45'],
+        ['WoL', 'Supported'],
+      ]},
+    ]
+  },
+  battery: {
+    title: 'Battery — 41 Wh',
+    subtitle: '3-cell Li-Polymer',
+    sections: [
+      { title: 'Health [MEASURED]', rows: [
+        ['Design', '40,590 mWh'],
+        ['Current full', '32,546 mWh'],
+        ['Health', '80.2%'],
+        ['Voltage', '11.25V'],
+        ['Chemistry', 'Li-Polymer (BYD)'],
+      ]},
+    ]
+  },
+  charger: {
+    title: 'AC Adapter 65W',
+    subtitle: 'Dell barrel jack',
+    sections: [
+      { title: 'Specs', rows: [
+        ['Output', '19.5V / 3.34A'],
+        ['Wattage', '65W'],
+        ['Connector', '4.5mm barrel'],
+        ['Input', '100-240V AC'],
+      ]},
+    ]
+  },
+  thermal: {
+    title: 'Thermal System',
+    subtitle: 'Single fan + single heatpipe',
+    sections: [
+      { title: 'Components', rows: [
+        ['Heatpipes', '1 (budget)'],
+        ['Fan', '1x blower'],
+        ['Heatsink', 'Aluminum fin stack'],
+        ['Exhaust', 'Left side vent'],
+      ]},
+      { title: 'PROTO-08 Results [MEASURED]', rows: [
+        ['Duration', '330.9 seconds'],
+        ['Avg tok/s', '38.8 sustained'],
+        ['Degradation', '0%'],
+        ['Throttling', 'NONE detected'],
+      ]},
+    ]
+  },
+  peripherals: {
+    title: 'Input Devices',
+    subtitle: 'Touchpad, keyboard, webcam',
+    sections: [
+      { title: 'Devices', rows: [
+        ['Touchpad', 'ELAN I2C (precision)'],
+        ['Keyboard', 'PS/2 membrane'],
+        ['Webcam', 'Integrated USB2 720p'],
+        ['Fingerprint', 'Not present'],
+      ]},
+    ]
+  },
+  controllers: {
+    title: 'Platform Controllers',
+    subtitle: 'Intel integrated subsystems',
+    sections: [
+      { title: 'Controllers', rows: [
+        ['GNA 3.0', 'Neural accelerator (audio/voice)'],
+        ['ME (HECI)', 'Management Engine'],
+        ['VMD', 'Volume Management (NVMe)'],
+        ['SMBus', 'System management bus'],
+        ['SPI', 'BIOS flash controller'],
+        ['Serial IO', 'I2C + UART interfaces'],
+        ['Thermal', 'DTS monitoring subsystem'],
+      ]},
+    ]
+  },
+};
+
+function showInfo(id) {
+  const info = componentInfo[id];
+  if (!info) return;
+
+  // Update selection visual
+  document.querySelectorAll('.hw-block').forEach(b => b.classList.remove('selected'));
+  document.querySelectorAll(`.hw-block[data-id="${id}"]`).forEach(b => b.classList.add('selected'));
+
+  const panel = document.getElementById('info-panel');
+  document.getElementById('info-title').textContent = info.title;
+  document.getElementById('info-subtitle').textContent = info.subtitle;
+
+  let html = '';
+  for (const section of info.sections) {
+    html += `<div class="info-section"><h4>${section.title}</h4>`;
+    for (const [label, value] of section.rows) {
+      let cls = '';
+      if (value.includes('MEASURED')) cls = 'tag-measured';
+      else if (value.includes('!') || value.includes('off') || value.includes('poor')
+        || value.includes('NOT') || value.includes('budget') || value.includes('wasted'))
+        cls = 'tag-warning';
+      else if (value.includes('NO') && value.includes('bound')) cls = '';
+      html += `<div class="info-row"><span class="label">${label}</span>` +
+        `<span class="value ${cls}">${value}</span></div>`;
+    }
+    html += '</div>';
+  }
+  document.getElementById('info-content').innerHTML = html;
+}
+
+// PCI device filter
+function filterPCI() {
+  const q = document.getElementById('pci-search').value.toLowerCase();
+  const rows = document.querySelectorAll('#pci-table tr');
+  rows.forEach((row, i) => {
+    if (i === 0) return; // skip header
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// Tooltip on SVG blocks
+document.querySelectorAll('.hw-block').forEach(block => {
+  block.addEventListener('mouseenter', (e) => {
+    const id = block.dataset.id;
+    const info = componentInfo[id];
+    if (!info) return;
+    const tip = document.getElementById('tooltip');
+    tip.innerHTML = `<strong>${info.title}</strong><br><span style="color:var(--text2)">${info.subtitle}</span>`;
+    tip.style.display = 'block';
+  });
+  block.addEventListener('mousemove', (e) => {
+    const tip = document.getElementById('tooltip');
+    tip.style.left = (e.clientX + 12) + 'px';
+    tip.style.top = (e.clientY + 12) + 'px';
+  });
+  block.addEventListener('mouseleave', () => {
+    document.getElementById('tooltip').style.display = 'none';
+  });
+});
+</script>
+</body>
+</html>

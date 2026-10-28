@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redukt — CPU Architecture Map (i5-1235U)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg3: #21262d;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+    --pcore: #1f6feb;
+    --ecore: #238636;
+    --cache: #8957e5;
+    --dram: #db6d28;
+    --bottleneck: #f85149;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+  .header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .chip { font-size: 12px; padding: 2px 8px; border-radius: 12px;
+    background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
+  .header .measured { background: rgba(63,185,80,0.15); border-color: var(--green);
+    color: var(--green); }
+
+  .tabs {
+    display: flex;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    gap: 0;
+  }
+  .tab {
+    padding: 10px 20px;
+    cursor: pointer;
+    color: var(--text2);
+    border-bottom: 2px solid transparent;
+    font-size: 14px;
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* === DIE MAP === */
+  .die-container {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 24px;
+    min-height: 600px;
+  }
+  .die-svg-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+  }
+  .die-svg-wrap svg { width: 100%; height: auto; }
+
+  .detail-panel {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+  .detail-panel h3 { font-size: 16px; margin-bottom: 12px; color: var(--accent); }
+  .detail-panel .hint { color: var(--text2); font-size: 13px; font-style: italic; }
+  .detail-panel table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  .detail-panel td { padding: 4px 8px; font-size: 13px; border-bottom: 1px solid var(--bg3); }
+  .detail-panel td:first-child { color: var(--text2); white-space: nowrap; }
+  .detail-panel .tag {
+    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+    margin-left: 4px;
+  }
+  .tag-measured { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag-sourced { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-calculated { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .tag-bottleneck { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  .detail-panel .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .detail-panel .bar-label { font-size: 12px; width: 90px; text-align: right; color: var(--text2); }
+  .detail-panel .bar-track { flex:1; height: 18px; background: var(--bg3); border-radius: 4px; overflow: hidden; position: relative; }
+  .detail-panel .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; display:flex; align-items:center; padding-left:6px; font-size:11px; color:#fff; font-weight:600; }
+  .detail-panel .bar-val { font-size: 12px; width: 50px; color: var(--text); }
+
+  /* SVG interactive elements */
+  .die-component {
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .die-component:hover { filter: brightness(1.3); }
+  .die-component.selected { filter: brightness(1.4); stroke-width: 2; }
+
+  /* === BOTTLENECK VIEW === */
+  .bottleneck-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .card h3 { font-size: 15px; margin-bottom: 16px; }
+  .card.full { grid-column: 1 / -1; }
+
+  .waterfall { width: 100%; }
+  .waterfall .row { display: flex; align-items: center; margin: 6px 0; }
+  .waterfall .label { width: 140px; font-size: 13px; color: var(--text2); text-align: right; padding-right: 12px; }
+  .waterfall .track { flex: 1; height: 28px; background: var(--bg3); border-radius: 6px; overflow: hidden; position: relative; cursor: pointer; }
+  .waterfall .fill { height: 100%; border-radius: 6px; display: flex; align-items: center;
+    padding: 0 10px; font-size: 12px; font-weight: 600; color: #fff; transition: width 0.6s ease; }
+  .waterfall .val { width: 80px; font-size: 13px; padding-left: 10px; }
+  .waterfall .track:hover .fill { filter: brightness(1.2); }
+
+  /* Per-token timeline */
+  .timeline-bar {
+    display: flex;
+    height: 40px;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 12px 0;
+  }
+  .timeline-seg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .timeline-seg:hover { filter: brightness(1.2); z-index:1; transform: scaleY(1.1); }
+  .timeline-seg .tooltip {
+    display: none;
+    position: absolute;
+    bottom: 48px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+    z-index: 10;
+    color: var(--text);
+    font-weight: 400;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  }
+  .timeline-seg:hover .tooltip { display: block; }
+
+  /* === CACHE VIEW === */
+  .cache-tower {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 20px 0;
+  }
+  .cache-level {
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+    position: relative;
+  }
+  .cache-level:hover { border-color: var(--accent); transform: scale(1.02); }
+  .cache-level .name { font-size: 14px; font-weight: 600; }
+  .cache-level .specs { font-size: 12px; color: var(--text2); margin-top: 4px; }
+  .cache-level .bw { font-size: 13px; color: var(--green); font-weight: 600; margin-top: 4px; }
+  .cache-arrow {
+    width: 2px;
+    height: 24px;
+    background: var(--border);
+    position: relative;
+  }
+  .cache-arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: -4px;
+    width: 10px;
+    height: 10px;
+    border-bottom: 2px solid var(--border);
+    border-right: 2px solid var(--border);
+    transform: rotate(45deg);
+  }
+  .cache-arrow .lat {
+    position: absolute;
+    left: 14px;
+    top: 2px;
+    font-size: 11px;
+    color: var(--yellow);
+    white-space: nowrap;
+  }
+
+  /* === AFFINITY VIEW === */
+  .core-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    margin: 16px 0;
+  }
+  .core-cell {
+    background: var(--bg3);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 8px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .core-cell:hover { border-color: var(--accent); }
+  .core-cell .lp { font-size: 11px; color: var(--text2); }
+  .core-cell .type { font-size: 13px; font-weight: 600; margin: 4px 0; }
+  .core-cell .toks { font-size: 18px; font-weight: 700; }
+  .core-cell .unit { font-size: 10px; color: var(--text2); }
+  .core-cell.p-core { border-color: var(--pcore); }
+  .core-cell.p-core .type { color: var(--pcore); }
+  .core-cell.e-core { border-color: var(--ecore); }
+  .core-cell.e-core .type { color: var(--ecore); }
+  .core-cell .perf-bar {
+    height: 4px;
+    border-radius: 2px;
+    margin-top: 6px;
+    transition: width 0.5s;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin: 12px 0;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text2);
+  }
+  .legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+  }
+
+  /* Optimization table */
+  .opt-table { width: 100%; border-collapse: collapse; }
+  .opt-table th { text-align: left; padding: 8px 12px; font-size: 12px; color: var(--text2);
+    border-bottom: 2px solid var(--border); }
+  .opt-table td { padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--bg3); }
+  .opt-table tr:hover { background: var(--bg3); }
+  .opt-table .pri { width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; }
+  .opt-table .speedup { font-weight: 700; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .die-container { grid-template-columns: 1fr; }
+    .bottleneck-grid { grid-template-columns: 1fr; }
+    .core-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Redukt CPU Architecture Map</h1>
+  <span class="chip">Intel Core i5-1235U</span>
+  <span class="chip">Alder Lake-U</span>
+  <span class="chip">2P + 8E = 10 cores / 12 threads</span>
+  <span class="chip measured">PROTO-01..08 MEASURED</span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="die">Die Layout</div>
+  <div class="tab" data-tab="bottleneck">Bottleneck Analysis</div>
+  <div class="tab" data-tab="cache">Cache Hierarchy</div>
+  <div class="tab" data-tab="affinity">Core Affinity</div>
+  <div class="tab" data-tab="optimize">Optimization Map</div>
+</div>
+
+<!-- ==================== DIE LAYOUT ==================== -->
+<div class="content">
+<div class="panel active" id="panel-die">
+  <div class="die-container">
+    <div class="die-svg-wrap">
+      <svg viewBox="0 0 800 620" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background -->
+        <rect x="0" y="0" width="800" height="620" rx="16" fill="#161b22" stroke="#30363d"/>
+        <text x="400" y="28" text-anchor="middle" fill="#8b949e" font-size="13"
+          font-family="Segoe UI, system-ui">Intel i5-1235U — Alder Lake-U — Intel 7 (10nm ESF)</text>
+
+        <!-- P-Core 0 -->
+        <g class="die-component" data-id="pcore0" onclick="showDetail('pcore0')">
+          <rect x="40" y="50" width="200" height="140" rx="10" fill="#0d2240" stroke="#1f6feb" stroke-width="1.5"/>
+          <text x="140" y="75" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600">P-CORE 0</text>
+          <text x="140" y="95" text-anchor="middle" fill="#8b949e" font-size="11">Golden Cove</text>
+          <text x="140" y="112" text-anchor="middle" fill="#8b949e" font-size="11">2 threads (HT) | 4.4 GHz</text>
+          <rect x="55" y="122" width="75" height="22" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="92" y="137" text-anchor="middle" fill="#bc8cff" font-size="10">L1d: 48KB</text>
+          <rect x="140" y="122" width="85" height="22" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="182" y="137" text-anchor="middle" fill="#bc8cff" font-size="10">L1i: 32KB</text>
+          <rect x="55" y="150" width="170" height="26" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="140" y="168" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="600">L2: 1.25 MB private</text>
+        </g>
+
+        <!-- P-Core 1 -->
+        <g class="die-component" data-id="pcore1" onclick="showDetail('pcore1')">
+          <rect x="280" y="50" width="200" height="140" rx="10" fill="#0d2240" stroke="#1f6feb" stroke-width="1.5"/>
+          <text x="380" y="75" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600">P-CORE 1</text>
+          <text x="380" y="95" text-anchor="middle" fill="#8b949e" font-size="11">Golden Cove</text>
+          <text x="380" y="112" text-anchor="middle" fill="#8b949e" font-size="11">2 threads (HT) | 4.4 GHz</text>
+          <rect x="295" y="122" width="75" height="22" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="332" y="137" text-anchor="middle" fill="#bc8cff" font-size="10">L1d: 48KB</text>
+          <rect x="380" y="122" width="85" height="22" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="422" y="137" text-anchor="middle" fill="#bc8cff" font-size="10">L1i: 32KB</text>
+          <rect x="295" y="150" width="170" height="26" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="380" y="168" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="600">L2: 1.25 MB private</text>
+        </g>
+
+        <!-- iGPU -->
+        <g class="die-component" data-id="igpu" onclick="showDetail('igpu')">
+          <rect x="520" y="50" width="240" height="140" rx="10" fill="#1a1a1a" stroke="#484f58" stroke-width="1"/>
+          <text x="640" y="85" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="600">Iris Xe Graphics</text>
+          <text x="640" y="105" text-anchor="middle" fill="#484f58" font-size="11">80 EU</text>
+          <text x="640" y="125" text-anchor="middle" fill="#484f58" font-size="11">No usado por Redukt</text>
+        </g>
+
+        <!-- Ring Bus -->
+        <g class="die-component" data-id="ring" onclick="showDetail('ring')">
+          <rect x="20" y="210" width="760" height="36" rx="8" fill="#1a1520" stroke="#6e40c9" stroke-width="1.5"/>
+          <text x="400" y="233" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="600">
+            RING BUS — ~4.7 GHz (P-only) / ~3.6 GHz (con E activos)</text>
+        </g>
+
+        <!-- L3 Cache -->
+        <g class="die-component" data-id="l3" onclick="showDetail('l3')">
+          <rect x="20" y="260" width="760" height="50" rx="10" fill="#1a0d2e" stroke="#8957e5" stroke-width="1.5"/>
+          <text x="400" y="282" text-anchor="middle" fill="#bc8cff" font-size="14" font-weight="600">
+            L3 Intel Smart Cache — 12 MB compartido</text>
+          <text x="400" y="300" text-anchor="middle" fill="#8b949e" font-size="11">
+            Non-inclusive | 12+ way | 64B line | ~40-55cy P / ~60cy E | BW: 57 GB/s (4MB) [MEASURED]</text>
+        </g>
+
+        <!-- E-Core Cluster 0 -->
+        <g class="die-component" data-id="ecluster0" onclick="showDetail('ecluster0')">
+          <rect x="20" y="330" width="370" height="170" rx="10" fill="#0d2210" stroke="#238636" stroke-width="1.5"/>
+          <text x="205" y="355" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="600">
+            E-CORE CLUSTER 0 — Gracemont</text>
+          <!-- 4 E-cores -->
+          <g>
+            <rect x="40" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="76" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 0</text>
+            <text x="76" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="122" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="158" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 1</text>
+            <text x="158" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="204" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="240" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 2</text>
+            <text x="240" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="286" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="322" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 3</text>
+            <text x="322" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <text x="110" y="442" fill="#8b949e" font-size="10">L1d: 32KB/core | L1i: 64KB/core</text>
+          <rect x="40" y="458" width="330" height="26" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="205" y="476" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="600">
+            L2: 2 MB compartido (500KB efectivo/core)</text>
+        </g>
+
+        <!-- E-Core Cluster 1 -->
+        <g class="die-component" data-id="ecluster1" onclick="showDetail('ecluster1')">
+          <rect x="410" y="330" width="370" height="170" rx="10" fill="#0d2210" stroke="#238636" stroke-width="1.5"/>
+          <text x="595" y="355" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="600">
+            E-CORE CLUSTER 1 — Gracemont</text>
+          <g>
+            <rect x="430" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="466" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 4</text>
+            <text x="466" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="512" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="548" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 5</text>
+            <text x="548" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="594" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="630" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 6</text>
+            <text x="630" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <g>
+            <rect x="676" y="368" width="72" height="52" rx="6" fill="#122117" stroke="#238636" stroke-width="1"/>
+            <text x="712" y="388" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">E-C 7</text>
+            <text x="712" y="404" text-anchor="middle" fill="#8b949e" font-size="9">1T | 3.3G</text>
+          </g>
+          <text x="500" y="442" fill="#8b949e" font-size="10">L1d: 32KB/core | L1i: 64KB/core</text>
+          <rect x="430" y="458" width="330" height="26" rx="4" fill="#1a1a2e" stroke="#8957e5" stroke-width="1"/>
+          <text x="595" y="476" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="600">
+            L2: 2 MB compartido (500KB efectivo/core)</text>
+        </g>
+
+        <!-- Memory Controller -->
+        <g class="die-component" data-id="memctl" onclick="showDetail('memctl')">
+          <rect x="20" y="520" width="760" height="36" rx="8" fill="#2d1a0a" stroke="#db6d28" stroke-width="1.5"/>
+          <text x="400" y="543" text-anchor="middle" fill="#db6d28" font-size="12" font-weight="600">
+            MEMORY CONTROLLER — Dual Channel DDR4</text>
+        </g>
+
+        <!-- DRAM -->
+        <g class="die-component" data-id="dram" onclick="showDetail('dram')">
+          <rect x="80" y="570" width="290" height="40" rx="8" fill="#1a1008" stroke="#d29922" stroke-width="1.5"/>
+          <text x="225" y="594" text-anchor="middle" fill="#d29922" font-size="12" font-weight="600">
+            DIMM A: 16GB DDR4 @ 2667 MT/s</text>
+        </g>
+        <g class="die-component" data-id="dram" onclick="showDetail('dram')">
+          <rect x="430" y="570" width="290" height="40" rx="8" fill="#1a1008" stroke="#d29922" stroke-width="1.5"/>
+          <text x="575" y="594" text-anchor="middle" fill="#d29922" font-size="12" font-weight="600">
+            DIMM B: 16GB DDR4 @ 2667 MT/s</text>
+        </g>
+
+        <!-- Warning badge -->
+        <g onclick="showDetail('dram')">
+          <rect x="330" y="575" width="140" height="30" rx="6" fill="#3d1414" stroke="#f85149"/>
+          <text x="400" y="595" text-anchor="middle" fill="#f85149" font-size="11" font-weight="700">
+            XMP OFF: -17% BW</text>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Detail Panel -->
+    <div class="detail-panel" id="detailPanel">
+      <h3 id="detailTitle">Haz click en un componente</h3>
+      <p class="hint" id="detailHint">Selecciona cualquier bloque del die para ver sus especificaciones detalladas,
+        mediciones de rendimiento y relevancia para Redukt.</p>
+      <div id="detailContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== BOTTLENECK ANALYSIS ==================== -->
+<div class="panel" id="panel-bottleneck">
+  <div class="bottleneck-grid">
+    <div class="card full">
+      <h3>Forward Pass — Donde se gasta el tiempo (por token)</h3>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+        Medido con PROTO-03 en apache-access.log 10KB, 3570 tokens, --verbose.
+        Click en cada barra para detalles.</p>
+      <div class="timeline-bar" id="tokenTimeline">
+        <div class="timeline-seg" style="width:74.1%;background:var(--red)" onclick="showBottleneckDetail('tmix')">
+          TimeMix 74.1%
+          <div class="tooltip">
+            <b>TimeMix (12 capas)</b><br>
+            20.095 ms/token [MEASURED]<br>
+            Incluye: 5 Q8 matmuls (SIMD) + 6 F32 LoRA (SCALAR)<br>
+            + state matrix update + element-wise ops<br>
+            <b style="color:var(--red)">CUELLO DE BOTELLA PRINCIPAL</b>
+          </div>
+        </div>
+        <div class="timeline-seg" style="width:13.6%;background:var(--yellow)" onclick="showBottleneckDetail('cmix')">
+          CMix 13.6%
+          <div class="tooltip">
+            <b>ChannelMix (12 capas)</b><br>
+            3.691 ms/token [MEASURED]<br>
+            2 matmuls Q8 + sigmoid activation<br>
+            Mas simple que TimeMix
+          </div>
+        </div>
+        <div class="timeline-seg" style="width:12.2%;background:var(--green)" onclick="showBottleneckDetail('head')">
+          Head 12.2%
+          <div class="tooltip">
+            <b>Head Projection (65536x768)</b><br>
+            3.316 ms/token [MEASURED]<br>
+            1 matmul Q8 VNNI (48MB, DRAM-bound)<br>
+            Ya optimizado con SIMD
+          </div>
+        </div>
+      </div>
+
+      <div class="legend" style="margin-top:8px">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div> Bottleneck (>50%)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--yellow)"></div> Moderado (10-50%)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> Optimizado (<15%)</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Hipotesis vs Realidad</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">
+        La hipotesis previa asumia que el Head (DRAM-bound) dominaba. La medicion real invierte completamente la imagen.</p>
+      <div class="waterfall">
+        <div class="row">
+          <div class="label" style="font-size:11px;color:var(--text2)">Componente</div>
+          <div class="track" style="background:none;display:flex;gap:8px">
+            <span style="font-size:11px;color:var(--red)">Hipotesis</span>
+            <span style="font-size:11px;color:var(--green)">Medido</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">TimeMix</div>
+          <div class="track" style="position:relative">
+            <div class="fill" style="width:20%;background:rgba(248,81,73,0.3);position:absolute">20%</div>
+            <div class="fill" style="width:74%;background:var(--red);position:relative;z-index:1">74%</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">Head</div>
+          <div class="track" style="position:relative">
+            <div class="fill" style="width:75%;background:rgba(63,185,80,0.3);position:absolute">75%</div>
+            <div class="fill" style="width:12%;background:var(--green);position:relative;z-index:1">12%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Dentro de TimeMix (por capa)</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">
+        TimeMix incluye operaciones SIMD y escalares. Las escalares dominan.</p>
+      <div class="waterfall" id="tmixBreakdown">
+        <div class="row">
+          <div class="label">Q8 matmuls (SIMD)</div>
+          <div class="track"><div class="fill" style="width:35%;background:var(--pcore)">R,K,V,out ~35%</div></div>
+          <div class="val" style="color:var(--text2)">VNNI</div>
+        </div>
+        <div class="row">
+          <div class="label">LoRA F32 (scalar)</div>
+          <div class="track"><div class="fill" style="width:30%;background:var(--red)">w1,w2,a1,a2,g1,g2 ~30%</div></div>
+          <div class="val" style="color:var(--red)">NO SIMD!</div>
+        </div>
+        <div class="row">
+          <div class="label">State matrix</div>
+          <div class="track"><div class="fill" style="width:20%;background:var(--orange)">N*N*12heads ~20%</div></div>
+          <div class="val" style="color:var(--orange)">scalar</div>
+        </div>
+        <div class="row">
+          <div class="label">Element-wise</div>
+          <div class="track"><div class="fill" style="width:15%;background:var(--yellow)">exp,sig,lerp ~15%</div></div>
+          <div class="val" style="color:var(--yellow)">scalar</div>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text2);margin-top:8px">
+        Nota: porcentajes internos son [ESTIMATE] — se necesita instrumentacion per-op para medir.</p>
+    </div>
+
+    <div class="card full">
+      <h3>Comparacion por archivo [MEASURED]</h3>
+      <div style="overflow-x:auto">
+        <table class="opt-table">
+          <tr>
+            <th>Archivo</th><th>Tokens</th><th>tok/s</th>
+            <th>TimeMix</th><th>ChannelMix</th><th>Head</th>
+            <th>ms/tok (tmix)</th><th>ms/tok (head)</th>
+          </tr>
+          <tr>
+            <td>enwik8 10KB</td><td>3005</td><td>36.5</td>
+            <td><span style="color:var(--red);font-weight:700">88.0%</span></td>
+            <td>-</td><td>12.0%</td>
+            <td>22.365</td><td>3.045</td>
+          </tr>
+          <tr>
+            <td>apache-access.log</td><td>3570</td><td>34.4</td>
+            <td><span style="color:var(--red);font-weight:700">74.1%</span></td>
+            <td>13.6%</td><td>12.2%</td>
+            <td>20.095</td><td>3.316</td>
+          </tr>
+          <tr>
+            <td>facturae-batch.xml</td><td>2872</td><td>40.9</td>
+            <td><span style="color:var(--red);font-weight:700">72.7%</span></td>
+            <td>14.6%</td><td>12.7%</td>
+            <td>16.393</td><td>2.863</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CACHE HIERARCHY ==================== -->
+<div class="panel" id="panel-cache">
+  <div class="bottleneck-grid">
+    <div class="card">
+      <h3>Jerarquia de Cache — P-Core (Golden Cove)</h3>
+      <div class="cache-tower">
+        <div class="cache-level" style="width:180px;border-color:var(--accent)"
+          onclick="showCacheDetail('regs')">
+          <div class="name">Registros YMM</div>
+          <div class="specs">16x 256-bit</div>
+          <div class="bw">0 cy latencia</div>
+        </div>
+        <div class="cache-arrow"><span class="lat">96 B/cy</span></div>
+        <div class="cache-level" style="width:220px;border-color:var(--cache)"
+          onclick="showCacheDetail('l1d-p')">
+          <div class="name">L1d: 48 KB</div>
+          <div class="specs">12-way | 64B line | 3x256b loads/cy</div>
+          <div class="bw">5 cy / ~1.1 ns</div>
+        </div>
+        <div class="cache-arrow"><span class="lat">64 B/cy</span></div>
+        <div class="cache-level" style="width:280px;border-color:var(--cache)"
+          onclick="showCacheDetail('l2-p')">
+          <div class="name">L2: 1.25 MB (privado)</div>
+          <div class="specs">10-way | 48 outstanding misses</div>
+          <div class="bw">15 cy / ~3.4 ns | 63 GB/s [MEASURED]</div>
+        </div>
+        <div class="cache-arrow"><span class="lat">~20 B/cy</span></div>
+        <div class="cache-level" style="width:360px;border-color:var(--purple)"
+          onclick="showCacheDetail('l3')">
+          <div class="name">L3: 12 MB (compartido)</div>
+          <div class="specs">Non-inclusive | compartido con E-cores + iGPU</div>
+          <div class="bw">40-55 cy / ~12-17 ns | 57 GB/s [MEASURED]</div>
+        </div>
+        <div class="cache-arrow"><span class="lat">~76 ns</span></div>
+        <div class="cache-level" style="width:420px;border-color:var(--dram)"
+          onclick="showCacheDetail('dram-cache')">
+          <div class="name" style="color:var(--dram)">DRAM: 32 GB DDR4 @ 2667 MT/s</div>
+          <div class="specs">Dual channel | Crucial CT16G4SFRA32A x2</div>
+          <div class="bw" style="color:var(--yellow)">20.6 GB/s [MEASURED] (seria 24.8 con XMP)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Que dato de Redukt vive en cada nivel</h3>
+      <div style="margin-top:12px">
+        <div style="margin:8px 0;padding:10px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--accent)">
+          <div style="font-size:13px;font-weight:600">L1d (48 KB)</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">
+            Vector token (768B) | Acumuladores i32 (3KB) | RWKV state (24KB/layer) | Mixer+Coder (5KB)
+          </div>
+        </div>
+        <div style="margin:8px 0;padding:10px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--cache)">
+          <div style="font-size:13px;font-weight:600">L2 (1.25 MB)</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">
+            TimeMix weights Q8 (576KB) | ChannelMix weights Q8 (576KB) | LoRA F32 (~96KB) | Ngram hash (~512KB)
+          </div>
+          <div style="font-size:11px;color:var(--yellow);margin-top:4px">
+            Layer weights caben en L2 con presion — el working set rota por capa
+          </div>
+        </div>
+        <div style="margin:8px 0;padding:10px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--purple)">
+          <div style="font-size:13px;font-weight:600">L3 (12 MB)</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">
+            1-2 capas de pesos simultaneas (~4MB) | NO cabe el modelo completo (130MB)
+          </div>
+        </div>
+        <div style="margin:8px 0;padding:10px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--dram)">
+          <div style="font-size:13px;font-weight:600;color:var(--dram)">DRAM (32 GB)</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">
+            Head weights Q8 (48MB) | Embedding table (48MB) | Modelo total Q8 (~130MB)
+          </div>
+          <div style="font-size:11px;color:var(--green);margin-top:4px">
+            Demanda DRAM: 1.87 GB/s = solo 9% del BW disponible [CALCULATED]
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CORE AFFINITY ==================== -->
+<div class="panel" id="panel-affinity">
+  <div class="bottleneck-grid">
+    <div class="card full">
+      <h3>Throughput por Logical Processor [MEASURED: PROTO-05]</h3>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:4px">
+        Cada celda muestra tok/s con afinidad fijada a un solo LP. Enwik8 2KB, Q8 SIMD.</p>
+      <p style="font-size:12px;color:var(--yellow);margin-bottom:16px">
+        Hallazgo: P-cores y E-cores rinden casi igual (&lt;8% diferencia). Todos los cores son utiles.</p>
+
+      <div class="core-grid" id="coreGrid"></div>
+
+      <div class="legend" style="margin-top:16px">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--pcore)"></div> P-Core (Golden Cove, HT)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--ecore)"></div> E-Core (Gracemont)</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>SIMD vs Scalar [MEASURED]</h3>
+      <div class="waterfall" style="margin-top:12px">
+        <div class="row">
+          <div class="label">SIMD (default)</div>
+          <div class="track"><div class="fill" style="width:100%;background:var(--green)">36.8 tok/s</div></div>
+          <div class="val">baseline</div>
+        </div>
+        <div class="row">
+          <div class="label">Scalar (NO_SIMD)</div>
+          <div class="track"><div class="fill" style="width:87%;background:var(--yellow)">32.0 tok/s</div></div>
+          <div class="val">-13%</div>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text2);margin-top:12px">
+        SIMD solo aporta +15% end-to-end porque el 74% del tiempo es operaciones escalares (TimeMix LoRA, state updates).
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Thermal Sustained [MEASURED: PROTO-08]</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">
+        330 segundos de compresion continua. 0% degradacion.</p>
+      <div id="thermalChart" style="height:180px;position:relative;margin-top:12px">
+        <canvas id="thermalCanvas" width="400" height="180"></canvas>
+      </div>
+      <p style="font-size:11px;color:var(--green);margin-top:8px;font-weight:600">
+        PL1=15W es suficiente para single-thread sostenido sin throttling.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== OPTIMIZATION MAP ==================== -->
+<div class="panel" id="panel-optimize">
+  <div class="bottleneck-grid">
+    <div class="card full">
+      <h3>Mapa de Optimizacion — Priorizado por Impacto Medido</h3>
+      <table class="opt-table">
+        <tr>
+          <th style="width:40px">Pri</th>
+          <th>Optimizacion</th>
+          <th>Bottleneck</th>
+          <th>Speedup</th>
+          <th>BPB Risk</th>
+          <th>Tarea</th>
+          <th>Estado</th>
+        </tr>
+        <tr>
+          <td><div class="pri" style="background:var(--red);color:#fff">1</div></td>
+          <td><b>Multi-file 10 cores</b><br><span style="font-size:11px;color:var(--text2)">
+            Todos los cores son utiles (P y E rinden igual)</span></td>
+          <td>Paralelismo</td>
+          <td class="speedup" style="color:var(--green)">~10x</td>
+          <td style="color:var(--green)">0%</td>
+          <td>R-012</td>
+          <td style="color:var(--yellow)">PENDIENTE</td>
+        </tr>
+        <tr>
+          <td><div class="pri" style="background:var(--orange);color:#fff">2</div></td>
+          <td><b>TimeMix scalar optimization</b><br><span style="font-size:11px;color:var(--text2)">
+            LoRA F32 SIMD + state matrix vectorization</span></td>
+          <td>Compute (74%)</td>
+          <td class="speedup" style="color:var(--yellow)">~1.5-2x?</td>
+          <td style="color:var(--green)">0%</td>
+          <td>R-015 + nuevo</td>
+          <td style="color:var(--text2)">PENDIENTE</td>
+        </tr>
+        <tr>
+          <td><div class="pri" style="background:var(--yellow);color:#000">3</div></td>
+          <td><b>Activar XMP DDR4-3200</b><br><span style="font-size:11px;color:var(--text2)">
+            RAM a 2667 MT/s, deberia estar a 3200 (-17% BW)</span></td>
+          <td>Config</td>
+          <td class="speedup" style="color:var(--green)">+5-10%</td>
+          <td style="color:var(--green)">0%</td>
+          <td>BIOS manual</td>
+          <td style="color:var(--red)">ACCION REQUERIDA</td>
+        </tr>
+        <tr>
+          <td><div class="pri" style="background:var(--bg3);color:var(--text2)">4</div></td>
+          <td><b>SVD pruning RWKV</b><br><span style="font-size:11px;color:var(--text2)">
+            Reducir dimensiones de layer matmuls</span></td>
+          <td>Compute</td>
+          <td class="speedup" style="color:var(--yellow)">~2x?</td>
+          <td style="color:var(--red)">+2-5%</td>
+          <td>R-016</td>
+          <td style="color:var(--text2)">PENDIENTE</td>
+        </tr>
+        <tr>
+          <td><div class="pri" style="background:var(--bg3);color:var(--text2)">5</div></td>
+          <td><b>Parallel segments</b><br><span style="font-size:11px;color:var(--text2)">
+            Dividir archivo en segmentos paralelos</span></td>
+          <td>Paralelismo</td>
+          <td class="speedup" style="color:var(--yellow)">~2-4x</td>
+          <td style="color:var(--red)">variable</td>
+          <td>R-017</td>
+          <td style="color:var(--text2)">PENDIENTE</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Throughput Proyectado (acumulativo)</h3>
+      <div class="waterfall" style="margin-top:12px">
+        <div class="row">
+          <div class="label">Actual (1 core)</div>
+          <div class="track"><div class="fill" style="width:1.5%;background:var(--red);min-width:60px">~150 B/s</div></div>
+        </div>
+        <div class="row">
+          <div class="label">+ R-012 (10x)</div>
+          <div class="track"><div class="fill" style="width:15%;background:var(--orange);min-width:70px">~1,500 B/s</div></div>
+        </div>
+        <div class="row">
+          <div class="label">+ R-015 (1.5x)</div>
+          <div class="track"><div class="fill" style="width:22%;background:var(--yellow);min-width:70px">~2,250 B/s</div></div>
+        </div>
+        <div class="row">
+          <div class="label">+ SVD (2x)</div>
+          <div class="track"><div class="fill" style="width:45%;background:var(--green);min-width:70px">~4,500 B/s</div></div>
+        </div>
+        <div class="row">
+          <div class="label">+ Segments (2x)</div>
+          <div class="track"><div class="fill" style="width:90%;background:var(--accent);min-width:70px">~9,000 B/s</div></div>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text2);margin-top:12px">
+        Todos los speedups salvo "Actual" son [PROJECTION]. Gate: BPB &lt;+5% en logs.</p>
+    </div>
+
+    <div class="card">
+      <h3>Descartados/Depriorizados</h3>
+      <div style="margin-top:8px">
+        <div style="padding:8px;margin:4px 0;background:var(--bg3);border-radius:6px;font-size:13px">
+          <span style="color:var(--text2);text-decoration:line-through">Thread affinity P-core</span>
+          <span style="font-size:11px;color:var(--text2)"> — &lt;8% diferencia [MEASURED]</span>
+        </div>
+        <div style="padding:8px;margin:4px 0;background:var(--bg3);border-radius:6px;font-size:13px">
+          <span style="color:var(--text2);text-decoration:line-through">Ring bus optimization</span>
+          <span style="font-size:11px;color:var(--text2)"> — irrelevante para workload scalar</span>
+        </div>
+        <div style="padding:8px;margin:4px 0;background:var(--bg3);border-radius:6px;font-size:13px">
+          <span style="color:var(--text2);text-decoration:line-through">Head matmul optimization</span>
+          <span style="font-size:11px;color:var(--text2)"> — solo 12%, ya SIMD [MEASURED]</span>
+        </div>
+        <div style="padding:8px;margin:4px 0;background:var(--bg3);border-radius:6px;font-size:13px">
+          <span style="color:var(--text2);text-decoration:line-through">Thermal management</span>
+          <span style="font-size:11px;color:var(--text2)"> — 0% degradacion en 330s [MEASURED]</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /content -->
+
+<script>
+// === Tab Navigation ===
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// === Die Detail Data ===
+const details = {
+  pcore0: {
+    title: 'P-Core 0 — Golden Cove',
+    html: `
+      <table>
+        <tr><td>Microarquitectura</td><td>Golden Cove (12th Gen) <span class="tag tag-sourced">SOURCED: Intel</span></td></tr>
+        <tr><td>Threads</td><td>2 (Hyper-Threading)</td></tr>
+        <tr><td>Frecuencia max</td><td>4.4 GHz (turbo single-core)</td></tr>
+        <tr><td>Frecuencia AVX2</td><td>~4.0-4.2 GHz (offset -200MHz)</td></tr>
+        <tr><td>Frecuencia sostenida</td><td>~3.5-4.0 GHz @ PL1=15W</td></tr>
+        <tr><td>Pipeline</td><td>~19 stages, 6-wide decode</td></tr>
+        <tr><td>ROB</td><td>512 entries</td></tr>
+        <tr><td>uOp Cache</td><td>4096 entries, 8 uops/cy</td></tr>
+        <tr><td>Exec ports</td><td>12 (5 ALU, 3 FP/VEC, 3 LD, 2 ST)</td></tr>
+        <tr><td>FMA/VNNI</td><td>2/cy (ports 0,1) = 64 INT8 MACs/cy</td></tr>
+        <tr><td>Loads</td><td>3x 256-bit/cy</td></tr>
+        <tr><td>Stores</td><td>2x 256-bit/cy</td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px">Relevancia para Redukt</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        Rinde <b>36.8 tok/s</b> en promedio <span class="tag tag-measured">MEASURED</span>.
+        Solo ~8% mas rapido que E-cores porque el workload es 74% scalar (TimeMix).
+        VNNI/AVX2 solo beneficia ~12% del forward pass (head + Q8 layer matmuls).
+      </p>`
+  },
+  pcore1: {
+    title: 'P-Core 1 — Golden Cove',
+    html: `<p style="font-size:13px;color:var(--text2)">Identico a P-Core 0. Ambos P-cores tienen
+      Hyper-Threading (2 threads cada uno = 4 threads P-core total).</p>
+      <p style="font-size:13px;color:var(--yellow);margin-top:8px">Compresion Redukt es single-threaded
+      actualmente. Solo usa 1 de estos 2 P-cores. R-012 (multi-file) permitiria usar ambos.</p>`
+  },
+  igpu: {
+    title: 'Iris Xe Graphics — 80 EU',
+    html: `<table>
+        <tr><td>EU Count</td><td>80 Execution Units</td></tr>
+        <tr><td>Frecuencia</td><td>~1.2 GHz max</td></tr>
+        <tr><td>Computo FP32</td><td>~1.5 TFLOPS</td></tr>
+        <tr><td>Memoria</td><td>Compartida con CPU (DRAM)</td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px;color:var(--text2)">Relevancia para Redukt</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        <b>NO utilizada.</b> Redukt es CPU-only por diseno (zero external dependencies).
+        La iGPU comparte el L3 y DRAM bandwidth con los cores CPU, pero a ~9% de utilizacion
+        DRAM esto no es un conflicto.</p>`
+  },
+  ring: {
+    title: 'Ring Bus Interconnect',
+    html: `<table>
+        <tr><td>Tipo</td><td>Ring bus bidireccional</td></tr>
+        <tr><td>Clock (P-only)</td><td>~4.7 GHz</td></tr>
+        <tr><td>Clock (con E activos)</td><td>~3.6 GHz (-23%)</td></tr>
+        <tr><td>Impacto</td><td>+50% latencia L3 cuando E-cores activos</td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px">Relevancia para Redukt</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        PROTO-05 demostro que la diferencia P vs E es &lt;8% <span class="tag tag-measured">MEASURED</span>.
+        El penalty del ring bus es <b>irrelevante</b> para este workload scalar-dominated.
+        En R-012 multi-file, todos los cores estaran activos, y el ring opera a 3.6 GHz
+        permanentemente — aceptable.</p>`
+  },
+  l3: {
+    title: 'L3 Intel Smart Cache — 12 MB',
+    html: `<table>
+        <tr><td>Tamano</td><td>12 MB total compartido</td></tr>
+        <tr><td>Asociatividad</td><td>12+ way</td></tr>
+        <tr><td>Linea</td><td>64 bytes</td></tr>
+        <tr><td>Inclusividad</td><td>Non-inclusive</td></tr>
+        <tr><td>Latencia (P-core)</td><td>40-55 cycles / ~12-17 ns</td></tr>
+        <tr><td>Latencia (E-core)</td><td>60+ cycles / ~18+ ns</td></tr>
+        <tr><td>BW medido (4MB)</td><td>57.17 GB/s <span class="tag tag-measured">MEASURED</span></td></tr>
+        <tr><td>Compartido con</td><td>Todos los cores + Iris Xe iGPU</td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px">Datos de Redukt en L3</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        1-2 capas de pesos simultaneas (~4MB) pueden residir en L3.
+        El modelo completo (130MB) NO cabe — debe vivir en DRAM.
+        Head weights (48MB) nunca caben en L3.</p>`
+  },
+  ecluster0: {
+    title: 'E-Core Cluster 0 — Gracemont (4 cores)',
+    html: `<table>
+        <tr><td>Cores</td><td>4 (E-C 0 a E-C 3)</td></tr>
+        <tr><td>Threads</td><td>4 (1 por core, sin SMT)</td></tr>
+        <tr><td>Frecuencia max</td><td>3.3 GHz</td></tr>
+        <tr><td>Pipeline</td><td>~16 stages, 6-wide decode (2x3)</td></tr>
+        <tr><td>ROB</td><td>256 entries (vs 512 P-core)</td></tr>
+        <tr><td>SIMD nativo</td><td>128-bit (AVX2 256-bit es double-pump)</td></tr>
+        <tr><td>VNNI</td><td>SI (VEX 256-bit, ~1 op/cy double-pump)</td></tr>
+        <tr><td>L2</td><td>2 MB compartido entre 4 cores (500KB efectivo/core)</td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px">Rendimiento medido</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        <b>~36-37 tok/s</b> por core individual <span class="tag tag-measured">MEASURED</span>.
+        Solo ~5-8% menos que P-cores, porque el 74% del workload es scalar donde
+        Gracemont rinde comparablemente a Golden Cove.
+      </p>
+      <p style="font-size:12px;color:var(--green);margin-top:8px;font-weight:600">
+        TODOS los E-cores son utiles para R-012 multi-file. No descartarlos.</p>`
+  },
+  ecluster1: {
+    title: 'E-Core Cluster 1 — Gracemont (4 cores)',
+    html: `<p style="font-size:13px;color:var(--text2)">Identico al Cluster 0.
+      Cores E-C 4 a E-C 7, compartiendo su propio L2 de 2 MB.</p>
+      <p style="font-size:13px;color:var(--text2);margin-top:8px">
+        En R-012 multi-file, cada cluster puede procesar 4 archivos simultaneos
+        con ~36 tok/s cada uno, utilizando su L2 compartido de 2MB para los pesos
+        de la capa activa (576KB Q8 per layer fit).</p>`
+  },
+  memctl: {
+    title: 'Memory Controller — Dual Channel DDR4',
+    html: `<table>
+        <tr><td>Tipo</td><td>Integrado en die</td></tr>
+        <tr><td>Canales</td><td>2 (Dual Channel)</td></tr>
+        <tr><td>Soporta</td><td>DDR4-3200, DDR5-4800, LPDDR5-5200</td></tr>
+        <tr><td>Instalado</td><td>DDR4-3200 (pero corriendo a 2667) <span class="tag tag-bottleneck">!</span></td></tr>
+        <tr><td>BW teorico (2667)</td><td>42.7 GB/s <span class="tag tag-calculated">CALCULATED</span></td></tr>
+        <tr><td>BW teorico (3200)</td><td>51.2 GB/s</td></tr>
+        <tr><td>BW medido (2667)</td><td>20.6 GB/s <span class="tag tag-measured">MEASURED</span></td></tr>
+        <tr><td>Eficiencia</td><td>48% (20.6/42.7)</td></tr>
+      </table>`
+  },
+  dram: {
+    title: 'DRAM — 32 GB DDR4 (2x 16GB)',
+    html: `<table>
+        <tr><td>Modulos</td><td>2x Crucial CT16G4SFRA32A</td></tr>
+        <tr><td>Capacidad</td><td>32 GB total</td></tr>
+        <tr><td>Velocidad rated</td><td>DDR4-3200 (XMP)</td></tr>
+        <tr><td>Velocidad actual</td><td>DDR4-2667 <span class="tag tag-bottleneck">-17% BW</span></td></tr>
+        <tr><td>Form factor</td><td>SO-DIMM</td></tr>
+        <tr><td>Latencia</td><td>~76 ns <span class="tag tag-sourced">SOURCED</span></td></tr>
+        <tr><td>BW medido</td><td>20.6 GB/s <span class="tag tag-measured">MEASURED</span></td></tr>
+      </table>
+      <h3 style="margin-top:16px;font-size:14px;color:var(--red)">Accion requerida: Activar XMP</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        Los modulos Crucial soportan DDR4-3200 pero el BIOS esta configurado a 2667 MT/s.
+        Activar XMP/DOCP en BIOS daria +20% de ancho de banda DRAM gratis.
+        Impacto estimado: +5-10% en operaciones DRAM (model load, head matmul).
+      </p>
+      <h3 style="margin-top:12px;font-size:14px">Demanda de Redukt</h3>
+      <p style="font-size:12px;color:var(--text2)">
+        Head matmul: 48MB * 39 tok/s = 1.87 GB/s = <b>9% del BW</b> <span class="tag tag-calculated">CALCULATED</span>.
+        DRAM bandwidth NO es el cuello de botella a throughput actual.</p>`
+  }
+};
+
+function showDetail(id) {
+  const d = details[id];
+  if (!d) return;
+  document.getElementById('detailTitle').textContent = d.title;
+  document.getElementById('detailHint').style.display = 'none';
+  document.getElementById('detailContent').innerHTML = d.html;
+  document.querySelectorAll('.die-component').forEach(c => c.classList.remove('selected'));
+  document.querySelectorAll(`[data-id="${id}"]`).forEach(c => c.classList.add('selected'));
+}
+
+// === Core Affinity Grid ===
+const coreData = [
+  { lp: 0, type: 'P', label: 'P-Core 0\nT0', toks: 34.7 },
+  { lp: 1, type: 'P', label: 'P-Core 0\nT1', toks: 36.4 },
+  { lp: 2, type: 'P', label: 'P-Core 1\nT0', toks: 36.8 },
+  { lp: 3, type: 'P', label: 'P-Core 1\nT1', toks: 37.1 },
+  { lp: 4, type: 'E', label: 'E-Core 0', toks: 36.7 },
+  { lp: 5, type: 'E', label: 'E-Core 1', toks: 36.8 },
+  { lp: 6, type: 'E', label: 'E-Core 2', toks: 36.3 },
+  { lp: 7, type: 'E', label: 'E-Core 3', toks: 37.6 },
+  { lp: 8, type: 'E', label: 'E-Core 4', toks: 37.4 },
+  { lp: 9, type: 'E', label: 'E-Core 5', toks: 36.6 },
+  { lp: 10, type: 'E', label: 'E-Core 6', toks: 36.5 },
+  { lp: 11, type: 'E', label: 'E-Core 7', toks: 37.4 },
+];
+
+const grid = document.getElementById('coreGrid');
+const minToks = Math.min(...coreData.map(c => c.toks));
+const maxToks = Math.max(...coreData.map(c => c.toks));
+
+coreData.forEach(c => {
+  const pct = ((c.toks - minToks) / (maxToks - minToks)) * 100;
+  const cls = c.type === 'P' ? 'p-core' : 'e-core';
+  const color = c.type === 'P' ? 'var(--pcore)' : 'var(--ecore)';
+  const cell = document.createElement('div');
+  cell.className = `core-cell ${cls}`;
+  cell.innerHTML = `
+    <div class="lp">LP ${c.lp}</div>
+    <div class="type">${c.label.replace('\n', '<br>')}</div>
+    <div class="toks">${c.toks}</div>
+    <div class="unit">tok/s</div>
+    <div class="perf-bar" style="width:${50 + pct*0.5}%;background:${color}"></div>
+  `;
+  grid.appendChild(cell);
+});
+
+// === Thermal Chart (Canvas) ===
+const ctx = document.getElementById('thermalCanvas');
+if (ctx) {
+  const c = ctx.getContext('2d');
+  const w = 400, h = 180;
+  const data = [
+    { t: 0, toks: 38.9 }, { t: 26, toks: 39.1 }, { t: 51, toks: 39.2 },
+    { t: 77, toks: 38.8 }, { t: 103, toks: 38.9 }, { t: 128, toks: 39.0 },
+    { t: 154, toks: 39.0 }, { t: 179, toks: 39.1 }, { t: 205, toks: 39.1 },
+    { t: 231, toks: 39.1 }, { t: 256, toks: 39.1 }, { t: 282, toks: 39.2 },
+    { t: 331, toks: 39.2 }
+  ];
+  const pad = { l: 50, r: 20, t: 20, b: 30 };
+  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+  const minY = 37, maxY = 41;
+
+  // Grid
+  c.strokeStyle = '#21262d';
+  c.lineWidth = 1;
+  for (let y = 37; y <= 41; y++) {
+    const py = pad.t + ph - (y - minY) / (maxY - minY) * ph;
+    c.beginPath(); c.moveTo(pad.l, py); c.lineTo(pad.l + pw, py); c.stroke();
+    c.fillStyle = '#8b949e'; c.font = '10px Segoe UI';
+    c.fillText(y + '', pad.l - 22, py + 4);
+  }
+  c.fillStyle = '#8b949e'; c.font = '10px Segoe UI';
+  c.fillText('tok/s', pad.l - 10, pad.t - 5);
+  c.fillText('0s', pad.l, h - 5);
+  c.fillText('330s', pad.l + pw - 20, h - 5);
+
+  // PL2 zone
+  c.fillStyle = 'rgba(248,81,73,0.08)';
+  const tauX = pad.l + (28/331) * pw;
+  c.fillRect(pad.l, pad.t, tauX - pad.l, ph);
+  c.fillStyle = '#f8514980';
+  c.font = '9px Segoe UI';
+  c.fillText('Tau (28s)', pad.l + 2, pad.t + 12);
+
+  // Line
+  c.strokeStyle = '#3fb950';
+  c.lineWidth = 2;
+  c.beginPath();
+  data.forEach((d, i) => {
+    const x = pad.l + (d.t / 331) * pw;
+    const y = pad.t + ph - (d.toks - minY) / (maxY - minY) * ph;
+    if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+  });
+  c.stroke();
+
+  // Dots
+  data.forEach(d => {
+    const x = pad.l + (d.t / 331) * pw;
+    const y = pad.t + ph - (d.toks - minY) / (maxY - minY) * ph;
+    c.fillStyle = '#3fb950';
+    c.beginPath(); c.arc(x, y, 3, 0, Math.PI * 2); c.fill();
+  });
+}
+</script>
+
+</body>
+</html>

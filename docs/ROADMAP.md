@@ -295,6 +295,85 @@
   - [x] Evaluar portable_simd: descartado (requiere nightly, raw intrinsics son estables)
   - [x] 74 tests totales pasando (70 unit + 4 integration), 3 ignored benchmarks
 
+### R-019: Refactorización matemática del forward pass (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — transformación algebraicamente equivalente, debe ser bit-exact
+- **Impacto estimado**: -38.3M FLOPs/token en state update + eliminación de ~1.3 MB/tok heap churn en codec
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/application/codec.rs`, `src/domain/mixer.rs`
+- **Contexto**: Análisis de hw-profiling reveló que TimeMix (73-88% del forward pass) contiene
+  un `mat_mat_mul_small_into` de 64×64 que es innecesario porque `ab = (-kk) ⊗ kk_a` es rango 1.
+  `state @ ab` se puede reescribir como `(state @ kk) ⊗ kk_a` → O(n²) en vez de O(n³).
+  Además, el codec asigna ~1.3 MB/token en el hot loop (Vec<65536>, softmax duplicada, ngram duplicada).
+- **Subtareas — State math (model.rs)**:
+  - [ ] Reemplazar `mat_mat_mul_small_into` por mat-vec + outer product rank-1
+  - [ ] Fusionar state update + output computation en un solo loop por head
+  - [ ] Eliminar buffers intermedios: `vk`, `ab`, `s_ab` del Scratch workspace
+  - [ ] **Quality gate**: BPB IDÉNTICO (0.000 delta, bit-exact) pre/post en enwik8 + 3 logs
+  - [ ] Cross-path roundtrip: compress refactored → decompress original (y viceversa)
+  - [ ] Benchmark micro: FLOPs/token y latencia TimeMix antes/después
+- **Subtareas — Codec zero-alloc (codec.rs, mixer.rs)**:
+  - [ ] Pre-allocar `combined_logits: Vec<f32>` en el Mixer, reusar en `combine()`
+  - [ ] Eliminar `ngram.compute_bias()` duplicado (L213 y L225 son idénticos)
+  - [ ] Fusionar softmax: `cdf_from_logits` ya computa f64 softmax → eliminar `softmax()` redundante
+  - [ ] Benchmark: allocations/token antes/después (medible via tok/s improvement)
+  - [ ] Roundtrip byte-identical post-refactor
+
+### R-021: F32 AVX2 sin FMA para LoRA matmuls (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — AVX2 mul+add separados (no FMA) produce resultados bit-exact con scalar
+- **Impacto estimado**: +10-20% en TimeMix (96 LoRA matmuls/token son F32 scalar) [ESTIMATE]
+- **Contexto**: R-011 deshabilitó F32 FMA porque `fma(a,b,c) ≠ a*b+c` (distinto redondeo).
+  Pero AVX2 SIN FMA (vmulps + vaddps separados) ES bit-exact con scalar mul+add.
+  El kernel FMA existe (`mat_vec_mul_avx2_fma_into`, dead code) — se puede adaptar.
+- **Archivos**: `src/domain/tensor.rs`
+- **Subtareas**:
+  - [ ] Implementar `mat_vec_mul_avx2_nofma_into`: vmulps + vaddps, 8-wide, 4-row ILP
+  - [ ] Bit-exact test: scalar vs AVX2-noFMA (0/768 mismatches requerido)
+  - [ ] Dispatch: AVX2-noFMA > scalar en `mat_vec_mul_into` (reemplazar scalar-always)
+  - [ ] Cross-path roundtrip: SIMD→scalar y scalar→SIMD byte-identical
+  - [ ] **Quality gate**: BPB idéntico (0.000 delta) en enwik8 + 3 logs
+  - [ ] Benchmark end-to-end: tok/s con y sin LoRA SIMD
+
+### R-022: SIMD transcendentals (tanh, sigmoid, exp) (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO si se usa polynomial approximation de suficiente precisión (~23 bit)
+- **Impacto estimado**: reducción menor pero acumulativa en TimeMix element-wise ops [ESTIMATE]
+- **Contexto**: `tanh_inplace`, `sigmoid_inplace`, `exp` en tensor.rs son scalar per-element.
+  Vectorización con aproximaciones polinómicas (Cephes/minimax) puede ser bit-exact si el
+  error ULP está dentro del redondeo f32.
+- **Archivos**: `src/domain/tensor.rs`
+- **Subtareas**:
+  - [ ] Implementar sigmoid AVX2 (polynomial minimax, ~23 bit precision)
+  - [ ] Implementar tanh AVX2 (derivado de sigmoid: tanh = 2σ(2x) - 1)
+  - [ ] Max-ULP-error test: comparar con scalar en rango [-10, 10]
+  - [ ] Cross-path roundtrip test
+  - [ ] **Quality gate**: BPB idéntico o delta medible ≤ 0.001%
+  - [ ] Evaluar si el error ULP rompe determinismo cross-path antes de integrar
+
+### R-HW1: HardwareGovernor — regulación dinámica de recursos
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — no cambia computación, solo la regula
+- **Impacto**: Protección contra deterioro de hardware (batería, térmico), crash prevention
+- **Contexto**: Dell Vostro 3520 tiene batería al 80.2% health (único componente en riesgo).
+  El governor lee sensores del hardware antes y durante la ejecución para regular el consumo.
+- **Archivos**: nuevo `src/infrastructure/governor.rs`, `src/application/codec.rs`, `src/main.rs`
+- **Diseño**:
+  - Pre-flight checks: batería (umbral + health), RAM libre, temperatura
+  - Watchdog thread: 10ms sensor polling via kernel32 FFI (Windows) / sysfs (Linux)
+  - Comunicación: AtomicU8 → ThrottleLevel {Full, Balanced, Eco, Pause, Abort}
+  - Worst-case reaction time: ~35ms (10ms poll + 25ms token)
+  - Zero overhead en hot path: una lectura atómica por token (~1ns)
+- **Subtareas**:
+  - [ ] Implementar ThrottleLevel enum + AtomicU8 protocol
+  - [ ] Pre-flight: `GlobalMemoryStatusEx`, `GetSystemPowerStatus` (kernel32 FFI)
+  - [ ] In-flight watchdog: thread con 10ms sleep + sensor read
+  - [ ] Integrar en compress/decompress loop: check ThrottleLevel por token
+  - [ ] Eco mode: añadir sleep entre tokens para reducir power draw
+  - [ ] Pause/Abort: checkpoint + graceful shutdown
+  - [ ] `--no-governor` flag para deshabilitar (benchmarking)
+  - [ ] Tests: mock sensors, throttle transitions, abort recovery
+  - [ ] Documentar umbrales por defecto y cómo override
+
 ### Secuencia de throughput — orden por riesgo de degradación BPB
 
 > Cada paso incluye un quality gate: medir BPB en los 3 archivos de log + enwik8.
@@ -314,7 +393,26 @@
   - [x] FORMAT-SPEC.md actualizado con v4 spec
 - **Quality gate PASSED**: BPB mejoró (1.3448 → 1.3328), cross-entropy sin cambio (1.2812)
 
-#### Paso 1: R-015 — KV Batch Caching (0% BPB risk)
+#### Paso 0.5: R-019 — Refactorización matemática (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — equivalencia algebraica exacta
+- **Speedup estimado**: 1.3-1.5x en TimeMix (87% reducción FLOPs state update + zero-alloc codec)
+- **Impacto**: Reduce cómputo Y tráfico de bus (menos datos intermedios en cache/DRAM)
+- **Quality gate**: BPB bit-exact, roundtrip byte-identical
+
+#### Paso 1: R-021 — F32 AVX2 sin FMA (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — vmulps + vaddps separados = bit-exact con scalar
+- **Speedup estimado**: +10-20% en TimeMix (96 LoRA matmuls/token pasan de scalar a AVX2)
+- **Quality gate**: BPB bit-exact, cross-path roundtrip byte-identical
+
+#### Paso 1.5: R-022 — SIMD transcendentals (0% BPB risk)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO si precision ≥ 23 bits (f32 mantissa)
+- **Speedup estimado**: ~5% en TimeMix element-wise ops
+- **Quality gate**: BPB ≤ 0.001% delta, cross-path roundtrip
+
+#### Paso 2: R-015 — KV Batch Caching (0% BPB risk)
 - **Estado**: PENDIENTE
 - **Riesgo BPB**: NINGUNO — elimina cómputo redundante, no cambia predicciones
 - **Speedup estimado**: 2-3x [ESTIMATE — arquitectural, no medido]
@@ -327,7 +425,7 @@
   - [ ] **Quality gate**: verificar BPB idéntico pre/post (debe ser 0.000 delta)
   - [ ] Roundtrip test: compress → decompress → diff byte-identical
 
-#### Paso 2: R-012 — Multi-file paralelismo (0% BPB risk)
+#### Paso 3: R-012 — Multi-file paralelismo (0% BPB risk)
 - **Estado**: PENDIENTE
 - **Riesgo BPB**: NINGUNO — cada archivo se procesa independientemente
 - **Speedup estimado**: Nx con N cores [PROJECTION: linear scaling]
@@ -341,7 +439,7 @@
   - [ ] **Quality gate**: verificar BPB idéntico single-thread vs multi-thread (debe ser 0.000 delta)
   - [ ] Medir RAM real por thread y documentar requisitos
 
-#### Paso 3: R-016 — SVD Pruning del modelo RWKV (BPB risk: +2-5%)
+#### Paso 4: R-016 — SVD Pruning del modelo RWKV (BPB risk: +2-3%)
 - **Estado**: PENDIENTE
 - **Riesgo BPB**: MEDIO — reduce capacidad del modelo, degrada predicciones
 - **Speedup estimado**: 3.5-4.8x [SOURCED: RWKV-edge paper, pero en NLP no compresión]
@@ -353,13 +451,13 @@
   - [ ] Benchmark BPB: 3 logs + enwik8 + facturae con modelo pruned vs baseline
   - [ ] Benchmark throughput: tok/s y B/s con modelo pruned
   - [ ] **Quality gate BPB**: si degradación >+3% en logs → reducir agresividad (rank-512, rank-448)
-  - [ ] **Quality gate combinado**: medir BPB con R-018 + R-015 + R-012 + R-016 todos activos
+  - [ ] **Quality gate combinado**: medir BPB con R-018 + R-019 + R-021 + R-015 + R-012 + R-016 todos activos
   - [ ] Si pasa gates: generar weights pruned y añadir a `weights/MANIFEST.md`
   - [ ] Documentar BPB delta exacto por archivo [MEASURED]
   - [ ] Roundtrip test con modelo pruned
 
-#### Paso 4: R-017 — Parallel Segment Compression (BPB risk: variable)
-- **Estado**: PENDIENTE — **ESTRICTAMENTE CONDICIONAL**
+#### Paso 5: R-017 — Parallel Segment Compression (BPB risk: variable) — ESTRICTAMENTE CONDICIONAL
+- **Estado**: PENDIENTE
 - **Riesgo BPB**: ALTO — divide el archivo en segmentos, cada uno pierde contexto previo
 - **Speedup estimado**: 2-4x [ESTIMATE — depende de tamaño de segmento]
 - **Presupuesto BPB restante**: +3% total menos lo consumido por R-016
@@ -371,7 +469,7 @@
   - [ ] Implementar split → compress parallel → merge
   - [ ] Benchmark BPB por tamaño de segmento: 1KB, 4KB, 16KB, 64KB
   - [ ] **Quality gate BPB**: degradación del segmenting solo (sin SVD) en logs
-  - [ ] **Quality gate COMBINADO**: R-018 + R-015 + R-012 + R-016 + R-017 todos activos
+  - [ ] **Quality gate COMBINADO**: R-018 + R-019 + R-021 + R-015 + R-012 + R-016 + R-017 todos activos
   - [ ] Si degradación combinada >+3% en logs → ajustar tamaño de segmento o ABORT R-017
   - [ ] Roundtrip test con segmentos paralelos
   - [ ] Documentar curva: tamaño segmento vs BPB loss vs speedup [MEASURED]
@@ -383,26 +481,32 @@
 
 | Paso | Optimización | Speedup | B/s acum. (logs) | BPB risk acum. | Gate |
 |---|---|---|---|---|---|
-| Current | SIMD Q8 baseline | 1x | ~132 B/s [MEASURED 2026-10-28] | 0% | — |
-| R-018 | + Coder efficiency | ~1x | ~132 B/s (mejora BPB, no throughput) | 0% (mejora) | BPB mejora |
-| R-015 | + KV caching | 2-3x | ~264-396 B/s | 0% | BPB = 0 delta |
-| R-012 | + 8 cores | 8x | ~2112-3168 B/s | 0% | BPB = 0 delta |
-| R-016 | + SVD pruning | 3-5x | ~6336-15840 B/s | +2-3% | BPB ≤ +3% |
-| R-017 | + Parallel segments | 2-4x | ~12672-63360 B/s | +3%? | BPB ≤ +3% total |
+| Current | SIMD Q8 baseline | 1x | ~150 B/s [MEASURED 2026-10-28] | 0% | — |
+| R-018 ✅ | + Coder efficiency | ~1x | ~150 B/s (mejora BPB, no throughput) | 0% (mejora) | BPB mejora |
+| R-019 | + Math refactor + zero-alloc | 1.3-1.5x | ~195-225 B/s | 0% | BPB bit-exact |
+| R-021 | + F32 AVX2 noFMA | 1.1-1.2x | ~215-270 B/s | 0% | BPB bit-exact |
+| R-022 | + SIMD transcendentals | ~1.05x | ~225-284 B/s | 0% | BPB ≤ 0.001% |
+| R-015 | + KV caching | 1.5-2x | ~338-567 B/s | 0% | BPB = 0 delta |
+| R-012 | + 10 cores | 10x | ~3375-5670 B/s | 0% | BPB = 0 delta |
+| R-016 | + SVD pruning | 3-5x | ~10125-28350 B/s | +2-3% | BPB ≤ +3% |
+| R-017 | + Parallel segments | 2-4x | ~20250-113400 B/s | +3%? | BPB ≤ +3% total |
 
 **Nota crítica**: Los speedups multiplicativos son teóricos. En la práctica:
 - R-018 no mejora throughput, pero reduce BPB → amplía el margen competitivo
+- R-019 es compute reduction puro — beneficio directo en TimeMix latency
+- R-021/R-022 mejoran el "techo" scalar de TimeMix (74-88% del tiempo)
 - R-015 × R-016 podrían ser sub-multiplicativos (ambos tocan inference path)
-- R-012 es genuinamente multiplicativo (paralelismo puro)
+- R-012 es genuinamente multiplicativo (paralelismo puro, 10 cores útiles [MEASURED: PROTO-05])
 - R-017 tiene overhead de merge y cold-start por segmento
 - El gate de **+3%** BPB probablemente fuerza STOP antes de R-017
+- R-HW1 (HardwareGovernor) es ortogonal — no afecta throughput peak pero protege hardware
 
-**Target mínimo viable**: R-018 + R-015 + R-012 (8 cores) = ~2-3 KB/s sin degradación BPB.
-Si se alcanza, log archival de ~2 GB/día es viable sin tocar el modelo.
+**Target mínimo viable**: R-019 + R-021 + R-015 + R-012 (10 cores) = ~3-6 KB/s sin degradación BPB.
+Si se alcanza, log archival de ~2-4 GB/día es viable sin tocar el modelo.
 
-**Secuencia revisada (2026-10-28)**: R-018 → R-015 → R-012 → R-016 → R-017 (condicional).
-R-018 es free BPB improvement y debe hacerse primero para maximizar margen antes de
-las optimizaciones que degradan.
+**Secuencia revisada (2026-10-28)**: R-018 ✅ → R-019 → R-021 → R-022 → R-015 → R-012 → R-016 → R-017.
+Primero las optimizaciones 0% BPB risk (compute reduction, SIMD), luego paralelismo, al final modelo.
+R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
 ### R-013: Determinismo cross-platform
 - **Estado**: PENDIENTE
@@ -465,7 +569,12 @@ las optimizaciones que degradan.
 | 2026-10-28 | 18 archivos completos con compresión real: 12/18 wins vs brotli (antes 13/18 con ce_bpb) |
 | 2026-10-28 | mozilla flipped: -15% (ce) → +2.1% (actual). nci flipped: +4.6% (ce) → -7.4% (actual) |
 | 2026-10-28 | CSV completo: `data/benchmark/results/actual-compression-benchmark.csv` |
-| 2026-10-28 | R-018 añadido: Coder efficiency optimization (Paso 0, 0% BPB risk, gains only) |
-| 2026-10-28 | Presupuesto BPB reducido de +5% a +3% — margen real menor tras corrección ce→actual |
-| 2026-10-28 | Secuencia revisada: R-018 → R-015 → R-012 → R-016 → R-017 (condicional) |
-| 2026-10-28 | R-017 estrictamente condicional — probable que R-016 consuma todo el presupuesto +3% |
+| 2026-10-28 | R-018 añadido y COMPLETADO: AZTH v4 header (-15 bytes), BPB 1.3448→1.3328, eff 95.3%→96.1% |
+| 2026-10-28 | R-019 añadido: refactorización matemática (rank-1 decomp + codec zero-alloc), 0% BPB risk |
+| 2026-10-28 | R-021 añadido: F32 AVX2 sin FMA para LoRA matmuls, 0% BPB risk |
+| 2026-10-28 | R-022 añadido: SIMD transcendentals (sigmoid, tanh, exp), 0% BPB risk |
+| 2026-10-28 | R-HW1 añadido: HardwareGovernor — regulación dinámica de recursos, crash prevention |
+| 2026-10-28 | Secuencia revisada: R-018→R-019→R-021→R-022→R-015→R-012→R-016→R-017 |
+| 2026-10-28 | DRAM utilization corregida: 9%→25% (cálculo original solo contaba head, no layer weights) |
+| 2026-10-28 | Presupuesto BPB +5%→+3% en R-016/R-017 quality gates |
+| 2026-10-28 | Multi-file scaling actualizado: 10 cores (no 8) por PROTO-05 results |

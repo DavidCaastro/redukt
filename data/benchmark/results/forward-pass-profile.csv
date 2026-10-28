@@ -1,0 +1,4 @@
+file,tokens,tok_s,tmix_ms,tmix_pct,cmix_ms,cmix_pct,layers_ms,layers_pct,head_ms,head_pct,total_fwd_ms,per_tok_tmix_ms,per_tok_cmix_ms,per_tok_head_ms
+enwik8,3005,36.5,67207.4,88.0,N/A,N/A,67207.4,88.0,9151.7,12.0,76359.1,22.365,N/A,3.045
+apache-access.log,3570,34.4,71760.3,74.1,13179.9,13.6,84985.6,87.8,11842.4,12.2,96828.0,20.095,3.691,3.316
+facturae-batch.xml,2872,40.9,47097.3,72.7,9448.8,14.6,56580.1,87.3,8226.7,12.7,64806.8,16.393,3.289,2.863

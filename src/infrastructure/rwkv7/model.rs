@@ -189,6 +189,11 @@ pub struct Scratch {
     out_h: Vec<f32>,
     // Q8 quantization buffer
     v_q: Vec<i8>,
+    // Perf counters (accumulated microseconds)
+    pub perf_layers_us: u64,
+    pub perf_head_us: u64,
+    pub perf_tmix_us: u64,
+    pub perf_cmix_us: u64,
 }
 
 impl Scratch {
@@ -209,6 +214,8 @@ impl Scratch {
             vk: vec![0.0; nn], ab: vec![0.0; nn], s_ab: vec![0.0; nn],
             kk_a: vec![0.0; n], neg_kk: vec![0.0; n], out_h: vec![0.0; n],
             v_q: vec![0; d_ffn.max(d)],
+            perf_layers_us: 0, perf_head_us: 0,
+            perf_tmix_us: 0, perf_cmix_us: 0,
         }
     }
 }
@@ -634,10 +641,12 @@ impl Rwkv7Model {
         let emb_start = token * d;
         scratch.x.copy_from_slice(&self.emb.data[emb_start..emb_start + d]);
 
+        let t_layers = std::time::Instant::now();
         for i in 0..self.config.n_layer {
             let lw = &self.layers[i];
 
             // Time mixing
+            let t_tm = std::time::Instant::now();
             layer_norm_into(&mut scratch.ln_buf, &scratch.x,
                             &lw.ln1_w.data, &lw.ln1_b.data, 1e-5);
             time_mixing_scratch(scratch, i, h, n,
@@ -651,8 +660,10 @@ impl Rwkv7Model {
                 state.v_first.data.copy_from_slice(&scratch.v);
             }
             add_inplace(&mut scratch.x, &scratch.tm_out);
+            scratch.perf_tmix_us += t_tm.elapsed().as_micros() as u64;
 
             // Channel mixing
+            let t_cm = std::time::Instant::now();
             layer_norm_into(&mut scratch.ln_buf, &scratch.x,
                             &lw.ln2_w.data, &lw.ln2_b.data, 1e-5);
             channel_mixing_scratch(scratch,
@@ -660,12 +671,19 @@ impl Rwkv7Model {
                                    &lw.channel_mix);
             state.x_prev_ffn[i].data.copy_from_slice(&scratch.ln_buf);
             add_inplace(&mut scratch.x, &scratch.cm_out);
+            scratch.perf_cmix_us += t_cm.elapsed().as_micros() as u64;
         }
+        let layers_us = t_layers.elapsed().as_micros();
 
         // Final LayerNorm + head projection
+        let t_head = std::time::Instant::now();
         layer_norm_into(&mut scratch.ln_buf, &scratch.x,
                         &self.ln_out_w.data, &self.ln_out_b.data, 1e-5);
         self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
+        let head_us = t_head.elapsed().as_micros();
+
+        scratch.perf_layers_us += layers_us as u64;
+        scratch.perf_head_us += head_us as u64;
     }
 
     /// Compute spectral profile of all weight matrices.
