@@ -820,17 +820,12 @@ fn time_mixing_scratch(
     // The 0.606531 constant comes from llama.cpp's WKV7 kernel.
     // Both SafeTensors (0.1B) and GGUF (1.5B/2.9B) weights are stored
     // in a format calibrated for this formula.
-    for i in 0..d {
-        let val = w.w0.data[i] + s.lora_d[i];
-        s.w_full[i] = (-0.606531 * (1.0 / (1.0 + (-val).exp()))).exp();
-    }
+    decay_sigmoid_into(&mut s.w_full, &w.w0.data, &s.lora_d);
 
     // Step 4: 'a' gate (no tanh — verified empirically: both 0.1B and 1.5B worse with tanh)
     mat_vec_mul_into(&mut s.lora_tmp, &w.a1, &s.xa);
     mat_vec_mul_into(&mut s.lora_d, &w.a2, &s.lora_tmp);
-    for i in 0..d {
-        s.a[i] = 1.0 / (1.0 + (-(w.a0.data[i] + s.lora_d[i])).exp());
-    }
+    sigmoid_add_into(&mut s.a, &w.a0.data, &s.lora_d);
 
     // Step 5: Output gate
     mat_vec_mul_into(&mut s.lora_tmp, &w.g1, &s.xg);
@@ -851,10 +846,7 @@ fn time_mixing_scratch(
     if layer_id != 0 {
         mat_vec_mul_into(&mut s.lora_tmp, &w.v1, &s.xv);
         mat_vec_mul_into(&mut s.lora_d, &w.v2, &s.lora_tmp);
-        for i in 0..d {
-            let mix = 1.0 / (1.0 + (-(w.v0.data[i] + s.lora_d[i])).exp());
-            s.v_out[i] += (v_first[i] - s.v_out[i]) * mix;
-        }
+        sigmoid_mix_inplace(&mut s.v_out, v_first, &w.v0.data, &s.lora_d);
     }
 
     // Step 9: State update (per head)

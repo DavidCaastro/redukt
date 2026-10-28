@@ -544,12 +544,226 @@ pub fn mul_into(out: &mut [f32], a: &[f32], b: &[f32]) {
     for (o, (&a, &b)) in out.iter_mut().zip(a.iter().zip(b.iter())) { *o = a * b; }
 }
 
+// ---- AVX2 transcendental approximations (R-022) ----
+
+/// Fast exp(x) for 8 packed f32 — Cephes-style polynomial, ~23-bit accuracy.
+/// Clamps to [-87.33, 88.72] to avoid overflow/underflow.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fast_exp_ps(x: __m256) -> __m256 {
+    let log2e  = _mm256_set1_ps(1.44269504088896341f32);
+    let ln2_hi = _mm256_set1_ps(6.93145751953125E-1f32);
+    let ln2_lo = _mm256_set1_ps(1.42860682030941723212E-6f32);
+    let exp_lo = _mm256_set1_ps(-87.3365447505531f32);
+    let exp_hi = _mm256_set1_ps(88.3762626647949f32);
+    let p0 = _mm256_set1_ps(1.9875691500E-4f32);
+    let p1 = _mm256_set1_ps(1.3981999507E-3f32);
+    let p2 = _mm256_set1_ps(8.3334519073E-3f32);
+    let p3 = _mm256_set1_ps(4.1665795894E-2f32);
+    let p4 = _mm256_set1_ps(1.6666665459E-1f32);
+    let p5 = _mm256_set1_ps(5.0000001201E-1f32);
+    let one = _mm256_set1_ps(1.0f32);
+    let x = _mm256_min_ps(_mm256_max_ps(x, exp_lo), exp_hi);
+    let fx = _mm256_mul_ps(x, log2e);
+    let n_i = _mm256_cvtps_epi32(fx);
+    let n_f = _mm256_cvtepi32_ps(n_i);
+    let r = _mm256_sub_ps(
+        _mm256_sub_ps(x, _mm256_mul_ps(n_f, ln2_hi)),
+        _mm256_mul_ps(n_f, ln2_lo),
+    );
+    let r2 = _mm256_mul_ps(r, r);
+    let mut y = p0;
+    y = _mm256_add_ps(_mm256_mul_ps(y, r), p1);
+    y = _mm256_add_ps(_mm256_mul_ps(y, r), p2);
+    y = _mm256_add_ps(_mm256_mul_ps(y, r), p3);
+    y = _mm256_add_ps(_mm256_mul_ps(y, r), p4);
+    y = _mm256_add_ps(_mm256_mul_ps(y, r), p5);
+    y = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(y, r2), r), one);
+    let pow2n = _mm256_castsi256_ps(
+        _mm256_slli_epi32::<23>(_mm256_add_epi32(n_i, _mm256_set1_epi32(127))),
+    );
+    _mm256_mul_ps(y, pow2n)
+}
+
+/// Fast sigmoid(x) = 1/(1+exp(-x)) for 8 packed f32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fast_sigmoid_ps(x: __m256) -> __m256 {
+    let one = _mm256_set1_ps(1.0f32);
+    let neg_x = _mm256_sub_ps(_mm256_setzero_ps(), x);
+    _mm256_div_ps(one, _mm256_add_ps(one, fast_exp_ps(neg_x)))
+}
+
+/// Fast tanh(x) = 2*sigmoid(2x) - 1 for 8 packed f32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fast_tanh_ps(x: __m256) -> __m256 {
+    let two = _mm256_set1_ps(2.0f32);
+    let one = _mm256_set1_ps(1.0f32);
+    _mm256_sub_ps(_mm256_mul_ps(fast_sigmoid_ps(_mm256_mul_ps(x, two)), two), one)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn tanh_inplace_avx2(x: &mut [f32]) {
+    let chunks = x.len() / 8;
+    let p = x.as_mut_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let v = _mm256_loadu_ps(p.add(off));
+        _mm256_storeu_ps(p.add(off), fast_tanh_ps(v));
+    }
+    for i in (chunks * 8)..x.len() {
+        *x.get_unchecked_mut(i) = x.get_unchecked(i).tanh();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn sigmoid_inplace_avx2(x: &mut [f32]) {
+    let chunks = x.len() / 8;
+    let p = x.as_mut_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let v = _mm256_loadu_ps(p.add(off));
+        _mm256_storeu_ps(p.add(off), fast_sigmoid_ps(v));
+    }
+    for i in (chunks * 8)..x.len() {
+        let v = *x.get_unchecked(i);
+        *x.get_unchecked_mut(i) = 1.0 / (1.0 + (-v).exp());
+    }
+}
+
 pub fn tanh_inplace(x: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { tanh_inplace_avx2(x) };
+        return;
+    }
     for v in x.iter_mut() { *v = v.tanh(); }
 }
 
 pub fn sigmoid_inplace(x: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { sigmoid_inplace_avx2(x) };
+        return;
+    }
     for v in x.iter_mut() { *v = 1.0 / (1.0 + (-*v).exp()); }
+}
+
+/// out[i] = sigmoid(base[i] + offset[i]). Used by model Steps 4, 8.
+pub fn sigmoid_add_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { sigmoid_add_into_avx2(out, base, offset) };
+        return;
+    }
+    for i in 0..out.len() {
+        out[i] = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn sigmoid_add_into_avx2(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    let n = out.len();
+    let chunks = n / 8;
+    let bp = base.as_ptr();
+    let op = offset.as_ptr();
+    let dp = out.as_mut_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let sum = _mm256_add_ps(
+            _mm256_loadu_ps(bp.add(off)),
+            _mm256_loadu_ps(op.add(off)),
+        );
+        _mm256_storeu_ps(dp.add(off), fast_sigmoid_ps(sum));
+    }
+    for i in (chunks * 8)..n {
+        *out.get_unchecked_mut(i) = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+    }
+}
+
+/// out[i] = exp(-0.606531 * sigmoid(base[i] + offset[i])). Used by model Step 3.
+pub fn decay_sigmoid_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { decay_sigmoid_into_avx2(out, base, offset) };
+        return;
+    }
+    for i in 0..out.len() {
+        let val = base[i] + offset[i];
+        out[i] = (-0.606531f32 * (1.0 / (1.0 + (-val).exp()))).exp();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn decay_sigmoid_into_avx2(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    let decay_k = _mm256_set1_ps(-0.606531f32);
+    let n = out.len();
+    let chunks = n / 8;
+    let bp = base.as_ptr();
+    let op = offset.as_ptr();
+    let dp = out.as_mut_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let sum = _mm256_add_ps(
+            _mm256_loadu_ps(bp.add(off)),
+            _mm256_loadu_ps(op.add(off)),
+        );
+        let sig = fast_sigmoid_ps(sum);
+        _mm256_storeu_ps(dp.add(off), fast_exp_ps(_mm256_mul_ps(decay_k, sig)));
+    }
+    for i in (chunks * 8)..n {
+        let val = base[i] + offset[i];
+        *out.get_unchecked_mut(i) = (-0.606531f32 * (1.0 / (1.0 + (-val).exp()))).exp();
+    }
+}
+
+/// v_out[i] += (v_first[i] - v_out[i]) * sigmoid(base[i] + offset[i]). Step 8.
+pub fn sigmoid_mix_inplace(
+    v_out: &mut [f32], v_first: &[f32], base: &[f32], offset: &[f32],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { sigmoid_mix_inplace_avx2(v_out, v_first, base, offset) };
+        return;
+    }
+    for i in 0..v_out.len() {
+        let mix = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        v_out[i] += (v_first[i] - v_out[i]) * mix;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn sigmoid_mix_inplace_avx2(
+    v_out: &mut [f32], v_first: &[f32], base: &[f32], offset: &[f32],
+) {
+    let n = v_out.len();
+    let chunks = n / 8;
+    let vp = v_out.as_mut_ptr();
+    let fp = v_first.as_ptr();
+    let bp = base.as_ptr();
+    let op = offset.as_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let sum = _mm256_add_ps(
+            _mm256_loadu_ps(bp.add(off)),
+            _mm256_loadu_ps(op.add(off)),
+        );
+        let mix = fast_sigmoid_ps(sum);
+        let vo = _mm256_loadu_ps(vp.add(off));
+        let vf = _mm256_loadu_ps(fp.add(off));
+        let result = _mm256_add_ps(vo, _mm256_mul_ps(_mm256_sub_ps(vf, vo), mix));
+        _mm256_storeu_ps(vp.add(off), result);
+    }
+    for i in (chunks * 8)..n {
+        let mix = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        *v_out.get_unchecked_mut(i) += (v_first[i] - v_out[i]) * mix;
+    }
 }
 
 pub fn squared_relu_into(out: &mut [f32], x: &[f32]) {
@@ -1294,6 +1508,136 @@ mod tests {
         // Much closer than FMA (which had 733/768 mismatches).
     }
 
+    // ---- SIMD transcendental accuracy tests (R-022) ----
+
+    #[test]
+    fn test_sigmoid_inplace_accuracy() {
+        let inputs: Vec<f32> = (-40..=40).map(|i| i as f32 * 0.25).collect();
+        let mut simd_out = inputs.clone();
+        let mut scalar_out = inputs.clone();
+
+        sigmoid_inplace(&mut simd_out);
+        for v in scalar_out.iter_mut() {
+            *v = 1.0 / (1.0 + (-*v).exp());
+        }
+
+        let mut max_err = 0.0f32;
+        for i in 0..inputs.len() {
+            let err = (simd_out[i] - scalar_out[i]).abs();
+            if err > max_err { max_err = err; }
+        }
+        eprintln!("sigmoid_inplace max error: {:e} (over {} values)", max_err, inputs.len());
+        assert!(max_err < 2e-7, "sigmoid max error {:e} exceeds 2e-7", max_err);
+    }
+
+    #[test]
+    fn test_tanh_inplace_accuracy() {
+        let inputs: Vec<f32> = (-40..=40).map(|i| i as f32 * 0.25).collect();
+        let mut simd_out = inputs.clone();
+        let mut scalar_out = inputs.clone();
+
+        tanh_inplace(&mut simd_out);
+        for v in scalar_out.iter_mut() {
+            *v = v.tanh();
+        }
+
+        let mut max_err = 0.0f32;
+        for i in 0..inputs.len() {
+            let err = (simd_out[i] - scalar_out[i]).abs();
+            if err > max_err { max_err = err; }
+        }
+        eprintln!("tanh_inplace max error: {:e} (over {} values)", max_err, inputs.len());
+        assert!(max_err < 5e-7, "tanh max error {:e} exceeds 5e-7", max_err);
+    }
+
+    #[test]
+    fn test_sigmoid_add_into_accuracy() {
+        let n = 768;
+        let base: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).sin() * 4.0).collect();
+        let offset: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.007).cos() * 3.0).collect();
+
+        let mut out_simd = vec![0.0f32; n];
+        sigmoid_add_into(&mut out_simd, &base, &offset);
+
+        let mut max_err = 0.0f32;
+        for i in 0..n {
+            let expected = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+            let err = (out_simd[i] - expected).abs();
+            if err > max_err { max_err = err; }
+        }
+        eprintln!("sigmoid_add_into max error: {:e} (D={})", max_err, n);
+        assert!(max_err < 2e-7, "sigmoid_add_into max error {:e} exceeds 2e-7", max_err);
+    }
+
+    #[test]
+    fn test_decay_sigmoid_into_accuracy() {
+        let n = 768;
+        let base: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).sin() * 4.0).collect();
+        let offset: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.007).cos() * 3.0).collect();
+
+        let mut out_simd = vec![0.0f32; n];
+        decay_sigmoid_into(&mut out_simd, &base, &offset);
+
+        let mut max_err = 0.0f32;
+        for i in 0..n {
+            let val = base[i] + offset[i];
+            let expected = (-0.606531 * (1.0 / (1.0 + (-val).exp()))).exp();
+            let err = (out_simd[i] - expected).abs();
+            if err > max_err { max_err = err; }
+        }
+        eprintln!("decay_sigmoid_into max error: {:e} (D={})", max_err, n);
+        assert!(max_err < 5e-7, "decay_sigmoid_into max error {:e} exceeds 5e-7", max_err);
+    }
+
+    #[test]
+    fn test_sigmoid_mix_inplace_accuracy() {
+        let n = 768;
+        let base: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).sin() * 4.0).collect();
+        let offset: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.007).cos() * 3.0).collect();
+        let v_first: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.019).sin() * 2.0).collect();
+        let v_init: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.011).cos() * 1.5).collect();
+
+        let mut out_simd = v_init.clone();
+        sigmoid_mix_inplace(&mut out_simd, &v_first, &base, &offset);
+
+        let mut max_err = 0.0f32;
+        for i in 0..n {
+            let mix = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+            let expected = v_init[i] + (v_first[i] - v_init[i]) * mix;
+            let err = (out_simd[i] - expected).abs();
+            if err > max_err { max_err = err; }
+        }
+        eprintln!("sigmoid_mix_inplace max error: {:e} (D={})", max_err, n);
+        assert!(max_err < 5e-7, "sigmoid_mix_inplace max error {:e} exceeds 5e-7", max_err);
+    }
+
+    #[test]
+    fn test_sigmoid_boundary_values() {
+        // Test extreme inputs: very negative, zero, very positive
+        let mut vals = vec![-100.0, -50.0, -10.0, -1.0, 0.0, 1.0, 10.0, 50.0, 100.0];
+        let expected: Vec<f32> = vals.iter().map(|&x: &f32| 1.0 / (1.0 + (-x).exp())).collect();
+        sigmoid_inplace(&mut vals);
+
+        for i in 0..vals.len() {
+            let err = (vals[i] - expected[i]).abs();
+            assert!(err < 2e-7, "sigmoid({}) = {} expected {} err {:e}",
+                expected[i], vals[i], expected[i], err);
+        }
+    }
+
+    #[test]
+    fn test_tanh_boundary_values() {
+        let mut vals = vec![-100.0, -50.0, -10.0, -1.0, 0.0, 1.0, 10.0, 50.0, 100.0];
+        let expected: Vec<f32> = vals.iter().map(|&x: &f32| x.tanh()).collect();
+        tanh_inplace(&mut vals);
+
+        for i in 0..vals.len() {
+            let err = (vals[i] - expected[i]).abs();
+            assert!(err < 5e-7, "tanh: got {} expected {} err {:e}",
+                vals[i], expected[i], err);
+        }
+    }
+
     // ---- Throughput benchmarks (run with --ignored --nocapture) ----
 
     fn bench_median_ns<F: FnMut()>(mut f: F, iters: usize) -> u64 {
@@ -1447,5 +1791,70 @@ mod tests {
         eprintln!("  dispatch: {:>10} ns  ({:.1} ms)", ns_dispatch, ns_dispatch as f64 / 1e6);
         eprintln!("  speedup:  {:.2}x (dispatch vs scalar)",
             ns_scalar as f64 / ns_dispatch.max(1) as f64);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_simd_transcendentals_768() {
+        let n = 768;
+        let base: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).sin() * 4.0).collect();
+        let offset: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.007).cos() * 3.0).collect();
+        let v_first: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.019).sin() * 2.0).collect();
+        let mut out = vec![0.0f32; n];
+        let mut buf = base.clone();
+
+        let iters = 5000;
+
+        // sigmoid_inplace
+        let ns_sigmoid = bench_median_ns(|| {
+            buf.copy_from_slice(&base);
+            sigmoid_inplace(&mut buf);
+        }, iters);
+
+        // tanh_inplace
+        let ns_tanh = bench_median_ns(|| {
+            buf.copy_from_slice(&base);
+            tanh_inplace(&mut buf);
+        }, iters);
+
+        // decay_sigmoid_into
+        let ns_decay = bench_median_ns(|| {
+            decay_sigmoid_into(&mut out, &base, &offset);
+        }, iters);
+
+        // sigmoid_add_into
+        let ns_sigadd = bench_median_ns(|| {
+            sigmoid_add_into(&mut out, &base, &offset);
+        }, iters);
+
+        // sigmoid_mix_inplace
+        let ns_sigmix = bench_median_ns(|| {
+            buf.copy_from_slice(&base);
+            sigmoid_mix_inplace(&mut buf, &v_first, &base, &offset);
+        }, iters);
+
+        // Scalar baselines
+        let ns_sigmoid_scalar = bench_median_ns(|| {
+            buf.copy_from_slice(&base);
+            for v in buf.iter_mut() { *v = 1.0 / (1.0 + (-*v).exp()); }
+        }, iters);
+
+        let ns_decay_scalar = bench_median_ns(|| {
+            for i in 0..n {
+                let val = base[i] + offset[i];
+                out[i] = (-0.606531 * (1.0 / (1.0 + (-val).exp()))).exp();
+            }
+        }, iters);
+
+        eprintln!("\n=== Transcendental benchmark: D={} ({} iters, median) ===", n, iters);
+        eprintln!("  sigmoid_inplace:    {:>6} ns  (scalar: {} ns, {:.2}x)",
+            ns_sigmoid, ns_sigmoid_scalar,
+            ns_sigmoid_scalar as f64 / ns_sigmoid.max(1) as f64);
+        eprintln!("  tanh_inplace:       {:>6} ns", ns_tanh);
+        eprintln!("  decay_sigmoid_into: {:>6} ns  (scalar: {} ns, {:.2}x)",
+            ns_decay, ns_decay_scalar,
+            ns_decay_scalar as f64 / ns_decay.max(1) as f64);
+        eprintln!("  sigmoid_add_into:   {:>6} ns", ns_sigadd);
+        eprintln!("  sigmoid_mix_inplace:{:>6} ns", ns_sigmix);
     }
 }
