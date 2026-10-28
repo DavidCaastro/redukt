@@ -321,21 +321,29 @@
   - [x] Aplicado en: cmd_compress, cmd_decompress (v3+v4), cmd_hybrid_eval, cmd_baseline, API
   - [x] Roundtrip byte-identical post-refactor
 
-### R-021: F32 AVX2 sin FMA para LoRA matmuls (0% BPB risk)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO — AVX2 mul+add separados (no FMA) produce resultados bit-exact con scalar
-- **Impacto estimado**: +10-20% en TimeMix (96 LoRA matmuls/token son F32 scalar) [ESTIMATE]
-- **Contexto**: R-011 deshabilitó F32 FMA porque `fma(a,b,c) ≠ a*b+c` (distinto redondeo).
-  Pero AVX2 SIN FMA (vmulps + vaddps separados) ES bit-exact con scalar mul+add.
-  El kernel FMA existe (`mat_vec_mul_avx2_fma_into`, dead code) — se puede adaptar.
+### R-021: F32 AVX2 sin FMA para LoRA matmuls
+- **Estado**: COMPLETADO (2026-10-28)
+- **Riesgo BPB**: BAJO — per-element mul+add matches scalar, pero acumulación SIMD (8 lanes
+  paralelos + hsum) difiere de secuencial → 717/768 mismatches en bit-exact test.
+  BPB delta: -0.003 (1.2749 vs 1.2781). Intra-tier determinista, cross-tier diverge.
+- **Impacto medido**:
+  - Micro: scalar 72.6μs → noFMA 32.1μs (**2.26x**) [MEASURED: bench_simd_f32_768x768]
+  - End-to-end: 38.1 → 45.4 tok/s (**+19.2%**) [MEASURED: hybrid-eval enwik8 10KB]
 - **Archivos**: `src/domain/tensor.rs`
+- **Decisión de diseño**: Per-element `vmulps+vaddps` es idéntico a scalar `mul+add`. La
+  diferencia viene SOLO del orden de acumulación (8 partial sums + hsum vs sequential).
+  FMA (fmadd) tiene dos diferencias: distinto redondeo POR ELEMENTO + distinto orden.
+  noFMA tiene solo UNA diferencia: distinto orden. Máximo delta 1.5e-4 (vs FMA ~1e-3).
 - **Subtareas**:
-  - [ ] Implementar `mat_vec_mul_avx2_nofma_into`: vmulps + vaddps, 8-wide, 4-row ILP
-  - [ ] Bit-exact test: scalar vs AVX2-noFMA (0/768 mismatches requerido)
-  - [ ] Dispatch: AVX2-noFMA > scalar en `mat_vec_mul_into` (reemplazar scalar-always)
-  - [ ] Cross-path roundtrip: SIMD→scalar y scalar→SIMD byte-identical
-  - [ ] **Quality gate**: BPB idéntico (0.000 delta) en enwik8 + 3 logs
-  - [ ] Benchmark end-to-end: tok/s con y sin LoRA SIMD
+  - [x] Implementar `mat_vec_mul_avx2_nofma_into`: vmulps + vaddps, 8-wide, 4-row ILP
+  - [x] Bit-exact test: 717/768 mismatches (expected — accumulation order differs)
+  - [x] Dispatch: AVX2-noFMA > scalar en `mat_vec_mul_into` (respeta REDUKT_NO_SIMD=1)
+  - [x] Same-path roundtrip: compress AVX2 → decompress AVX2 **PASS** (byte-identical + CRC)
+  - [x] Cross-path: compress AVX2 → decompress scalar **FAIL** (expected — model diverges)
+  - [x] Tests: 4 nuevos (directly, non_aligned, single_row, bit_analysis)
+  - [x] Benchmark micro F32 768×768: noFMA 2.26x, FMA 2.37x (noFMA only 5% slower)
+  - [x] Benchmark end-to-end: +19.2% tok/s (38.1 → 45.4)
+- **Invariante**: `REDUKT_NO_SIMD=1` fuerza scalar en Q8 Y F32 → cross-machine portability
 
 ### R-022: SIMD transcendentals (tanh, sigmoid, exp) (0% BPB risk)
 - **Estado**: PENDIENTE

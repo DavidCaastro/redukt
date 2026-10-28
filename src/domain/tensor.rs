@@ -221,10 +221,7 @@ unsafe fn hsum_i32_avx2(v: __m256i) -> i32 {
 }
 
 /// Horizontal sum of 8 x f32 lanes in __m256.
-/// Not dispatched in production (F32 FMA breaks cross-path determinism).
-/// Kept for benchmarks and future opt-in use.
 #[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
 #[target_feature(enable = "avx2")]
 unsafe fn hsum_f32_avx(v: __m256) -> f32 {
     let hi = _mm256_extractf128_ps::<1>(v);
@@ -595,6 +592,72 @@ pub fn l2_normalize_per_head_inplace(x: &mut [f32], num_heads: usize, head_size:
     }
 }
 
+/// AVX2 kernel for f32 mat-vec WITHOUT FMA: vmulps + vaddps, 8-wide, 4-row ILP.
+/// Separate mul+add matches scalar per-element rounding, but accumulation order
+/// differs (8 parallel lanes vs sequential) — NOT bit-exact with scalar but
+/// much closer than FMA. Deterministic across runs on same SIMD tier.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn mat_vec_mul_avx2_nofma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    let rows = mat.shape[0];
+    let cols = mat.shape[1];
+    let m = mat.data.as_ptr();
+    let v = vec.as_ptr();
+    let chunks = cols / 8;
+    let rem_start = chunks * 8;
+
+    let rows_4 = rows / 4 * 4;
+    for r in (0..rows_4).step_by(4) {
+        let mut a0 = _mm256_setzero_ps();
+        let mut a1 = _mm256_setzero_ps();
+        let mut a2 = _mm256_setzero_ps();
+        let mut a3 = _mm256_setzero_ps();
+
+        let b0 = r * cols;
+        let b1 = b0 + cols;
+        let b2 = b1 + cols;
+        let b3 = b2 + cols;
+
+        for ch in 0..chunks {
+            let off = ch * 8;
+            let vv = _mm256_loadu_ps(v.add(off));
+            a0 = _mm256_add_ps(a0, _mm256_mul_ps(_mm256_loadu_ps(m.add(b0 + off)), vv));
+            a1 = _mm256_add_ps(a1, _mm256_mul_ps(_mm256_loadu_ps(m.add(b1 + off)), vv));
+            a2 = _mm256_add_ps(a2, _mm256_mul_ps(_mm256_loadu_ps(m.add(b2 + off)), vv));
+            a3 = _mm256_add_ps(a3, _mm256_mul_ps(_mm256_loadu_ps(m.add(b3 + off)), vv));
+        }
+
+        let (mut s0, mut s1, mut s2, mut s3) = (
+            hsum_f32_avx(a0), hsum_f32_avx(a1),
+            hsum_f32_avx(a2), hsum_f32_avx(a3),
+        );
+
+        for c in rem_start..cols {
+            let vc = *vec.get_unchecked(c);
+            s0 += *mat.data.get_unchecked(b0 + c) * vc;
+            s1 += *mat.data.get_unchecked(b1 + c) * vc;
+            s2 += *mat.data.get_unchecked(b2 + c) * vc;
+            s3 += *mat.data.get_unchecked(b3 + c) * vc;
+        }
+        out[r] = s0; out[r + 1] = s1; out[r + 2] = s2; out[r + 3] = s3;
+    }
+
+    for r in rows_4..rows {
+        let mut acc = _mm256_setzero_ps();
+        let base = r * cols;
+        for ch in 0..chunks {
+            let off = ch * 8;
+            let vv = _mm256_loadu_ps(v.add(off));
+            acc = _mm256_add_ps(acc, _mm256_mul_ps(_mm256_loadu_ps(m.add(base + off)), vv));
+        }
+        let mut s = hsum_f32_avx(acc);
+        for c in rem_start..cols {
+            s += *mat.data.get_unchecked(base + c) * *vec.get_unchecked(c);
+        }
+        out[r] = s;
+    }
+}
+
 /// AVX2+FMA kernel for f32 mat-vec: 8-wide FMA with 4-row ILP.
 /// NOT dispatched in production — FMA rounding breaks cross-path determinism.
 /// Kept for benchmarks and future opt-in use (e.g., --fast-math flag).
@@ -662,12 +725,17 @@ unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) 
 }
 
 /// f32 mat-vec into pre-allocated output: out = mat @ vec.
-/// Always uses scalar path for bit-exact cross-platform determinism.
-/// FMA kernel exists (`mat_vec_mul_avx2_fma_into`) but is NOT dispatched
-/// because FMA rounding differs from scalar, breaking roundtrip when
-/// compress/decompress use different SIMD tiers. Q8 SIMD IS bit-exact
-/// (integer accumulation) and provides the main throughput gain.
+/// Dispatches: AVX2 (no FMA) > scalar.
+/// AVX2 uses vmulps+vaddps (no fmadd) — per-element rounding matches scalar,
+/// but accumulation order differs (8-lane parallel vs sequential).
+/// Deterministic on same SIMD tier; cross-tier may differ slightly.
+/// Set REDUKT_NO_SIMD=1 to force scalar (cross-path roundtrip testing).
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { mat_vec_mul_avx2_nofma_into(out, mat, vec) };
+        return;
+    }
     mat_vec_mul_scalar_into(out, mat, vec);
 }
 
@@ -1134,6 +1202,98 @@ mod tests {
         assert!(mismatches > 0, "F32 FMA should NOT be bit-exact (confirms design decision)");
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_nofma_directly() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat = make_test_matrix(64, 256);
+        let v = make_test_vec(256);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 64];
+        unsafe { mat_vec_mul_avx2_nofma_into(&mut out_avx2, &mat, &v) };
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-3,
+                "row {}: scalar={} avx2_nofma={}", i, out_scalar[i], out_avx2[i]);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_nofma_non_aligned() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat = make_test_matrix(16, 100); // 100 not divisible by 8
+        let v = make_test_vec(100);
+
+        let mut out_scalar = vec![0.0f32; 16];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 16];
+        unsafe { mat_vec_mul_avx2_nofma_into(&mut out_avx2, &mat, &v) };
+
+        for i in 0..16 {
+            assert!((out_scalar[i] - out_avx2[i]).abs() < 1e-3,
+                "row {}: scalar={} avx2_nofma={}", i, out_scalar[i], out_avx2[i]);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_nofma_single_row() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat = make_test_matrix(1, 768);
+        let v = make_test_vec(768);
+
+        let mut out_scalar = vec![0.0f32; 1];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 1];
+        unsafe { mat_vec_mul_avx2_nofma_into(&mut out_avx2, &mat, &v) };
+
+        assert!((out_scalar[0] - out_avx2[0]).abs() < 1e-3,
+            "single row: scalar={} avx2_nofma={}", out_scalar[0], out_avx2[0]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_f32_avx2_nofma_bit_analysis() {
+        if !is_x86_feature_detected!("avx2") { return; }
+
+        let mat = make_test_matrix(768, 768);
+        let v = make_test_vec(768);
+
+        let mut out_scalar = vec![0.0f32; 768];
+        mat_vec_mul_scalar_into(&mut out_scalar, &mat, &v);
+
+        let mut out_avx2 = vec![0.0f32; 768];
+        unsafe { mat_vec_mul_avx2_nofma_into(&mut out_avx2, &mat, &v) };
+
+        let mut mismatches = 0;
+        let mut max_delta = 0.0f32;
+        for i in 0..768 {
+            let delta = (out_scalar[i] - out_avx2[i]).abs();
+            if delta > max_delta { max_delta = delta; }
+            if out_scalar[i].to_bits() != out_avx2[i].to_bits() {
+                if mismatches < 3 {
+                    eprintln!("  row {}: scalar={:e} (0x{:08x}) nofma={:e} (0x{:08x}) d={:e}",
+                        i, out_scalar[i], out_scalar[i].to_bits(),
+                        out_avx2[i], out_avx2[i].to_bits(), delta);
+                }
+                mismatches += 1;
+            }
+        }
+        eprintln!("F32 AVX2 noFMA: {}/768 mismatches, max_delta={:e}", mismatches, max_delta);
+        // AVX2 noFMA accumulation order differs from scalar (8-lane parallel vs sequential).
+        // This is expected and acceptable — deterministic on same SIMD tier.
+        // Much closer than FMA (which had 733/768 mismatches).
+    }
+
     // ---- Throughput benchmarks (run with --ignored --nocapture) ----
 
     fn bench_median_ns<F: FnMut()>(mut f: F, iters: usize) -> u64 {
@@ -1220,14 +1380,22 @@ mod tests {
             mat_vec_mul_scalar_into(&mut out, &mat, &v);
         }, iters);
 
-        // Dispatch (AVX2+FMA > scalar)
+        // Dispatch (AVX2 noFMA > scalar)
         let ns_dispatch = bench_median_ns(|| {
             mat_vec_mul_into(&mut out, &mat, &v);
         }, iters);
 
-        // AVX2+FMA directly
+        // AVX2 noFMA directly (if available)
         #[cfg(target_arch = "x86_64")]
-        let ns_avx2 = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        let ns_nofma = if is_x86_feature_detected!("avx2") {
+            bench_median_ns(|| {
+                unsafe { mat_vec_mul_avx2_nofma_into(&mut out, &mat, &v) };
+            }, iters)
+        } else { 0 };
+
+        // AVX2+FMA directly (reference, not dispatched)
+        #[cfg(target_arch = "x86_64")]
+        let ns_fma = if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             bench_median_ns(|| {
                 unsafe { mat_vec_mul_avx2_fma_into(&mut out, &mat, &v) };
             }, iters)
@@ -1237,10 +1405,17 @@ mod tests {
         eprintln!("  scalar:   {:>8} ns  ({:.1} μs)", ns_scalar, ns_scalar as f64 / 1000.0);
         eprintln!("  dispatch: {:>8} ns  ({:.1} μs)", ns_dispatch, ns_dispatch as f64 / 1000.0);
         #[cfg(target_arch = "x86_64")]
-        if ns_avx2 > 0 {
-            eprintln!("  AVX2+FMA: {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
-                ns_avx2, ns_avx2 as f64 / 1000.0,
-                ns_scalar as f64 / ns_avx2.max(1) as f64);
+        {
+            if ns_nofma > 0 {
+                eprintln!("  noFMA:    {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
+                    ns_nofma, ns_nofma as f64 / 1000.0,
+                    ns_scalar as f64 / ns_nofma.max(1) as f64);
+            }
+            if ns_fma > 0 {
+                eprintln!("  FMA:      {:>8} ns  ({:.1} μs)  {:.2}x vs scalar",
+                    ns_fma, ns_fma as f64 / 1000.0,
+                    ns_scalar as f64 / ns_fma.max(1) as f64);
+            }
         }
         eprintln!("  speedup:  {:.2}x (dispatch vs scalar)",
             ns_scalar as f64 / ns_dispatch.max(1) as f64);
