@@ -15,7 +15,7 @@ use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
-use crate::domain::tensor::{softmax, Tensor};
+use crate::domain::tensor::softmax_into;
 use crate::domain::error::next_arg;
 use crate::domain::crc32;
 use crate::application::model_loader;
@@ -228,20 +228,24 @@ fn compress_bytes(
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
+    // Pre-allocated buffers for zero-alloc hot loop (R-019)
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
     for t in 0..tokens.len() {
         let tok = tokens[t] as usize;
         if t == 0 {
             enc.encode_symbol(tok, &Cdf::uniform(v));
         } else {
-            let ng_bias = ngram.compute_bias(None);
+            ngram.compute_bias_into(&mut ng_buf, None);
             let b_vec = bias.bias_vector();
-            let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
-            let cdf = cdf_from_logits(&ensemble);
+            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+            let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
-            let tensor = Tensor::from_data(ensemble, vec![v]);
-            let probs = softmax(&tensor);
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), tok);
-            bias.update(&probs.data, tok);
+            softmax_into(&ensemble_buf, &mut probs_buf);
+            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            bias.update(&probs_buf, tok);
         }
         ngram.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
@@ -287,6 +291,11 @@ pub fn decompress_bytes(
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
+    // Pre-allocated buffers for zero-alloc hot loop (R-019)
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
     let mut output = Vec::with_capacity(total_bytes);
 
     if let Some(token_count) = hdr.token_count {
@@ -296,15 +305,14 @@ pub fn decompress_bytes(
             let tok = if t == 0 {
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
             } else {
-                let ng_bias = ngram.compute_bias(None);
+                ngram.compute_bias_into(&mut ng_buf, None);
                 let b_vec = bias.bias_vector();
-                let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
-                let cdf = cdf_from_logits(&ensemble);
+                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
-                let tensor = Tensor::from_data(ensemble, vec![v]);
-                let probs = softmax(&tensor);
-                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-                bias.update(&probs.data, sym as usize);
+                softmax_into(&ensemble_buf, &mut probs_buf);
+                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                bias.update(&probs_buf, sym as usize);
                 sym
             };
             decoded_tokens.push(tok);
@@ -321,15 +329,14 @@ pub fn decompress_bytes(
             let tok = if t == 0 {
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
             } else {
-                let ng_bias = ngram.compute_bias(None);
+                ngram.compute_bias_into(&mut ng_buf, None);
                 let b_vec = bias.bias_vector();
-                let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
-                let cdf = cdf_from_logits(&ensemble);
+                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
-                let tensor = Tensor::from_data(ensemble, vec![v]);
-                let probs = softmax(&tensor);
-                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-                bias.update(&probs.data, sym as usize);
+                softmax_into(&ensemble_buf, &mut probs_buf);
+                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                bias.update(&probs_buf, sym as usize);
                 sym
             };
             output.extend_from_slice(tokenizer.decode_token(tok));

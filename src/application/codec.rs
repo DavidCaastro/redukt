@@ -1,7 +1,7 @@
 //! Application commands — compress, decompress, hybrid-eval, baseline, cm-eval.
 
 use crate::domain::error::{AzError, AzResult, parse_arg, next_arg, validate_u32_size};
-use crate::domain::tensor::{softmax, entropy_from_logits, Tensor};
+use crate::domain::tensor::{softmax_into, entropy_from_logits};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
@@ -347,6 +347,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
 
+    // Pre-allocated buffers for zero-alloc hot loop (R-019)
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
     eprintln!("[compress] encoding ...");
     let t_start = std::time::Instant::now();
 
@@ -359,20 +364,19 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             let prob = 1.0 / v as f64;
             ce_bits += -prob.log2();
         } else {
-            let ng_bias = ngram.compute_bias(None);
+            ngram.compute_bias_into(&mut ng_buf, None);
             let b_vec = bias.bias_vector();
-            let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
+            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
 
-            let cdf = cdf_from_logits(&ensemble_logits);
+            let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
 
-            let tensor = Tensor::from_data(ensemble_logits, vec![v]);
-            let probs = softmax(&tensor);
-            let prob = probs.data[tok] as f64;
+            softmax_into(&ensemble_buf, &mut probs_buf);
+            let prob = probs_buf[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), tok);
-            bias.update(&probs.data, tok);
+            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            bias.update(&probs_buf, tok);
         }
 
         ngram.observe(tok as u32);
@@ -527,6 +531,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
+    // Pre-allocated buffers for zero-alloc hot loop (R-019)
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
     eprintln!("[decompress] decoding ...");
     let t_start = std::time::Instant::now();
 
@@ -542,15 +551,14 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 let cdf = Cdf::uniform(v);
                 decode_checked(&mut dec, &cdf, v, t)?
             } else {
-                let ng_bias = ngram.compute_bias(None);
+                ngram.compute_bias_into(&mut ng_buf, None);
                 let b_vec = bias.bias_vector();
-                let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
-                let cdf = cdf_from_logits(&ensemble_logits);
+                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
-                let tensor = Tensor::from_data(ensemble_logits, vec![v]);
-                let probs = softmax(&tensor);
-                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-                bias.update(&probs.data, sym as usize);
+                softmax_into(&ensemble_buf, &mut probs_buf);
+                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                bias.update(&probs_buf, sym as usize);
                 sym
             };
             decoded_tokens.push(tok);
@@ -575,15 +583,14 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 let cdf = Cdf::uniform(v);
                 decode_checked(&mut dec, &cdf, v, t)?
             } else {
-                let ng_bias = ngram.compute_bias(None);
+                ngram.compute_bias_into(&mut ng_buf, None);
                 let b_vec = bias.bias_vector();
-                let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
-                let cdf = cdf_from_logits(&ensemble_logits);
+                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
-                let tensor = Tensor::from_data(ensemble_logits, vec![v]);
-                let probs = softmax(&tensor);
-                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-                bias.update(&probs.data, sym as usize);
+                softmax_into(&ensemble_buf, &mut probs_buf);
+                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                bias.update(&probs_buf, sym as usize);
                 sym
             };
 
@@ -707,6 +714,11 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
 
+    // Pre-allocated buffers for zero-alloc hot loop (R-019)
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
     let mut logger = if !log_path.is_empty() {
         Some(JsonLogger::new(&log_path, total_bytes))
     } else {
@@ -724,13 +736,12 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
             ce_bits += -(1.0f64 / v as f64).log2();
         } else {
             let h = entropy_from_logits(&logits);
-            let ng_bias = ngram.compute_bias(Some(h));
+            ngram.compute_bias_into(&mut ng_buf, Some(h));
             let b_vec = bias.bias_vector();
-            let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
+            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
 
-            let tensor = Tensor::from_data(ensemble_logits, vec![v]);
-            let probs = softmax(&tensor);
-            let prob = probs.data[tok] as f64;
+            softmax_into(&ensemble_buf, &mut probs_buf);
+            let prob = probs_buf[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
             if let Some(ref mut lg) = logger {
@@ -745,8 +756,8 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
                 lg.record_token(token_bytes, prob, &snap);
             }
 
-            mixer.update(&probs.data, &ngram.compute_bias(Some(h)), bias.bias_vector(), tok);
-            bias.update(&probs.data, tok);
+            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            bias.update(&probs_buf, tok);
         }
 
         ngram.observe(tok as u32);
@@ -842,6 +853,9 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
 
+    // Pre-allocated buffer for zero-alloc baseline loop (R-019)
+    let mut probs_buf = vec![0.0f32; v];
+
     let mut logger = if !log_path.is_empty() {
         Some(JsonLogger::new(&log_path, total_bytes))
     } else {
@@ -858,9 +872,8 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
         if t == 0 {
             ce_bits += -(1.0f64 / v as f64).log2();
         } else {
-            let tensor = Tensor::from_data(logits.clone(), vec![v]);
-            let probs = softmax(&tensor);
-            let prob = probs.data[tok] as f64;
+            softmax_into(&logits, &mut probs_buf);
+            let prob = probs_buf[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
             if let Some(ref mut lg) = logger {

@@ -814,6 +814,26 @@ pub fn softmax(x: &Tensor) -> Tensor {
     Tensor::from_data(data, x.shape.clone())
 }
 
+/// Zero-alloc softmax: write probabilities into caller-provided buffer.
+/// Bit-exact with `softmax()` — uses division (not reciprocal multiplication).
+pub fn softmax_into(logits: &[f32], out: &mut [f32]) {
+    debug_assert_eq!(logits.len(), out.len());
+    let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    if max_val == f32::NEG_INFINITY {
+        let uniform = 1.0 / logits.len() as f32;
+        for v in out.iter_mut() { *v = uniform; }
+        return;
+    }
+    let mut sum = 0.0f32;
+    for i in 0..logits.len() {
+        let e = (logits[i] - max_val).exp();
+        out[i] = e;
+        sum += e;
+    }
+    let denom = sum.max(f32::EPSILON);
+    for v in out.iter_mut() { *v /= denom; }
+}
+
 /// Compute entropy H = -sum(p * ln(p)) from logits (in nats).
 /// Uses numerically stable softmax internally.
 pub fn entropy_from_logits(logits: &[f32]) -> f32 {

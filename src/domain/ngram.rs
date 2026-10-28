@@ -138,6 +138,14 @@ impl TokenNgram {
         bias
     }
 
+    /// Zero-alloc variant: write bias into caller-provided buffer (must be vocab_size).
+    /// Buffer is zeroed before prediction.
+    pub fn compute_bias_into(&self, buf: &mut [f32], neural_entropy: Option<f32>) {
+        debug_assert_eq!(buf.len(), self.vocab_size);
+        for v in buf.iter_mut() { *v = 0.0; }
+        self.predict(buf, neural_entropy);
+    }
+
     fn context_hash(&self, order: usize) -> u64 {
         let mut hash = 0xcbf29ce484222325u64; // FNV-1a offset basis
         for i in 0..order {

@@ -41,6 +41,16 @@ impl AdaptiveMixer {
         out
     }
 
+    /// Zero-alloc variant: write combined logits into caller-provided buffer.
+    pub fn combine_into(
+        &self, out: &mut [f32], rwkv_logits: &[f32], ngram_bias: &[f32], bias_vec: &[f32],
+    ) {
+        debug_assert_eq!(out.len(), rwkv_logits.len());
+        for i in 0..rwkv_logits.len() {
+            out[i] = rwkv_logits[i] + self.w_ngram * ngram_bias[i] + self.w_bias * bias_vec[i];
+        }
+    }
+
     /// Update weights after observing the correct token.
     /// `probs` is softmax of the final combined logits.
     /// `ngram_bias` and `bias_vec` are the individual component contributions.

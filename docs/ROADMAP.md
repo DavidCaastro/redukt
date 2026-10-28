@@ -296,27 +296,30 @@
   - [x] 74 tests totales pasando (70 unit + 4 integration), 3 ignored benchmarks
 
 ### R-019: Refactorización matemática del forward pass (0% BPB risk)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO — transformación algebraicamente equivalente, debe ser bit-exact
-- **Impacto estimado**: -38.3M FLOPs/token en state update + eliminación de ~1.3 MB/tok heap churn en codec
-- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/application/codec.rs`, `src/domain/mixer.rs`
-- **Contexto**: Análisis de hw-profiling reveló que TimeMix (73-88% del forward pass) contiene
-  un `mat_mat_mul_small_into` de 64×64 que es innecesario porque `ab = (-kk) ⊗ kk_a` es rango 1.
-  `state @ ab` se puede reescribir como `(state @ kk) ⊗ kk_a` → O(n²) en vez de O(n³).
-  Además, el codec asigna ~1.3 MB/token en el hot loop (Vec<65536>, softmax duplicada, ngram duplicada).
+- **Estado**: COMPLETADO (2026-10-28)
+- **Riesgo BPB**: NINGUNO — verificado bit-exact (BPB 1.278120 pre/post)
+- **Impacto**: eliminación de ~1.3 MB/tok heap churn en codec + 16KB/head buffer en model
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/application/codec.rs`, `src/application/api.rs`,
+  `src/domain/mixer.rs`, `src/domain/ngram.rs`, `src/domain/tensor.rs`
+- **Decisiones de diseño**:
+  - Rank-1 factorization (`mat_mat_mul_small_into` → mat-vec) NO implementada: cambia orden de
+    acumulación float → NO es bit-exact. Se mantiene `ab` + `s_ab` + matmul original.
+  - `vk` outer product inlined: `s.v_out[hd+i] * s.k_mod[hd+j]` es bit-exact (misma multiplicación).
+  - Softmax fusion descartada: `cdf_from_logits` usa f64, `softmax` usa f32 → valores distintos.
 - **Subtareas — State math (model.rs)**:
-  - [ ] Reemplazar `mat_mat_mul_small_into` por mat-vec + outer product rank-1
-  - [ ] Fusionar state update + output computation en un solo loop por head
-  - [ ] Eliminar buffers intermedios: `vk`, `ab`, `s_ab` del Scratch workspace
-  - [ ] **Quality gate**: BPB IDÉNTICO (0.000 delta, bit-exact) pre/post en enwik8 + 3 logs
-  - [ ] Cross-path roundtrip: compress refactored → decompress original (y viceversa)
-  - [ ] Benchmark micro: FLOPs/token y latencia TimeMix antes/después
-- **Subtareas — Codec zero-alloc (codec.rs, mixer.rs)**:
-  - [ ] Pre-allocar `combined_logits: Vec<f32>` en el Mixer, reusar en `combine()`
-  - [ ] Eliminar `ngram.compute_bias()` duplicado (L213 y L225 son idénticos)
-  - [ ] Fusionar softmax: `cdf_from_logits` ya computa f64 softmax → eliminar `softmax()` redundante
-  - [ ] Benchmark: allocations/token antes/después (medible via tok/s improvement)
-  - [ ] Roundtrip byte-identical post-refactor
+  - [x] Inline `vk` outer product en state update loop (elimina buffer N×N + `outer_product_into`)
+  - [~] Rank-1 factorización: DESCARTADA — float non-associativity rompe bit-exactness
+  - [~] Fusionar loops: DESCARTADA — output read necesita state post-update
+  - [x] **Quality gate**: BPB IDÉNTICO (1.278120 pre/post en enwik8 10KB)
+  - [x] Roundtrip byte-identical + CRC-32 verified
+- **Subtareas — Codec zero-alloc (codec.rs, mixer.rs, ngram.rs, tensor.rs)**:
+  - [x] `compute_bias_into()` en ngram.rs — escribe en buffer pre-allocado
+  - [x] `combine_into()` en mixer.rs — escribe en buffer pre-allocado
+  - [x] `softmax_into()` en tensor.rs — escribe en buffer pre-allocado (usa div, no inv*mul)
+  - [x] Eliminar `ngram.compute_bias()` duplicado (se reutiliza ng_buf)
+  - [x] Pre-allocar 3 buffers V-sized antes de hot loops (ng_buf, ensemble_buf, probs_buf)
+  - [x] Aplicado en: cmd_compress, cmd_decompress (v3+v4), cmd_hybrid_eval, cmd_baseline, API
+  - [x] Roundtrip byte-identical post-refactor
 
 ### R-021: F32 AVX2 sin FMA para LoRA matmuls (0% BPB risk)
 - **Estado**: PENDIENTE

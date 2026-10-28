@@ -180,7 +180,6 @@ pub struct Scratch {
     ffn_proj: Vec<f32>,
     ffn_act: Vec<f32>,
     // Per-head (N*N)
-    vk: Vec<f32>,
     ab: Vec<f32>,
     s_ab: Vec<f32>,
     // Per-head (N)
@@ -211,7 +210,7 @@ impl Scratch {
             lora_d: vec![0.0; d], tm_out: vec![0.0; d], cm_out: vec![0.0; d],
             lora_tmp: vec![0.0; max_lora],
             ffn_proj: vec![0.0; d_ffn], ffn_act: vec![0.0; d_ffn],
-            vk: vec![0.0; nn], ab: vec![0.0; nn], s_ab: vec![0.0; nn],
+            ab: vec![0.0; nn], s_ab: vec![0.0; nn],
             kk_a: vec![0.0; n], neg_kk: vec![0.0; n], out_h: vec![0.0; n],
             v_q: vec![0; d_ffn.max(d)],
             perf_layers_us: 0, perf_head_us: 0,
@@ -859,11 +858,10 @@ fn time_mixing_scratch(
     }
 
     // Step 9: State update (per head)
+    // R-019: vk outer product inlined — eliminates N×N buffer + outer_product_into call
     for head in 0..h {
         let ho = head * n * n;
         let hd = head * n;
-
-        outer_product_into(&mut s.vk, &s.v_out[hd..hd + n], &s.k_mod[hd..hd + n]);
 
         for j in 0..n { s.kk_a[j] = s.kk[hd + j] * s.a[hd + j]; }
         for j in 0..n { s.neg_kk[j] = -s.kk[hd + j]; }
@@ -873,7 +871,9 @@ fn time_mixing_scratch(
         for i in 0..n {
             for j in 0..n {
                 let idx = ho + i * n + j;
-                state[idx] = state[idx] * s.w_full[hd + j] + s.s_ab[i * n + j] + s.vk[i * n + j];
+                state[idx] = state[idx] * s.w_full[hd + j]
+                    + s.s_ab[i * n + j]
+                    + s.v_out[hd + i] * s.k_mod[hd + j];
             }
         }
 
