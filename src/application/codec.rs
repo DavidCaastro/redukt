@@ -291,7 +291,6 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut mix_eta: f32 = 0.01;
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
-    let mut svd_rank: usize = 0;
     let mut verbose = false;
 
     let mut i = 0;
@@ -309,7 +308,6 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
-            "--svd-rank" => { svd_rank = parse_arg(next_arg(args, &mut i, "--svd-rank")?, "--svd-rank")?; }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -352,10 +350,6 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
-    }
-    if svd_rank > 0 {
-        timer.start("svd_factorize");
-        model.apply_svd(svd_rank);
     }
 
     timer.start("tokenize");
@@ -925,7 +919,6 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut log_path = String::new();
     let mut emb_surgery = String::new();
     let mut quant_str = String::new();
-    let mut svd_rank: usize = 0;
     let mut verbose = false;
 
     let mut i = 0;
@@ -941,7 +934,6 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
             "--log" => { log_path = next_arg(args, &mut i, "--log")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
-            "--svd-rank" => { svd_rank = parse_arg(next_arg(args, &mut i, "--svd-rank")?, "--svd-rank")?; }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -963,10 +955,6 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
-    }
-    if svd_rank > 0 {
-        timer.start("svd_factorize");
-        model.apply_svd(svd_rank);
     }
 
     timer.start("tokenize");

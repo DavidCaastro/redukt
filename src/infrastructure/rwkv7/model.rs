@@ -51,23 +51,6 @@ impl Rwkv7Config {
     }
 }
 
-/// SVD factored projection: W ≈ A(M×k) · B(k×N).
-/// mat_vec: out = A · (B · x), using `tmp` as k-sized scratch.
-pub struct SvdProjection {
-    a: QuantMatrix,  // (M × k) — Q8 quantized
-    b: QuantMatrix,  // (k × N) — Q8 quantized
-    k: usize,
-}
-
-impl SvdProjection {
-    fn mat_vec_mul_into(&self, out: &mut [f32], x: &[f32], tmp: &mut [f32], v_q: &mut [i8]) {
-        // tmp = B · x → (k,)
-        self.b.mat_vec_mul_into(&mut tmp[..self.k], x, v_q);
-        // out = A · tmp → (M,)
-        self.a.mat_vec_mul_into(out, &tmp[..self.k], v_q);
-    }
-}
-
 /// Per-layer weights for time mixing (attention).
 struct TimeMixWeights {
     // Token shift mixing vectors (D,)
@@ -96,11 +79,6 @@ struct TimeMixWeights {
     value_w: QuantMatrix,
     receptance_w: QuantMatrix,
     output_w: QuantMatrix,
-    // SVD factored projections (R-016, populated when --svd-rank is set)
-    key_svd: Option<SvdProjection>,
-    value_svd: Option<SvdProjection>,
-    receptance_svd: Option<SvdProjection>,
-    output_svd: Option<SvdProjection>,
     // GroupNorm
     ln_x_w: Tensor, // (D,)
     ln_x_b: Tensor, // (D,)
@@ -217,8 +195,6 @@ pub struct Scratch {
     out_h: Vec<f32>,
     // Q8 quantization buffer
     v_q: Vec<i8>,
-    // SVD intermediate buffer (R-016)
-    svd_tmp: Vec<f32>,
     // Perf counters (accumulated microseconds)
     pub perf_layers_us: u64,
     pub perf_head_us: u64,
@@ -235,7 +211,7 @@ impl Scratch {
         self.perf_cmix_us = 0;
     }
 
-    fn new(d: usize, n: usize, d_ffn: usize, max_lora: usize, svd_rank: usize) -> Self {
+    fn new(d: usize, n: usize, d_ffn: usize, max_lora: usize) -> Self {
         let nn = n * n;
         Self {
             x: vec![0.0; d], ln_buf: vec![0.0; d],
@@ -252,7 +228,6 @@ impl Scratch {
             s_ab: vec![0.0; nn],
             kk_a: vec![0.0; n], neg_kk: vec![0.0; n], out_h: vec![0.0; n],
             v_q: vec![0; d_ffn.max(d)],
-            svd_tmp: vec![0.0; svd_rank],
             perf_layers_us: 0, perf_head_us: 0,
             perf_tmix_us: 0, perf_cmix_us: 0,
         }
@@ -646,73 +621,6 @@ impl Rwkv7Model {
         }
     }
 
-    /// Apply SVD factorization to TimeMix projection matrices (R-016).
-    /// Replaces key/value/receptance/output with rank-k approximations.
-    /// Call BEFORE create_scratch() so the scratch buffer gets the right svd_rank.
-    pub fn apply_svd(&mut self, rank: usize) {
-        use crate::domain::spectral::truncated_svd_f32;
-
-        let d = self.config.n_embd;
-        let t_start = std::time::Instant::now();
-        let n_layers = self.config.n_layer;
-
-        eprintln!("[svd] factorizing {} layers × 4 matrices at rank {} ...", n_layers, rank);
-
-        for li in 0..n_layers {
-            let t_layer = std::time::Instant::now();
-            let tm = &mut self.layers[li].time_mix;
-
-            let factorize = |qm: &QuantMatrix, name: &str| -> SvdProjection {
-                let (data_f64, rows, cols) = qm.dequantize_f64();
-                let (a_f32, b_f32) = truncated_svd_f32(&data_f64, rows, cols, rank);
-
-                // Diagnostic: reconstruction error
-                let mut sq_err = 0.0f64;
-                let mut sq_orig = 0.0f64;
-                for i in 0..rows.min(10) {
-                    for j in 0..cols.min(10) {
-                        let mut approx = 0.0f64;
-                        for s in 0..rank {
-                            approx += a_f32[i * rank + s] as f64
-                                    * b_f32[s * cols + j] as f64;
-                        }
-                        let err = data_f64[i * cols + j] - approx;
-                        sq_err += err * err;
-                        sq_orig += data_f64[i * cols + j] * data_f64[i * cols + j];
-                    }
-                }
-                if li == 0 {
-                    let rel = if sq_orig > 0.0 { (sq_err / sq_orig).sqrt() } else { 0.0 };
-                    eprintln!("[svd]   {} rel_err(10x10 sample)={:.4e}", name, rel);
-                }
-
-                let a_tensor = Tensor { data: a_f32, shape: vec![rows, rank] };
-                let b_tensor = Tensor { data: b_f32, shape: vec![rank, cols] };
-                let a_q8 = QuantMatrix::from_f32(
-                    &a_tensor, QuantLevel::Q8,
-                );
-                let b_q8 = QuantMatrix::from_f32(
-                    &b_tensor, QuantLevel::Q8,
-                );
-                SvdProjection { a: a_q8, b: b_q8, k: rank }
-            };
-
-            tm.key_svd = Some(factorize(&tm.key_w, "key"));
-            tm.value_svd = Some(factorize(&tm.value_w, "value"));
-            tm.receptance_svd = Some(factorize(&tm.receptance_w, "receptance"));
-            tm.output_svd = Some(factorize(&tm.output_w, "output"));
-
-            eprintln!("[svd]   layer {} done ({:.1}s)", li, t_layer.elapsed().as_secs_f64());
-        }
-
-        let total = t_start.elapsed().as_secs_f64();
-        let orig_mb = n_layers as f64 * 4.0 * (d * d) as f64 / 1e6;
-        let svd_mb = n_layers as f64 * 4.0 * 2.0 * (d * rank) as f64 / 1e6;
-        eprintln!("[svd] done in {:.1}s — {} matrices factorized", total, n_layers * 4);
-        eprintln!("[svd] memory: {:.1} MB original → {:.1} MB SVD Q8 ({:.0}% of original)",
-                  orig_mb, svd_mb, svd_mb / orig_mb * 100.0);
-    }
-
     /// Create a pre-allocated scratch workspace for zero-alloc forward passes.
     pub fn create_scratch(&self) -> Scratch {
         let d = self.config.n_embd;
@@ -725,10 +633,7 @@ impl Rwkv7Model {
                 .iter().max().unwrap()
         // SAFETY: self.layers is non-empty (validated at load)
         }).max().unwrap();
-        // SVD rank: check first layer (all layers use same rank if SVD active)
-        let svd_rank = self.layers[0].time_mix.key_svd.as_ref()
-            .map(|s| s.k).unwrap_or(0);
-        let s = Scratch::new(d, n, d_ffn, max_lora, svd_rank);
+        let s = Scratch::new(d, n, d_ffn, max_lora);
         let mem_kb = std::mem::size_of_val(&s) as f64 / 1024.0
             + (d * 24 + max_lora + d_ffn * 2 + n * n * 3 + n * 3) as f64 * 4.0 / 1024.0
             + d_ffn as f64 / 1024.0;
@@ -917,22 +822,10 @@ fn time_mixing_scratch(
     add_scaled_into(&mut s.xa, &s.ln_buf, &s.xx, &w.x_a.data);
     add_scaled_into(&mut s.xg, &s.ln_buf, &s.xx, &w.x_g.data);
 
-    // Step 2: Linear projections (auto-quantized, or SVD-factored if R-016 active)
-    if let Some(ref svd) = w.receptance_svd {
-        svd.mat_vec_mul_into(&mut s.r, &s.xr, &mut s.svd_tmp, &mut s.v_q);
-    } else {
-        w.receptance_w.mat_vec_mul_into(&mut s.r, &s.xr, &mut s.v_q);
-    }
-    if let Some(ref svd) = w.key_svd {
-        svd.mat_vec_mul_into(&mut s.k, &s.xk, &mut s.svd_tmp, &mut s.v_q);
-    } else {
-        w.key_w.mat_vec_mul_into(&mut s.k, &s.xk, &mut s.v_q);
-    }
-    if let Some(ref svd) = w.value_svd {
-        svd.mat_vec_mul_into(&mut s.v, &s.xv, &mut s.svd_tmp, &mut s.v_q);
-    } else {
-        w.value_w.mat_vec_mul_into(&mut s.v, &s.xv, &mut s.v_q);
-    }
+    // Step 2: Linear projections (auto-quantized)
+    w.receptance_w.mat_vec_mul_into(&mut s.r, &s.xr, &mut s.v_q);
+    w.key_w.mat_vec_mul_into(&mut s.k, &s.xk, &mut s.v_q);
+    w.value_w.mat_vec_mul_into(&mut s.v, &s.xv, &mut s.v_q);
 
     // Step 3: Data-dependent decay
     mat_vec_mul_into(&mut s.lora_tmp, &w.w1, &s.xw);
@@ -1022,11 +915,7 @@ fn time_mixing_scratch(
     for i in 0..d {
         s.gated[i] = s.out_normed[i] * s.g[i];
     }
-    if let Some(ref svd) = w.output_svd {
-        svd.mat_vec_mul_into(&mut s.tm_out, &s.gated, &mut s.svd_tmp, &mut s.v_q);
-    } else {
-        w.output_w.mat_vec_mul_into(&mut s.tm_out, &s.gated, &mut s.v_q);
-    }
+    w.output_w.mat_vec_mul_into(&mut s.tm_out, &s.gated, &mut s.v_q);
 }
 
 /// Zero-allocation channel mixing. Input x in s.ln_buf, output in s.cm_out.
@@ -1096,7 +985,7 @@ fn load_layer_hf(st: &SafeTensorsFile, i: usize, policy: &QuantPolicy) -> LayerW
             value_w: quantize_matrix(&st.get_tensor(&format!("{}.v_proj.weight", att)), policy).0,
             receptance_w: quantize_matrix(&st.get_tensor(&format!("{}.r_proj.weight", att)), policy).0,
             output_w: quantize_matrix(&st.get_tensor(&format!("{}.o_proj.weight", att)), policy).0,
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: st.get_tensor(&format!("{}.g_norm.weight", att)),
             ln_x_b: st.get_tensor(&format!("{}.g_norm.bias", att)),
         },
@@ -1160,7 +1049,7 @@ fn load_layer_blink(st: &SafeTensorsFile, i: usize, policy: &QuantPolicy) -> Lay
             value_w: quantize_matrix(&st.get_tensor(&format!("{}.value.weight", att)), policy).0,
             receptance_w: quantize_matrix(&st.get_tensor(&format!("{}.receptance.weight", att)), policy).0,
             output_w: quantize_matrix(&st.get_tensor(&format!("{}.output.weight", att)), policy).0,
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: st.get_tensor(&format!("{}.ln_x.weight", att)),
             ln_x_b: st.get_tensor(&format!("{}.ln_x.bias", att)),
         },
@@ -1224,7 +1113,7 @@ fn load_layer_gguf_llama(gf: &GgufFile, i: usize, policy: &QuantPolicy) -> Layer
             value_w: load_gguf_matrix(gf, &format!("{}.attn_value.weight", blk), policy),
             receptance_w: load_gguf_matrix(gf, &format!("{}.attn_receptance.weight", blk), policy),
             output_w: load_gguf_matrix(gf, &format!("{}.attn_output.weight", blk), policy),
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: gf.get_tensor(&format!("{}.attn_gate_norm.weight", blk)),
             ln_x_b: gf.get_tensor(&format!("{}.attn_gate_norm.bias", blk)),
         },
@@ -1307,7 +1196,7 @@ fn load_layer_gguf_llama_v2(gf: &GgufFile, i: usize, policy: &QuantPolicy) -> La
             value_w: load_gguf_matrix(gf, &format!("{}.time_mix_value.weight", blk), policy),
             receptance_w: load_gguf_matrix(gf, &format!("{}.time_mix_receptance.weight", blk), policy),
             output_w: load_gguf_matrix(gf, &format!("{}.time_mix_output.weight", blk), policy),
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: gf.get_tensor(&format!("{}.time_mix_ln.weight", blk)),
             ln_x_b: gf.get_tensor(&format!("{}.time_mix_ln.bias", blk)),
         },
@@ -1366,7 +1255,7 @@ fn load_layer_gguf_hf(gf: &GgufFile, i: usize, policy: &QuantPolicy) -> LayerWei
             value_w: load_gguf_matrix(gf, &format!("{}.v_proj.weight", att), policy),
             receptance_w: load_gguf_matrix(gf, &format!("{}.r_proj.weight", att), policy),
             output_w: load_gguf_matrix(gf, &format!("{}.o_proj.weight", att), policy),
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: gf.get_tensor(&format!("{}.g_norm.weight", att)),
             ln_x_b: gf.get_tensor(&format!("{}.g_norm.bias", att)),
         },
@@ -1429,7 +1318,7 @@ fn load_layer_gguf_blink(gf: &GgufFile, i: usize, policy: &QuantPolicy) -> Layer
             value_w: load_gguf_matrix(gf, &format!("{}.value.weight", att), policy),
             receptance_w: load_gguf_matrix(gf, &format!("{}.receptance.weight", att), policy),
             output_w: load_gguf_matrix(gf, &format!("{}.output.weight", att), policy),
-            key_svd: None, value_svd: None, receptance_svd: None, output_svd: None,
+
             ln_x_w: gf.get_tensor(&format!("{}.ln_x.weight", att)),
             ln_x_b: gf.get_tensor(&format!("{}.ln_x.bias", att)),
         },

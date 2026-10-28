@@ -402,6 +402,10 @@ fn jacobi_eigenvalues(s: &mut [f64], n: usize) -> Vec<f64> {
 /// 3. Small matrix B_hat = Q^T·W
 /// 4. SVD of B_hat via eigendecomposition of B_hat·B_hat^T
 /// 5. Reconstruct U = Q·U_hat, then A = U·diag(σ), B = V^T
+///
+/// R-016 evaluated and ABORTED: RWKV-7 0.1B has high effective rank,
+/// no viable rank for compression BPB. Retained for future research.
+#[allow(dead_code)]
 pub fn truncated_svd_f32(
     data: &[f64], rows: usize, cols: usize, rank: usize,
 ) -> (Vec<f32>, Vec<f32>) {
@@ -503,6 +507,7 @@ pub fn truncated_svd_f32(
 /// Jacobi eigenvalue algorithm that also computes eigenvectors.
 /// Returns (eigenvalues, eigenvectors) where eigenvectors is n×n row-major,
 /// with the j-th eigenvector in column j (i.e., eigenvecs[i*n + j] = v_j[i]).
+#[allow(dead_code)]
 fn jacobi_eigen_full(s: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let max_sweeps = 50;
     let eps = 1e-12;
