@@ -19,8 +19,10 @@ use crate::domain::tensor::{softmax, Tensor};
 use crate::domain::error::next_arg;
 use crate::domain::crc32;
 use crate::application::model_loader;
-use crate::application::codec::{MAGIC_V3, HEADER_SIZE, CRC_SIZE, cdf_from_logits};
-use crate::application::codec::extract_stream_and_crc;
+use crate::application::codec::{
+    CRC_SIZE, cdf_from_logits, build_v4_header,
+    validate_magic, parse_header, extract_stream_and_crc_v,
+};
 use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
 
@@ -114,7 +116,7 @@ fn handle_connection(
             }
         }
         ("POST", "/v1/decompress") => {
-            if req.body.len() < HEADER_SIZE {
+            if req.body.len() < 8 {
                 let _ = send_response(&mut stream, 400, "text/plain", b"body too short for AZTH header");
                 return;
             }
@@ -217,11 +219,6 @@ fn compress_bytes(
     }
     let v = model.config.vocab_size;
     let tokens = tokenizer.encode(input);
-    if tokens.len() > u32::MAX as usize {
-        return Err(format!(
-            "too many tokens: {} exceeds u32::MAX", tokens.len()
-        ));
-    }
 
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
@@ -254,13 +251,9 @@ fn compress_bytes(
 
     let input_crc = crc32::crc32(input);
 
-    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
-    output.extend_from_slice(MAGIC_V3);
-    output.extend_from_slice(&(total_bytes as u32).to_le_bytes());
-    output.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
-    output.extend_from_slice(&bias_lr.to_le_bytes());
-    output.extend_from_slice(&ngram_scale.to_le_bytes());
-    output.extend_from_slice(&mix_eta.to_le_bytes());
+    let hdr = build_v4_header(total_bytes as u32, bias_lr, ngram_scale, mix_eta);
+    let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
+    output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
     output.extend_from_slice(&input_crc.to_le_bytes());
     Ok(output)
@@ -280,59 +273,73 @@ pub fn decompress_bytes(
     model: &Rwkv7Model,
     tokenizer: &WorldTokenizer,
 ) -> Result<Vec<u8>, String> {
-    if data.len() < HEADER_SIZE || &data[..4] != b"AZTH" {
-        return Err("invalid AZTH file (bad magic or too short)".into());
-    }
-    let version = data[4];
-    if version != 2 && version != 3 {
-        return Err(format!("unsupported AZTH version {}", version));
-    }
-
-    let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
-    let token_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let bias_lr = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
-    let ngram_scale = f32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-    let mix_eta = f32::from_le_bytes([data[24], data[25], data[26], data[27]]);
-    for (name, val) in [("bias_lr", bias_lr), ("ngram_scale", ngram_scale), ("mix_eta", mix_eta)] {
-        if !val.is_finite() {
-            return Err(format!("invalid hyperparameter {}={}", name, val));
-        }
-    }
-    let (stream, stored_crc) = extract_stream_and_crc(data, version);
+    validate_magic(data).map_err(|e| e.to_string())?;
+    let hdr = parse_header(data).map_err(|e| e.to_string())?;
+    let (stream, stored_crc) = extract_stream_and_crc_v(data, hdr.header_size, hdr.version);
 
     let v = model.config.vocab_size;
-    let mut ngram = TokenNgram::new(4, v, ngram_scale);
-    let mut bias = BiasHead::new(v, bias_lr);
-    let mut mixer = AdaptiveMixer::new(mix_eta);
+    let total_bytes = hdr.total_bytes;
+    let mut ngram = TokenNgram::new(4, v, hdr.ngram_scale);
+    let mut bias = BiasHead::new(v, hdr.bias_lr);
+    let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
     let mut state = Rwkv7State::new(&model.config);
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
-    let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
-
-    for t in 0..token_count {
-        let tok = if t == 0 {
-            decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
-        } else {
-            let ng_bias = ngram.compute_bias(None);
-            let b_vec = bias.bias_vector();
-            let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
-            let cdf = cdf_from_logits(&ensemble);
-            let sym = decode_checked(&mut dec, &cdf, v, t)?;
-            let tensor = Tensor::from_data(ensemble, vec![v]);
-            let probs = softmax(&tensor);
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-            bias.update(&probs.data, sym as usize);
-            sym
-        };
-        decoded_tokens.push(tok);
-        ngram.observe(tok);
-        model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
-    }
 
     let mut output = Vec::with_capacity(total_bytes);
-    for &tok in &decoded_tokens {
-        output.extend_from_slice(tokenizer.decode_token(tok));
+
+    if let Some(token_count) = hdr.token_count {
+        // v2/v3: token-count driven
+        let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
+        for t in 0..token_count {
+            let tok = if t == 0 {
+                decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
+            } else {
+                let ng_bias = ngram.compute_bias(None);
+                let b_vec = bias.bias_vector();
+                let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
+                let cdf = cdf_from_logits(&ensemble);
+                let sym = decode_checked(&mut dec, &cdf, v, t)?;
+                let tensor = Tensor::from_data(ensemble, vec![v]);
+                let probs = softmax(&tensor);
+                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+                bias.update(&probs.data, sym as usize);
+                sym
+            };
+            decoded_tokens.push(tok);
+            ngram.observe(tok);
+            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+        }
+        for &tok in &decoded_tokens {
+            output.extend_from_slice(tokenizer.decode_token(tok));
+        }
+    } else {
+        // v4: byte-count driven, interleaved
+        let mut t: usize = 0;
+        loop {
+            let tok = if t == 0 {
+                decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
+            } else {
+                let ng_bias = ngram.compute_bias(None);
+                let b_vec = bias.bias_vector();
+                let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
+                let cdf = cdf_from_logits(&ensemble);
+                let sym = decode_checked(&mut dec, &cdf, v, t)?;
+                let tensor = Tensor::from_data(ensemble, vec![v]);
+                let probs = softmax(&tensor);
+                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+                bias.update(&probs.data, sym as usize);
+                sym
+            };
+            output.extend_from_slice(tokenizer.decode_token(tok));
+            if output.len() >= total_bytes {
+                break;
+            }
+            ngram.observe(tok);
+            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            t += 1;
+        }
     }
 
     if output.len() != total_bytes {

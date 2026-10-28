@@ -1,4 +1,4 @@
-# AZTH Format Specification v3
+# AZTH Format Specification
 
 ## Purpose
 
@@ -6,7 +6,62 @@ AZTH is a lossless compression format that encodes data using neural network
 probability predictions combined with arithmetic coding. Decompression requires
 the identical model and weights; hyperparameters are stored in the header.
 
-## Format Layout (v3)
+## Format Layout (v4 — current)
+
+```
+Offset  Size  Field          Description
+------  ----  -----          -----------
+0x00    8B    MAGIC          "AZTH\x04\x00\x00\x00" (version 4)
+0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
+0x0C    1B    FLAGS          Bit flags (see below)
+--- if FLAGS & 0x01 (custom hyperparams): ---
+0x0D    4B    BIAS_LR        BiasHead learning rate (little-endian f32)
+0x11    4B    NGRAM_SCALE    N-gram logit bias scale (little-endian f32)
+0x15    4B    MIX_ETA        Adaptive mixer learning rate (little-endian f32)
+--- endif ---
+var     var   STREAM         Arithmetic coded probability stream
+EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
+```
+
+Header size: **13 bytes** (default HP) or **25 bytes** (custom HP).
+CRC-32 trailer: 4 bytes. Total fixed overhead: **17 or 29 bytes**.
+
+### FLAGS byte
+
+| Bit | Mask   | Name            | Description                                |
+|-----|--------|-----------------|--------------------------------------------|
+| 0   | `0x01` | CUSTOM_HP       | Hyperparameters follow FLAGS (12 bytes)    |
+| 1-7 | `0xFE` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+
+When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
+- BIAS_LR = 0.30
+- NGRAM_SCALE = 0.50
+- MIX_ETA = 0.01
+
+### Key change from v3: TOKEN_COUNT removed
+
+v4 eliminates TOKEN_COUNT from the header. The decoder terminates by byte count:
+it decodes tokens and detokenizes them interleaved, stopping when
+`output_bytes.len() >= TOTAL_BYTES`. This saves 4 bytes in the header and
+simplifies the format (token count was redundant — deterministic tokenization
+means byte count implies token count).
+
+### Version History
+
+| Version | Magic byte 4 | Header bytes | Changes |
+|---------|-------------|-------------|---------|
+| v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
+| v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
+| v4      | `\x04`      | 13 or 25    | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes) |
+
+The decoder accepts v2, v3, and v4 files:
+- **v2**: no CRC check (backward compatible)
+- **v3**: CRC-32 verified after decompression
+- **v4**: CRC-32 verified, compact header, byte-count termination
+
+The encoder always writes **v4**.
+
+## Format Layout (v3 — legacy)
 
 ```
 Offset  Size  Field          Description
@@ -23,38 +78,13 @@ EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 
 Total header size: 28 bytes (0x1C). CRC-32 trailer: 4 bytes.
 
-### Version History
-
-| Version | Magic byte 4 | Changes |
-|---------|-------------|---------|
-| v2      | `\x02`      | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
-| v3      | `\x03`      | Added CRC-32 trailer, hyperparameter validation |
-
-The decoder accepts both v2 and v3 files:
-- **v2**: no CRC check (backward compatible, warns about missing integrity)
-- **v3**: CRC-32 verified after decompression (error on mismatch)
-
-### Magic Bytes
-
-```
-41 5A 54 48 03 00 00 00
-A  Z  T  H  v3 (reserved)
-```
-
-Byte 4 is the format version. Decoder accepts `02` or `03`.
-
 ### TOTAL_BYTES
 
 Original file size in bytes, stored as unsigned 32-bit little-endian.
 Maximum supported file size: 4,294,967,295 bytes (~4 GB).
 
 **Validation**: The compressor rejects inputs exceeding `u32::MAX` with an
-explicit error before encoding begins. This prevents silent overflow corruption.
-
-### TOKEN_COUNT
-
-Number of tokens produced by the World tokenizer (65,536 vocab).
-Required for decompression to know when to stop decoding.
+explicit error before encoding begins.
 
 ### Hyperparameters (BIAS_LR, NGRAM_SCALE, MIX_ETA)
 
@@ -67,12 +97,8 @@ These are the online-learning rates used during compression:
 | NGRAM_SCALE | 0.50    | N-gram logit bias scaling factor     |
 | MIX_ETA     | 0.01    | AdaptiveMixer weight learning rate   |
 
-Decompression reads these values from the header and initializes the
-ensemble with the exact same parameters used during compression.
-This guarantees lossless roundtrip even with non-default hyperparameters.
-
-**Validation (v3)**: All three values must be finite (`is_finite()`).
-NaN or Infinity values cause immediate rejection of the file.
+**Validation**: All three values must be finite (`is_finite()`).
+NaN or Infinity values cause immediate rejection.
 
 ### STREAM
 
@@ -83,13 +109,12 @@ Schindler-style carry-propagation range coder output.
 - First token encoded with uniform CDF (1/vocab_size per symbol)
 - Subsequent tokens: ensemble logits -> softmax -> CDF
 
-### CRC32 (v3 only)
+### CRC32 (v3+ only)
 
 CRC-32 (IEEE 802.3, polynomial 0xEDB88320 reflected) of the **original
 uncompressed data**, stored as 4-byte little-endian after STREAM.
 
 Located at: `file_size - 4` bytes from the start.
-The CRC is computed over the exact bytes that were input to compression.
 On decompression, the CRC is recomputed from the restored output and
 compared against the stored value. Mismatch → error, no output written.
 
@@ -117,29 +142,40 @@ This detects:
      g. RangeEncoder.encode_symbol(token, CDF)
 6. Update all models with observed token
 7. RangeEncoder.finish() -> compressed bytes
-8. Write: MAGIC + header + STREAM + CRC32
+8. Write: MAGIC + TOTAL_BYTES + FLAGS [+ HP] + STREAM + CRC32
 ```
 
 ## Decompression Pipeline
 
+### v4 (byte-count driven)
+
 ```
-1. Read AZTH file, validate MAGIC (accept v2 or v3)
-2. Parse TOTAL_BYTES, TOKEN_COUNT
-3. Validate hyperparameters (reject NaN/Inf)
-4. Extract STREAM and CRC32 (v3) or STREAM only (v2)
+1. Read AZTH file, validate MAGIC (accept v2, v3, or v4)
+2. Parse header (TOTAL_BYTES, FLAGS, optional HP)
+3. Validate hyperparameters if custom (reject NaN/Inf)
+4. Extract STREAM and CRC32
 5. Initialize RangeDecoder with STREAM
-6. For token t = 0:
-     Decode with uniform CDF
-7. For token t > 0:
-     a. RWKV-7 forward pass (using previously decoded token) -> logits
-     b. TokenNgram, BiasHead, AdaptiveMixer -> ensemble_logits
-     c. CDF from ensemble_logits
-     d. RangeDecoder.decode_symbol(CDF) -> token
+6. Loop:
+     a. If t == 0: decode with uniform CDF
+     b. If t > 0: ensemble logits -> CDF -> decode symbol
+     c. Detokenize decoded token -> append bytes
+     d. If output_bytes.len() >= TOTAL_BYTES: stop
      e. Update all models with decoded token
-8. Detokenize: World tokenizer decode all tokens -> bytes
-9. Verify output length == TOTAL_BYTES (error on mismatch)
-10. If v3: verify CRC-32 of output == stored CRC (error on mismatch)
-11. Write output file
+7. Verify output length == TOTAL_BYTES (error on mismatch)
+8. Verify CRC-32 of output == stored CRC (error on mismatch)
+9. Write output file
+```
+
+### v2/v3 (token-count driven, legacy)
+
+```
+1. Read AZTH file, validate MAGIC
+2. Parse TOTAL_BYTES, TOKEN_COUNT, hyperparameters
+3. Extract STREAM and CRC32 (v3) or STREAM only (v2)
+4. Decode TOKEN_COUNT symbols sequentially
+5. Detokenize all decoded tokens -> bytes
+6. Verify length and CRC
+7. Write output file
 ```
 
 ## Determinism Guarantee
@@ -147,7 +183,7 @@ This detects:
 Decompression produces byte-identical output if and only if:
 1. Same RWKV-7 model weights (exact floating-point values)
 2. Same World tokenizer vocabulary file
-3. Same hyperparameters (stored in header since v2; ngram order=4 is fixed)
+3. Same hyperparameters (stored in header; ngram order=4 is fixed)
 4. Same forward pass implementation (floating-point order matters)
 
 This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
@@ -167,6 +203,7 @@ This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 - CRC-32 detects accidental corruption (NOT cryptographic — use HMAC for tamper detection)
 - TOTAL_BYTES capped at u32 prevents memory exhaustion
 - Hyperparameter validation rejects NaN/Inf (prevents numeric corruption)
+- FLAGS validation rejects unknown bits (forward compatibility)
 - RAM monitor aborts if available memory is insufficient for model
 
 ## MIME Type (Proposed)

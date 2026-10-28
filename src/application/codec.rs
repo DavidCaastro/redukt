@@ -11,13 +11,32 @@ use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
 use crate::infrastructure::rwkv7::model::Rwkv7State;
 
-pub const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
-pub const HEADER_SIZE: usize = 28; // 8 magic + 4 total_bytes + 4 token_count + 12 hyperparams
-pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3 only)
+/// v3 magic — kept for backward-compat parsing and tests.
+#[cfg(test)]
+const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
+pub const MAGIC_V4: &[u8; 8] = b"AZTH\x04\x00\x00\x00";
+pub const HEADER_SIZE: usize = 28; // v2/v3: 8 magic + 4 total_bytes + 4 token_count + 12 hp
+pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
+pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3+ only)
+pub const V4_FLAG_CUSTOM_HP: u8 = 0x01;
+pub const DEFAULT_BIAS_LR: f32 = 0.30;
+pub const DEFAULT_NGRAM_SCALE: f32 = 0.50;
+pub const DEFAULT_MIX_ETA: f32 = 0.01;
 
-/// Validate AZTH magic bytes. Returns format version (2 or 3).
+/// Parsed header info — works for v2, v3, and v4.
+pub struct HeaderInfo {
+    pub version: u8,
+    pub total_bytes: usize,
+    pub token_count: Option<usize>, // None for v4
+    pub bias_lr: f32,
+    pub ngram_scale: f32,
+    pub mix_eta: f32,
+    pub header_size: usize,
+}
+
+/// Validate AZTH magic bytes. Returns format version (2, 3, or 4).
 pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
-    if data.len() < HEADER_SIZE {
+    if data.len() < 8 {
         return Err(AzError::Format(format!(
             "invalid AZTH file (too short: {} bytes)", data.len()
         )));
@@ -28,12 +47,141 @@ pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
         )));
     }
     let version = data[4];
-    if version != 2 && version != 3 {
+    let min_size = match version {
+        2 | 3 => HEADER_SIZE,
+        4 => V4_HEADER_BASE,
+        _ => return Err(AzError::Format(format!(
+            "unsupported AZTH version {} (expected 2, 3, or 4)", version
+        ))),
+    };
+    if data.len() < min_size {
         return Err(AzError::Format(format!(
-            "unsupported AZTH version {} (expected 2 or 3)", version
+            "invalid AZTH v{} (too short: {} < {})", version, data.len(), min_size
         )));
     }
     Ok(version)
+}
+
+/// Check if hyperparameters are the defaults (exact f32 bit comparison).
+pub fn uses_default_hp(bias_lr: f32, ngram_scale: f32, mix_eta: f32) -> bool {
+    bias_lr.to_bits() == DEFAULT_BIAS_LR.to_bits()
+        && ngram_scale.to_bits() == DEFAULT_NGRAM_SCALE.to_bits()
+        && mix_eta.to_bits() == DEFAULT_MIX_ETA.to_bits()
+}
+
+/// Parse header for any AZTH version (v2, v3, v4). Assumes validate_magic passed.
+pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
+    let version = data[4];
+    match version {
+        2 | 3 => {
+            let total_bytes = u32::from_le_bytes(
+                [data[8], data[9], data[10], data[11]]
+            ) as usize;
+            let token_count = u32::from_le_bytes(
+                [data[12], data[13], data[14], data[15]]
+            ) as usize;
+            let (bias_lr, ngram_scale, mix_eta) = parse_hyperparams(data)?;
+            Ok(HeaderInfo {
+                version, total_bytes,
+                token_count: Some(token_count),
+                bias_lr, ngram_scale, mix_eta,
+                header_size: HEADER_SIZE,
+            })
+        }
+        4 => {
+            let total_bytes = u32::from_le_bytes(
+                [data[8], data[9], data[10], data[11]]
+            ) as usize;
+            let flags = data[12];
+            let reserved = flags & !V4_FLAG_CUSTOM_HP;
+            if reserved != 0 {
+                return Err(AzError::Format(format!(
+                    "AZTH v4 unknown flags: 0x{:02X}", reserved
+                )));
+            }
+            if flags & V4_FLAG_CUSTOM_HP != 0 {
+                if data.len() < V4_HEADER_BASE + 12 {
+                    return Err(AzError::Format(format!(
+                        "AZTH v4 custom HP truncated: {} < {}",
+                        data.len(), V4_HEADER_BASE + 12
+                    )));
+                }
+                let o = V4_HEADER_BASE;
+                let bias_lr = f32::from_le_bytes(
+                    [data[o], data[o+1], data[o+2], data[o+3]]
+                );
+                let ngram_scale = f32::from_le_bytes(
+                    [data[o+4], data[o+5], data[o+6], data[o+7]]
+                );
+                let mix_eta = f32::from_le_bytes(
+                    [data[o+8], data[o+9], data[o+10], data[o+11]]
+                );
+                for (name, val) in [
+                    ("bias_lr", bias_lr), ("ngram_scale", ngram_scale),
+                    ("mix_eta", mix_eta),
+                ] {
+                    if !val.is_finite() {
+                        return Err(AzError::Format(format!(
+                            "invalid hyperparameter {}={} (NaN or Inf)", name, val
+                        )));
+                    }
+                }
+                Ok(HeaderInfo {
+                    version, total_bytes, token_count: None,
+                    bias_lr, ngram_scale, mix_eta,
+                    header_size: V4_HEADER_BASE + 12,
+                })
+            } else {
+                Ok(HeaderInfo {
+                    version, total_bytes, token_count: None,
+                    bias_lr: DEFAULT_BIAS_LR,
+                    ngram_scale: DEFAULT_NGRAM_SCALE,
+                    mix_eta: DEFAULT_MIX_ETA,
+                    header_size: V4_HEADER_BASE,
+                })
+            }
+        }
+        _ => Err(AzError::Format(format!(
+            "unsupported AZTH version {}", version
+        ))),
+    }
+}
+
+/// Extract stream and CRC from AZTH payload given header size and version.
+pub fn extract_stream_and_crc_v(
+    data: &[u8], header_size: usize, version: u8,
+) -> (&[u8], Option<u32>) {
+    let payload = &data[header_size..];
+    if version >= 3 && payload.len() >= CRC_SIZE {
+        let split = payload.len() - CRC_SIZE;
+        let stream = &payload[..split];
+        let crc_bytes = &payload[split..];
+        let stored_crc = u32::from_le_bytes(
+            [crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]
+        );
+        (stream, Some(stored_crc))
+    } else {
+        (payload, None)
+    }
+}
+
+/// Build AZTH v4 header bytes.
+pub fn build_v4_header(
+    total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+) -> Vec<u8> {
+    let custom = !uses_default_hp(bias_lr, ngram_scale, mix_eta);
+    let flags: u8 = if custom { V4_FLAG_CUSTOM_HP } else { 0 };
+    let cap = if custom { V4_HEADER_BASE + 12 } else { V4_HEADER_BASE };
+    let mut hdr = Vec::with_capacity(cap);
+    hdr.extend_from_slice(MAGIC_V4);
+    hdr.extend_from_slice(&total_bytes.to_le_bytes());
+    hdr.push(flags);
+    if custom {
+        hdr.extend_from_slice(&bias_lr.to_le_bytes());
+        hdr.extend_from_slice(&ngram_scale.to_le_bytes());
+        hdr.extend_from_slice(&mix_eta.to_le_bytes());
+    }
+    hdr
 }
 
 /// Parse header hyperparameters with NaN/Inf validation.
@@ -51,9 +199,10 @@ pub fn parse_hyperparams(data: &[u8]) -> AzResult<(f32, f32, f32)> {
     Ok((bias_lr, ngram_scale, mix_eta))
 }
 
-/// Extract stream and CRC from AZTH payload based on version.
-/// Returns (stream_slice, optional_stored_crc).
-pub fn extract_stream_and_crc(data: &[u8], version: u8) -> (&[u8], Option<u32>) {
+/// Extract stream and CRC from v2/v3 AZTH (fixed HEADER_SIZE offset).
+/// Kept for backward-compat tests. Production code uses extract_stream_and_crc_v.
+#[cfg(test)]
+fn extract_stream_and_crc(data: &[u8], version: u8) -> (&[u8], Option<u32>) {
     let payload = &data[HEADER_SIZE..];
     if version >= 3 && payload.len() >= CRC_SIZE {
         let split = payload.len() - CRC_SIZE;
@@ -244,15 +393,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     timer.start("write");
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
-    let token_u32 = validate_u32_size(tokens.len(), "TOKEN_COUNT")?;
 
-    let mut output = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
-    output.extend_from_slice(MAGIC_V3);
-    output.extend_from_slice(&total_u32.to_le_bytes());
-    output.extend_from_slice(&token_u32.to_le_bytes());
-    output.extend_from_slice(&bias_lr.to_le_bytes());
-    output.extend_from_slice(&ngram_scale.to_le_bytes());
-    output.extend_from_slice(&mix_eta.to_le_bytes());
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta);
+    let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
+    output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
     output.extend_from_slice(&input_crc.to_le_bytes());
 
@@ -275,7 +419,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("  coder overhead: {:.4} BPB", metrics.overhead_bpb());
     eprintln!("  coder efficiency: {:.2}%", metrics.efficiency_pct());
     eprintln!("  CRC-32:         {:08X}", input_crc);
-    eprintln!("  format:         AZTH v3");
+    eprintln!("  format:         AZTH v4");
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     eprintln!("  output:         {}", output_path);
 
@@ -323,18 +467,20 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     timer.start("read");
     let data = crate::domain::error::read_file(&input_path)?;
 
-    let version = validate_magic(&data)?;
+    validate_magic(&data)?;
+    let hdr = parse_header(&data)?;
+    let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version);
 
-    let total_bytes = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
-    let token_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-    let (bias_lr, ngram_scale, mix_eta) = parse_hyperparams(&data)?;
-    let (stream, stored_crc) = extract_stream_and_crc(&data, version);
-
-    eprintln!("[decompress] format: AZTH v{}", version);
-    eprintln!("[decompress] compressed: {} bytes, original: {} bytes, {} tokens",
-              data.len(), total_bytes, token_count);
+    eprintln!("[decompress] format: AZTH v{}", hdr.version);
+    if let Some(tc) = hdr.token_count {
+        eprintln!("[decompress] compressed: {} bytes, original: {} bytes, {} tokens",
+                  data.len(), hdr.total_bytes, tc);
+    } else {
+        eprintln!("[decompress] compressed: {} bytes, original: {} bytes (v4, no token count)",
+                  data.len(), hdr.total_bytes);
+    }
     eprintln!("[decompress] hyperparams: lr={}, ngram_scale={}, mix_eta={}",
-              bias_lr, ngram_scale, mix_eta);
+              hdr.bias_lr, hdr.ngram_scale, hdr.mix_eta);
     if let Some(crc) = stored_crc {
         eprintln!("[decompress] CRC-32: {:08X} (will verify)", crc);
     } else {
@@ -351,57 +497,94 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     }
 
     timer.start("decode");
-    let mut ngram = TokenNgram::new(4, v, ngram_scale);
-    let mut bias = BiasHead::new(v, bias_lr);
-    let mut mixer = AdaptiveMixer::new(mix_eta);
+    let mut ngram = TokenNgram::new(4, v, hdr.ngram_scale);
+    let mut bias = BiasHead::new(v, hdr.bias_lr);
+    let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
 
     let mut state = Rwkv7State::new(&model.config);
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
-    let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
 
     eprintln!("[decompress] decoding ...");
     let t_start = std::time::Instant::now();
 
-    for t in 0..token_count {
-        let tok = if t == 0 {
-            let cdf = Cdf::uniform(v);
-            decode_checked(&mut dec, &cdf, v, t)?
-        } else {
-            let ng_bias = ngram.compute_bias(None);
-            let b_vec = bias.bias_vector();
-            let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
-
-            let cdf = cdf_from_logits(&ensemble_logits);
-            let sym = decode_checked(&mut dec, &cdf, v, t)?;
-
-            let tensor = Tensor::from_data(ensemble_logits, vec![v]);
-            let probs = softmax(&tensor);
-            mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
-            bias.update(&probs.data, sym as usize);
-
-            sym
-        };
-
-        decoded_tokens.push(tok);
-        ngram.observe(tok);
-        model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
-
-        if t > 0 && (t % 1000 == 0 || t == token_count - 1) {
-            let elapsed = t_start.elapsed().as_secs_f64();
-            let pct = 100.0 * t as f64 / token_count as f64;
-            eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
-                    pct, t, t as f64 / elapsed);
-        }
-    }
-    eprintln!();
-
-    timer.start("detokenize");
+    let total_bytes = hdr.total_bytes;
     let mut output_bytes = Vec::with_capacity(total_bytes);
-    for &tok in &decoded_tokens {
-        let bytes = tokenizer.decode_token(tok);
-        output_bytes.extend_from_slice(bytes);
+    let mut t: usize = 0;
+
+    if let Some(token_count) = hdr.token_count {
+        // v2/v3 path: token-count driven loop
+        let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
+        for t in 0..token_count {
+            let tok = if t == 0 {
+                let cdf = Cdf::uniform(v);
+                decode_checked(&mut dec, &cdf, v, t)?
+            } else {
+                let ng_bias = ngram.compute_bias(None);
+                let b_vec = bias.bias_vector();
+                let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
+                let cdf = cdf_from_logits(&ensemble_logits);
+                let sym = decode_checked(&mut dec, &cdf, v, t)?;
+                let tensor = Tensor::from_data(ensemble_logits, vec![v]);
+                let probs = softmax(&tensor);
+                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+                bias.update(&probs.data, sym as usize);
+                sym
+            };
+            decoded_tokens.push(tok);
+            ngram.observe(tok);
+            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+
+            if t > 0 && (t % 1000 == 0 || t == token_count - 1) {
+                let elapsed = t_start.elapsed().as_secs_f64();
+                eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
+                        100.0 * t as f64 / token_count as f64, t, t as f64 / elapsed);
+            }
+        }
+        eprintln!();
+        for &tok in &decoded_tokens {
+            output_bytes.extend_from_slice(tokenizer.decode_token(tok));
+        }
+        t = token_count;
+    } else {
+        // v4 path: byte-count driven, interleaved decode+detokenize
+        loop {
+            let tok = if t == 0 {
+                let cdf = Cdf::uniform(v);
+                decode_checked(&mut dec, &cdf, v, t)?
+            } else {
+                let ng_bias = ngram.compute_bias(None);
+                let b_vec = bias.bias_vector();
+                let ensemble_logits = mixer.combine(&logits, &ng_bias, b_vec);
+                let cdf = cdf_from_logits(&ensemble_logits);
+                let sym = decode_checked(&mut dec, &cdf, v, t)?;
+                let tensor = Tensor::from_data(ensemble_logits, vec![v]);
+                let probs = softmax(&tensor);
+                mixer.update(&probs.data, &ngram.compute_bias(None), bias.bias_vector(), sym as usize);
+                bias.update(&probs.data, sym as usize);
+                sym
+            };
+
+            output_bytes.extend_from_slice(tokenizer.decode_token(tok));
+
+            if output_bytes.len() >= total_bytes {
+                t += 1;
+                break;
+            }
+
+            ngram.observe(tok);
+            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            t += 1;
+
+            if t % 1000 == 0 {
+                let elapsed = t_start.elapsed().as_secs_f64();
+                let pct = 100.0 * output_bytes.len() as f64 / total_bytes as f64;
+                eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
+                        pct, t, t as f64 / elapsed);
+            }
+        }
+        eprintln!();
     }
 
     timer.start("verify");
@@ -429,7 +612,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let total_time = timer.total_secs();
     eprintln!();
     eprintln!("[decompress] output: {} ({} bytes)", output_path, output_bytes.len());
-    eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", total_time, token_count as f64 / total_time);
+    eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", total_time, t as f64 / total_time);
     eprintln!("[decompress] done.");
 
     if verbose {
@@ -756,6 +939,34 @@ mod tests {
         buf
     }
 
+    /// Helper: build AZTH v4 file with default hyperparams.
+    fn make_azth_v4_default(total_bytes: u32, stream: &[u8], crc: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC_V4);
+        buf.extend_from_slice(&total_bytes.to_le_bytes());
+        buf.push(0x00); // flags: defaults
+        buf.extend_from_slice(stream);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf
+    }
+
+    /// Helper: build AZTH v4 file with custom hyperparams.
+    fn make_azth_v4_custom(
+        total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+        stream: &[u8], crc: u32,
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC_V4);
+        buf.extend_from_slice(&total_bytes.to_le_bytes());
+        buf.push(V4_FLAG_CUSTOM_HP); // flags: custom HP
+        buf.extend_from_slice(&bias_lr.to_le_bytes());
+        buf.extend_from_slice(&ngram_scale.to_le_bytes());
+        buf.extend_from_slice(&mix_eta.to_le_bytes());
+        buf.extend_from_slice(stream);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf
+    }
+
     // --- validate_magic ---
 
     #[test]
@@ -771,8 +982,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_magic_accepts_v4() {
+        let data = make_azth_v4_default(100, &[0u8; 16], 0);
+        assert_eq!(validate_magic(&data).unwrap(), 4);
+    }
+
+    #[test]
+    fn validate_magic_accepts_v4_custom() {
+        let data = make_azth_v4_custom(100, 0.5, 0.5, 0.5, &[0u8; 8], 0);
+        assert_eq!(validate_magic(&data).unwrap(), 4);
+    }
+
+    #[test]
     fn validate_magic_rejects_short() {
-        assert!(validate_magic(&[0u8; 10]).is_err());
+        assert!(validate_magic(&[0u8; 7]).is_err());
+    }
+
+    #[test]
+    fn validate_magic_rejects_v4_too_short() {
+        // 12 bytes — valid magic but too short for v4 (needs 13)
+        let mut data = vec![0u8; 12];
+        data[..8].copy_from_slice(MAGIC_V4);
+        assert!(validate_magic(&data).is_err());
     }
 
     #[test]
@@ -789,7 +1020,115 @@ mod tests {
         assert!(validate_magic(&data).is_err());
     }
 
-    // --- parse_hyperparams ---
+    // --- parse_header ---
+
+    #[test]
+    fn parse_header_v3() {
+        let file = make_azth_v3(500, 42, &[0u8; 8], 0);
+        let hdr = parse_header(&file).unwrap();
+        assert_eq!(hdr.version, 3);
+        assert_eq!(hdr.total_bytes, 500);
+        assert_eq!(hdr.token_count, Some(42));
+        assert!((hdr.bias_lr - 0.30).abs() < 1e-6);
+        assert_eq!(hdr.header_size, HEADER_SIZE);
+    }
+
+    #[test]
+    fn parse_header_v4_default() {
+        let file = make_azth_v4_default(1234, &[0u8; 8], 0);
+        let hdr = parse_header(&file).unwrap();
+        assert_eq!(hdr.version, 4);
+        assert_eq!(hdr.total_bytes, 1234);
+        assert_eq!(hdr.token_count, None);
+        assert_eq!(hdr.bias_lr.to_bits(), DEFAULT_BIAS_LR.to_bits());
+        assert_eq!(hdr.ngram_scale.to_bits(), DEFAULT_NGRAM_SCALE.to_bits());
+        assert_eq!(hdr.mix_eta.to_bits(), DEFAULT_MIX_ETA.to_bits());
+        assert_eq!(hdr.header_size, V4_HEADER_BASE);
+    }
+
+    #[test]
+    fn parse_header_v4_custom() {
+        let file = make_azth_v4_custom(999, 0.5, 0.7, 0.02, &[0u8; 8], 0);
+        let hdr = parse_header(&file).unwrap();
+        assert_eq!(hdr.version, 4);
+        assert_eq!(hdr.total_bytes, 999);
+        assert_eq!(hdr.token_count, None);
+        assert!((hdr.bias_lr - 0.5).abs() < 1e-6);
+        assert!((hdr.ngram_scale - 0.7).abs() < 1e-6);
+        assert!((hdr.mix_eta - 0.02).abs() < 1e-6);
+        assert_eq!(hdr.header_size, V4_HEADER_BASE + 12);
+    }
+
+    #[test]
+    fn parse_header_v4_rejects_unknown_flags() {
+        let mut file = make_azth_v4_default(100, &[0u8; 8], 0);
+        file[12] = 0x80; // unknown flag bit
+        assert!(parse_header(&file).is_err());
+    }
+
+    #[test]
+    fn parse_header_v4_custom_rejects_nan() {
+        let file = make_azth_v4_custom(100, f32::NAN, 0.5, 0.01, &[], 0);
+        assert!(parse_header(&file).is_err());
+    }
+
+    // --- uses_default_hp ---
+
+    #[test]
+    fn default_hp_detected() {
+        assert!(uses_default_hp(0.30, 0.50, 0.01));
+    }
+
+    #[test]
+    fn non_default_hp_detected() {
+        assert!(!uses_default_hp(0.31, 0.50, 0.01));
+        assert!(!uses_default_hp(0.30, 0.51, 0.01));
+        assert!(!uses_default_hp(0.30, 0.50, 0.02));
+    }
+
+    // --- build_v4_header ---
+
+    #[test]
+    fn build_v4_header_default() {
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01);
+        assert_eq!(hdr.len(), V4_HEADER_BASE);
+        assert_eq!(&hdr[..8], MAGIC_V4);
+        assert_eq!(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 1000);
+        assert_eq!(hdr[12], 0x00); // no flags
+    }
+
+    #[test]
+    fn build_v4_header_custom() {
+        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02);
+        assert_eq!(hdr.len(), V4_HEADER_BASE + 12);
+        assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP);
+        let lr = f32::from_le_bytes([hdr[13], hdr[14], hdr[15], hdr[16]]);
+        assert!((lr - 0.5).abs() < 1e-6);
+    }
+
+    // --- extract_stream_and_crc_v ---
+
+    #[test]
+    fn extract_v4_default_splits_correctly() {
+        let stream_data = vec![0xAA, 0xBB, 0xCC];
+        let crc: u32 = 0xCAFEBABE;
+        let file = make_azth_v4_default(100, &stream_data, crc);
+        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE, 4);
+        assert_eq!(stream, &stream_data[..]);
+        assert_eq!(stored_crc, Some(0xCAFEBABE));
+    }
+
+    #[test]
+    fn extract_v4_custom_splits_correctly() {
+        let stream_data = vec![0x11, 0x22];
+        let crc: u32 = 0x12345678;
+        let file = make_azth_v4_custom(50, 0.5, 0.5, 0.5, &stream_data, crc);
+        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE + 12, 4);
+        assert_eq!(stream, &stream_data[..]);
+        assert_eq!(stored_crc, Some(0x12345678));
+    }
+
+    // --- parse_hyperparams (v2/v3 legacy) ---
 
     #[test]
     fn parse_hyperparams_valid() {
@@ -803,7 +1142,6 @@ mod tests {
     #[test]
     fn parse_hyperparams_rejects_nan() {
         let mut file = make_azth_v3(100, 10, &[], 0);
-        // Write NaN into bias_lr (bytes 16-19)
         let nan_bytes = f32::NAN.to_le_bytes();
         file[16..20].copy_from_slice(&nan_bytes);
         assert!(parse_hyperparams(&file).is_err());
@@ -813,11 +1151,11 @@ mod tests {
     fn parse_hyperparams_rejects_inf() {
         let mut file = make_azth_v3(100, 10, &[], 0);
         let inf_bytes = f32::INFINITY.to_le_bytes();
-        file[20..24].copy_from_slice(&inf_bytes); // ngram_scale = Inf
+        file[20..24].copy_from_slice(&inf_bytes);
         assert!(parse_hyperparams(&file).is_err());
     }
 
-    // --- extract_stream_and_crc ---
+    // --- extract_stream_and_crc (legacy v2/v3) ---
 
     #[test]
     fn extract_crc_v3_splits_correctly() {

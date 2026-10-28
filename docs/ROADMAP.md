@@ -300,26 +300,19 @@
 > Cada paso incluye un quality gate: medir BPB en los 3 archivos de log + enwik8.
 > Si la degradación acumulada supera +3% en logs → STOP, no proceder al siguiente.
 
-#### Paso 0: R-018 — Coder Efficiency Optimization (0% BPB risk, gains only)
-- **Estado**: PENDIENTE
+#### Paso 0: R-018 — Coder Efficiency Optimization (0% BPB risk, gains only) ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-28)
 - **Riesgo BPB**: NINGUNO — mejora la eficiencia del coder, no cambia predicciones del modelo
-- **Impacto**: Recuperar BPB perdido por overhead del coder (actualmente 80-99% eficiencia)
-- **Contexto**: La corrección de benchmark (2026-10-28) reveló que la eficiencia del coder
-  varía entre 80% (apache-access.log) y 99% (sao). En archivos muy compresibles, el header
-  fijo de 32 bytes (28B header + 4B CRC) domina el output comprimido.
-  - apache: 386 bytes comprimidos, 32 bytes overhead = 8.3% del archivo
-  - facturae: 577 bytes comprimidos, 32 bytes overhead = 5.5%
-  - En archivos grandes: overhead es despreciable (<0.1%)
-- **Oportunidades identificadas**:
-  - [ ] Header compacto: campos redundantes o reducibles (¿ngram_scale/mix_eta realmente necesarios en header?)
-  - [ ] Evaluar si bias_lr/ngram_scale/mix_eta pueden usar f16 (2B c/u en vez de 4B): -6 bytes header
-  - [ ] Evaluar eliminar token_count del header (derivable de total_bytes + tokenizer): -4 bytes
-  - [ ] Evaluar formato v4 con header variable (flag byte indica qué campos están presentes)
-  - [ ] Benchmark: medir BPB ganancia en archivos de 10KB con header optimizado
-- **Quality gate**: BPB debe MEJORAR o mantenerse igual. Si empeora → bug.
-- **Beneficio estimado**: +1-5% eficiencia en archivos <1KB comprimido [ESTIMATE]
-  En archivos de log a 10KB, reduce compressed_bpb sin tocar el modelo.
-- **CAVEAT**: Cambio de formato (v4). Requiere mantener retrocompat con v3.
+- **Resultado**: AZTH v4 implementado. Header 13B (defaults) o 25B (custom HP), vs 28B en v3.
+  - [x] Header compacto v4: FLAGS byte + conditional HP (-15 bytes con defaults)
+  - [x] token_count eliminado: decoder termina por byte count (interleaved decode+detokenize)
+  - [x] Backward compat: decoder acepta v2, v3, v4. Encoder siempre escribe v4.
+  - [x] f16 para HP: DESCARTADO — FLAGS condicionan presencia, no necesario reducir tamaño
+  - [x] Benchmark: enwik8 10KB v4=1.3328 BPB vs v3=1.3448 BPB → -0.9% [MEASURED]
+  - [x] Coder efficiency: 96.1% (v4) vs 95.3% (v3) [MEASURED]
+  - [x] 96 tests pasando, roundtrip byte-identical verificado
+  - [x] FORMAT-SPEC.md actualizado con v4 spec
+- **Quality gate PASSED**: BPB mejoró (1.3448 → 1.3328), cross-entropy sin cambio (1.2812)
 
 #### Paso 1: R-015 — KV Batch Caching (0% BPB risk)
 - **Estado**: PENDIENTE

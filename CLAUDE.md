@@ -28,20 +28,22 @@ Bytes -> RWKV-7(pretrained) + TokenNgram + BiasHead -> AdaptiveMixer -> RangeEnc
 AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministic)
 ```
 
-### AZTH Format (v3)
+### AZTH Format (v4 — current)
 ```
-MAGIC:       8B  "AZTH\x03\x00\x00\x00"
+MAGIC:       8B  "AZTH\x04\x00\x00\x00"
 TOTAL_BYTES: 4B  LE (original size, validated ≤ u32::MAX)
-TOKEN_COUNT: 4B  LE (validated ≤ u32::MAX)
-BIAS_LR:     4B  LE f32 (default 0.30, validated finite)
-NGRAM_SCALE: 4B  LE f32 (default 0.50, validated finite)
-MIX_ETA:     4B  LE f32 (default 0.01, validated finite)
+FLAGS:       1B  (0x00=defaults, 0x01=custom HP follow)
+[BIAS_LR]:   4B  LE f32 (only if FLAGS & 0x01)
+[NGRAM_SCALE]:4B  LE f32 (only if FLAGS & 0x01)
+[MIX_ETA]:   4B  LE f32 (only if FLAGS & 0x01)
 STREAM:      var (arithmetic coded probability stream)
 CRC32:       4B  LE (CRC-32 IEEE of original data)
 ```
 
-Decompression requires IDENTICAL model + weights. Hyperparameters stored in header.
-CRC-32 verified on decompression (v3). Decoder also accepts v2 (no CRC, backward compat).
+Header: 13B (defaults) or 25B (custom HP). v3 was 28B (fixed).
+TOKEN_COUNT removed in v4 — decoder terminates by byte count.
+Decompression requires IDENTICAL model + weights.
+CRC-32 verified on decompression (v3+). Decoder accepts v2, v3, and v4.
 Max file size: ~4 GB (u32 TOTAL_BYTES). Validated at compression time.
 
 ## Constraints
@@ -161,9 +163,9 @@ Q8 is 2.1x faster — correct production choice.
 Use `--quant f32|q8|q4|auto` to force quantization level.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (actual AZTH)**: 1.3448 BPB [MEASURED]
+- **compress (actual AZTH v4)**: 1.3328 BPB [MEASURED: R-018]
 - **cross-entropy (hybrid-eval)**: 1.2812 BPB (Q8) | 1.3041 BPB (F32)
-- **coder efficiency**: 95.3% on enwik8 (varies 80-95% by file)
+- **coder efficiency**: 96.1% on enwik8 (v4 header saves 15 bytes vs v3)
 - **baseline (RWKV-only)**: 1.4067 BPB
 
 ### Strongest Results (actual AZTH compression, 10KB)

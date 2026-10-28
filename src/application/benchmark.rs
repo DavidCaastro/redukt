@@ -16,7 +16,7 @@ use crate::domain::bias_head::BiasHead;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
-use crate::application::codec::{cdf_from_logits, MAGIC_V3, HEADER_SIZE, CRC_SIZE};
+use crate::application::codec::{cdf_from_logits, CRC_SIZE, build_v4_header};
 use crate::application::model_loader;
 use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
@@ -370,15 +370,11 @@ fn compress_and_measure(
     let compressed = enc.finish();
     let elapsed = t_start.elapsed().as_secs_f64();
 
-    // Build AZTH v3 (identical to cmd_compress output)
+    // Build AZTH v4 (identical to cmd_compress output)
     let input_crc = crc32::crc32(data);
-    let mut azth = Vec::with_capacity(HEADER_SIZE + compressed.len() + CRC_SIZE);
-    azth.extend_from_slice(MAGIC_V3);
-    azth.extend_from_slice(&(total_bytes as u32).to_le_bytes());
-    azth.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
-    azth.extend_from_slice(&0.30f32.to_le_bytes());
-    azth.extend_from_slice(&0.50f32.to_le_bytes());
-    azth.extend_from_slice(&0.01f32.to_le_bytes());
+    let hdr = build_v4_header(total_bytes as u32, 0.30, 0.50, 0.01);
+    let mut azth = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
+    azth.extend_from_slice(&hdr);
     azth.extend_from_slice(&compressed);
     azth.extend_from_slice(&input_crc.to_le_bytes());
 
