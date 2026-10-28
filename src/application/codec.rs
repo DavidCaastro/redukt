@@ -241,6 +241,27 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let compressed = enc.finish();
     eprintln!();
 
+    if verbose {
+        let layers_ms = scratch.perf_layers_us as f64 / 1000.0;
+        let head_ms = scratch.perf_head_us as f64 / 1000.0;
+        let tmix_ms = scratch.perf_tmix_us as f64 / 1000.0;
+        let cmix_ms = scratch.perf_cmix_us as f64 / 1000.0;
+        let total_fwd = layers_ms + head_ms;
+        let layers_pct = if total_fwd > 0.0 { 100.0 * layers_ms / total_fwd } else { 0.0 };
+        let head_pct = if total_fwd > 0.0 { 100.0 * head_ms / total_fwd } else { 0.0 };
+        let tmix_pct = if total_fwd > 0.0 { 100.0 * tmix_ms / total_fwd } else { 0.0 };
+        let cmix_pct = if total_fwd > 0.0 { 100.0 * cmix_ms / total_fwd } else { 0.0 };
+        let ntok = tokens.len().max(1) as f64;
+        eprintln!("[compress] forward_pass breakdown:");
+        eprintln!("  TimeMix  (12 layers):  {:.1}ms ({:.1}%)", tmix_ms, tmix_pct);
+        eprintln!("  ChannelMix (12 layers): {:.1}ms ({:.1}%)", cmix_ms, cmix_pct);
+        eprintln!("  layers total:           {:.1}ms ({:.1}%)", layers_ms, layers_pct);
+        eprintln!("  head (65536x768):       {:.1}ms ({:.1}%)", head_ms, head_pct);
+        eprintln!("  total forward:          {:.1}ms", total_fwd);
+        eprintln!("  per-token: tmix {:.3}ms, cmix {:.3}ms, head {:.3}ms",
+                  tmix_ms / ntok, cmix_ms / ntok, head_ms / ntok);
+    }
+
     timer.start("write");
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
