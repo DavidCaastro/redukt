@@ -132,6 +132,14 @@ impl Rwkv7State {
         }
     }
 
+    /// Reset all state to zeros (for batch reuse without reallocation).
+    pub fn reset(&mut self) {
+        for t in &mut self.x_prev_att { t.data.fill(0.0); }
+        for s in &mut self.state_mat { s.fill(0.0); }
+        for t in &mut self.x_prev_ffn { t.data.fill(0.0); }
+        self.v_first.data.fill(0.0);
+    }
+
     #[allow(dead_code)] // used by planned cm-eval command
     pub fn n_layers(&self) -> usize { self.x_prev_att.len() }
 
@@ -195,6 +203,14 @@ pub struct Scratch {
 }
 
 impl Scratch {
+    /// Reset perf counters (for batch reuse).
+    pub fn reset_perf(&mut self) {
+        self.perf_layers_us = 0;
+        self.perf_head_us = 0;
+        self.perf_tmix_us = 0;
+        self.perf_cmix_us = 0;
+    }
+
     fn new(d: usize, n: usize, d_ffn: usize, max_lora: usize) -> Self {
         let nn = n * n;
         Self {

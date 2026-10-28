@@ -47,6 +47,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  redukt compress    --input <FILE> --output <FILE> [options]");
+    eprintln!("  redukt compress    --input-dir <DIR> --output-dir <DIR> --jobs <N> [options]");
     eprintln!("  redukt decompress  --input <FILE> --output <FILE> [--weights <DIR>]");
     eprintln!("  redukt hybrid-eval --input <FILE> [options] [--log <FILE>]");
     eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
@@ -66,5 +67,8 @@ fn print_usage() {
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
     eprintln!("  --quant <LEVEL>      Force quantization: f32, q8, q4, auto (default: auto)");
+    eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
+    eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
+    eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
 }

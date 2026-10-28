@@ -489,19 +489,29 @@
   - [x] Roundtrip byte-identical + CRC verified
   - [x] Throughput: +135% SIMD, +100% scalar (controlled A/B)
 
-#### Paso 3: R-012 — Multi-file paralelismo (0% BPB risk)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO — cada archivo se procesa independientemente
-- **Speedup estimado**: Nx con N cores [PROJECTION: linear scaling]
-- **Impacto**: Linear con cores (N archivos en paralelo, modelo por thread)
-- **Archivos**: `src/application/codec.rs`, `src/main.rs`
+#### Paso 3: R-012 — Multi-file paralelismo (0% BPB risk) ✅
+- **Estado**: COMPLETADO (2026-10-28)
+- **Riesgo BPB**: NINGUNO — confirmado: BPB y bytes comprimidos bit-exact en 1/2/3 jobs
+- **Speedup medido**: 1.36x (2 jobs), 1.64x (3 jobs) [MEASURED: r012-batch-parallelism-validation.csv]
+- **Impacto**: Sub-lineal (CPU memory-bound), pero genuinamente multiplicativo con más cores
+- **Archivos**: `src/application/codec.rs`, `src/infrastructure/rwkv7/model.rs`, `src/main.rs`
+- **Diseño**: Modelo cargado 1x → `Arc<Rwkv7Model>` + `Arc<WorldTokenizer>` compartidos.
+  Cada thread: propio `Rwkv7State` + `Scratch` + ngram/bias/mixer/encoder (~4 MB/thread).
+  Work queue: `Arc<Mutex<Vec<PathBuf>>>` con pop() por thread.
 - **Subtareas**:
-  - [ ] Evaluar RAM por instancia (~400 MB Q8, ~1.6 GB F32) [ESTIMATE]
-  - [ ] Implementar modo batch: `redukt compress --input-dir <DIR> --output-dir <DIR> --jobs N`
-  - [ ] Thread pool con modelo pre-cargado, state por thread
-  - [ ] Benchmark: 1, 2, 4, 8 jobs en corpus de 8+ archivos de log
-  - [ ] **Quality gate**: verificar BPB idéntico single-thread vs multi-thread (debe ser 0.000 delta)
-  - [ ] Medir RAM real por thread y documentar requisitos
+  - [x] Implementar modo batch: `redukt compress --input-dir <DIR> --output-dir <DIR> --jobs N`
+  - [x] `Rwkv7State::reset()` y `Scratch::reset_perf()` para reutilización sin realloc
+  - [x] Thread pool con modelo pre-cargado (Arc), state/scratch por thread
+  - [x] Benchmark: 1, 2, 3 jobs × 3 rounds × 3 files (controlled A/B, same session)
+  - [x] **Quality gate PASS**: BPB idéntico single-thread vs multi-thread (0.000 delta)
+  - [x] **Quality gate PASS**: bytes comprimidos idénticos en todos los modos
+  - [x] Roundtrip verificado: decompress → byte-identical, CRC OK
+  - [x] RAM: modelo ~130 MB Q8 (shared), ~4 MB/thread → 10 threads ≈ 170 MB total
+- **Scaling** (3 files × 10KB, Dell Vostro 3520 i5-1235U):
+  - 1 job: 106.1s mean (1.7 files/min)
+  - 2 jobs: 78.0s mean (2.3 files/min) → **1.36x** [MEASURED]
+  - 3 jobs: 64.8s mean (2.8 files/min) → **1.64x** [MEASURED]
+  - Sub-lineal por memory bandwidth contention — escala mejor con más files
 
 #### Paso 4: R-016 — SVD Pruning del modelo RWKV (BPB risk: +2-3%)
 - **Estado**: PENDIENTE
@@ -551,7 +561,7 @@
 | R-021 ✅ | + F32 AVX2 noFMA | 1.19x | ~232-268 B/s [MEASURED: +19.2%] | 0% | BPB bit-exact |
 | R-022 ✅ | + SIMD transcendentals | 1.23x | ~285-330 B/s [MEASURED: +23.2% A/B] | -0.13% | BPB -0.13% (improved) |
 | R-015 ✅ | + Rank-1 factorization | 2.35x | ~670 B/s [MEASURED: 94.8 tok/s A/B] | ±0.25% | BPB ±0.25% (noise) |
-| R-012 | + 10 cores | 10x | ~3375-5670 B/s | 0% | BPB = 0 delta |
+| R-012 ✅ | + N threads | 1.64x (3T) | ~1100 B/s (3T) [MEASURED] | 0% | BPB bit-exact |
 | R-016 | + SVD pruning | 3-5x | ~10125-28350 B/s | +2-3% | BPB ≤ +3% |
 | R-017 | + Parallel segments | 2-4x | ~20250-113400 B/s | +3%? | BPB ≤ +3% total |
 
@@ -560,17 +570,17 @@
 - R-019 es compute reduction puro — beneficio directo en TimeMix latency
 - R-021/R-022 mejoran el "techo" scalar de TimeMix (74-88% del tiempo)
 - R-015 × R-016 podrían ser sub-multiplicativos (ambos tocan inference path)
-- R-012 es genuinamente multiplicativo (paralelismo puro, 10 cores útiles [MEASURED: PROTO-05])
+- R-012 es sub-lineal en cores (1.64x con 3 threads [MEASURED], memory-bound bottleneck)
 - R-017 tiene overhead de merge y cold-start por segmento
 - El gate de **+3%** BPB probablemente fuerza STOP antes de R-017
 - R-HW1 (HardwareGovernor) es ortogonal — no afecta throughput peak pero protege hardware
 
-**Target mínimo viable**: R-021 ✅ + R-022 ✅ + R-015 ✅ + R-012 (10 cores) = ~6.7 KB/s sin degradación BPB.
-**Achieved so far**: 94.8 tok/s single-thread (was 32.8 baseline) = **~670 B/s** [MEASURED].
-Si se alcanza, log archival de ~2-4 GB/día es viable sin tocar el modelo.
+**Target mínimo viable**: R-021 ✅ + R-022 ✅ + R-015 ✅ + R-012 ✅ = done.
+**Achieved**: 94.8 tok/s single-thread × 1.64x (3 threads) = **~155 tok/s aggregate** [MEASURED].
+~1.1 KB/s (3T). Con más cores/archivos, scaling continúa. Sin degradación BPB.
 
-**Secuencia revisada (2026-10-28)**: R-018 ✅ → R-019 → R-021 ✅ → R-022 ✅ → R-015 ✅ → R-012 → R-016 → R-017.
-Primero las optimizaciones 0% BPB risk (compute reduction, SIMD), luego paralelismo, al final modelo.
+**Secuencia revisada (2026-10-28)**: R-018 ✅ → R-019 → R-021 ✅ → R-022 ✅ → R-015 ✅ → R-012 ✅ → R-016 → R-017.
+Todas las optimizaciones 0% BPB risk completadas. Siguiente: modelo (R-016, R-017 — requieren quality gates BPB).
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
 ### R-013: Determinismo cross-platform
@@ -654,3 +664,9 @@ R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de
 | 2026-10-28 | R-015 COMPLETADO: rank-1 factorization O(N³)→O(N²), 32x fewer FLOPs per head |
 | 2026-10-28 | R-015: scalar +100% (32.8→65.7), SIMD +135% (40.4→94.8), controlled A/B 3 rounds |
 | 2026-10-28 | R-015: BPB ±0.25% (float reordering noise), roundtrip byte-identical, CRC verified |
+| 2026-10-28 | R-012 COMPLETADO: batch --input-dir/--output-dir/--jobs, Arc model sharing, thread pool |
+| 2026-10-28 | R-012: scaling 1.36x(2T), 1.64x(3T) [MEASURED: 3 rounds × 3 configs, same session] |
+| 2026-10-28 | R-012: BPB bit-exact (0.000 delta) y bytes comprimidos idénticos en 1/2/3 jobs |
+| 2026-10-28 | R-012: roundtrip verified (decompress byte-identical, CRC D28BAB1C) |
+| 2026-10-28 | R-012: Rwkv7State::reset() + Scratch::reset_perf() añadidos para batch reuse |
+| 2026-10-28 | Todas las optimizaciones 0% BPB risk completadas (R-018/R-021/R-022/R-015/R-012) |

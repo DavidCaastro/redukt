@@ -281,6 +281,9 @@ impl CoderMetrics {
 pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut output_path = String::new();
+    let mut input_dir = String::new();
+    let mut output_dir = String::new();
+    let mut jobs: usize = 1;
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut max_bytes: usize = 0;
     let mut bias_lr: f32 = 0.30;
@@ -295,6 +298,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         match args[i].as_str() {
             "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
             "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
+            "--input-dir" => { input_dir = next_arg(args, &mut i, "--input-dir")?.to_string(); }
+            "--output-dir" => { output_dir = next_arg(args, &mut i, "--output-dir")?.to_string(); }
+            "--jobs" => { jobs = parse_arg(next_arg(args, &mut i, "--jobs")?, "--jobs")?; }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
             "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr")?, "--lr")?; }
@@ -306,6 +312,21 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             _ => {}
         }
         i += 1;
+    }
+
+    // Batch mode: --input-dir + --output-dir
+    if !input_dir.is_empty() {
+        if output_dir.is_empty() {
+            return Err(AzError::Parse {
+                context: "--output-dir".into(), value: "(required with --input-dir)".into(),
+            });
+        }
+        let quant_override = if quant_str.is_empty() { None }
+            else { model_loader::parse_quant_flag(&quant_str) };
+        return batch_compress(
+            &input_dir, &output_dir, jobs, &weights_dir, &emb_surgery,
+            quant_override, max_bytes, bias_lr, ngram_scale, mix_eta,
+        );
     }
 
     if output_path.is_empty() {
@@ -457,6 +478,243 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         eprintln!("[compress] timing_json: {}", timer.to_json());
     }
     Ok(())
+}
+
+/// Batch-compress all files in `input_dir` → `output_dir` using `jobs` threads.
+/// Model is loaded once and shared via Arc. Each thread gets its own state/scratch.
+fn batch_compress(
+    input_dir: &str, output_dir: &str, jobs: usize,
+    weights_dir: &str, emb_surgery: &str,
+    quant_override: Option<crate::domain::quant::QuantPolicy>,
+    max_bytes: usize, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+) -> AzResult<()> {
+    use std::sync::{Arc, Mutex};
+
+    // Discover files (non-recursive, skip .azth)
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(input_dir)
+        .map_err(|e| AzError::Io { path: input_dir.to_string(), source: e })?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().map_or(true, |ext| ext != "azth"))
+        .collect();
+
+    if entries.is_empty() {
+        return Err(AzError::Format(format!("no files found in {}", input_dir)));
+    }
+
+    // Create output directory
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| AzError::Io { path: output_dir.to_string(), source: e })?;
+
+    eprintln!("[batch] {} files, {} jobs", entries.len(), jobs);
+
+    // Load model once
+    let t_load = std::time::Instant::now();
+    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(
+        weights_dir, quant_override,
+    );
+    if !emb_surgery.is_empty() {
+        model.embedding_surgery(emb_surgery);
+    }
+    let v = model.config.vocab_size;
+    eprintln!("[batch] model loaded in {:.1}s (vocab={})", t_load.elapsed().as_secs_f64(), v);
+
+    let model = Arc::new(model);
+    let tokenizer = Arc::new(tokenizer);
+    let work = Arc::new(Mutex::new(entries.clone()));
+
+    // Result per file: (filename, input_bytes, compressed_bytes, bpb, tok_s, ok)
+    type FileResult = (String, usize, usize, f64, f64, bool);
+    let results: Arc<Mutex<Vec<FileResult>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let t_total = std::time::Instant::now();
+    let n_jobs = jobs.max(1).min(entries.len());
+
+    if n_jobs <= 1 {
+        // Single-threaded: no thread spawn overhead
+        compress_batch_worker(
+            &model, &tokenizer, &work, &results,
+            input_dir, output_dir, v, max_bytes, bias_lr, ngram_scale, mix_eta,
+        );
+    } else {
+        let mut handles = Vec::with_capacity(n_jobs);
+        for _ in 0..n_jobs {
+            let m = Arc::clone(&model);
+            let tok = Arc::clone(&tokenizer);
+            let w = Arc::clone(&work);
+            let r = Arc::clone(&results);
+            let in_d = input_dir.to_string();
+            let out_d = output_dir.to_string();
+            handles.push(std::thread::spawn(move || {
+                compress_batch_worker(
+                    &m, &tok, &w, &r,
+                    &in_d, &out_d, v, max_bytes, bias_lr, ngram_scale, mix_eta,
+                );
+            }));
+        }
+        for h in handles {
+            let _ = h.join();
+        }
+    }
+
+    let elapsed = t_total.elapsed().as_secs_f64();
+    let res = results.lock().unwrap();
+
+    // Report
+    eprintln!();
+    eprintln!("[batch] results ({} files, {:.1}s total):", res.len(), elapsed);
+    eprintln!("  {:30} {:>10} {:>10} {:>8} {:>8} {}", "file", "input", "output", "BPB", "tok/s", "status");
+    let mut total_in = 0usize;
+    let mut total_out = 0usize;
+    let mut ok_count = 0usize;
+    for (name, ib, cb, bpb, toks, ok) in res.iter() {
+        let status = if *ok { "OK" } else { "FAIL" };
+        eprintln!("  {:30} {:>10} {:>10} {:>8.4} {:>8.1} {}",
+                  name, ib, cb, bpb, toks, status);
+        total_in += ib;
+        total_out += cb;
+        if *ok { ok_count += 1; }
+    }
+    eprintln!("  {:30} {:>10} {:>10}", "TOTAL", total_in, total_out);
+    eprintln!("[batch] {}/{} succeeded, ratio {:.4}, {:.1}s ({:.1} files/min)",
+             ok_count, res.len(),
+             total_out as f64 / total_in.max(1) as f64,
+             elapsed,
+             res.len() as f64 / (elapsed / 60.0));
+
+    if ok_count < res.len() {
+        return Err(AzError::Format(format!("{} files failed", res.len() - ok_count)));
+    }
+    Ok(())
+}
+
+/// Worker loop: pop files from shared queue, compress each one.
+fn compress_batch_worker(
+    model: &crate::infrastructure::rwkv7::model::Rwkv7Model,
+    tokenizer: &crate::infrastructure::rwkv7::tokenizer::WorldTokenizer,
+    work: &std::sync::Mutex<Vec<std::path::PathBuf>>,
+    results: &std::sync::Mutex<Vec<(String, usize, usize, f64, f64, bool)>>,
+    _input_dir: &str, output_dir: &str,
+    v: usize, max_bytes: usize,
+    bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+) {
+    // Per-thread allocations
+    let mut state = Rwkv7State::new(&model.config);
+    let mut scratch = model.create_scratch();
+    let mut logits = vec![0.0f32; v];
+    let mut ng_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+
+    loop {
+        let path = {
+            let mut q = work.lock().unwrap();
+            q.pop()
+        };
+        let path = match path {
+            Some(p) => p,
+            None => break,
+        };
+
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let out_name = format!("{}.azth", fname);
+        let out_path = std::path::Path::new(output_dir).join(&out_name);
+
+        let result = compress_single_file(
+            model, tokenizer, &path, &out_path,
+            &mut state, &mut scratch, &mut logits,
+            &mut ng_buf, &mut ensemble_buf, &mut probs_buf,
+            v, max_bytes, bias_lr, ngram_scale, mix_eta,
+        );
+
+        let mut res = results.lock().unwrap();
+        match result {
+            Ok((ib, cb, bpb, toks)) => {
+                eprintln!("[batch] {} -> {} ({} -> {} bytes, {:.4} BPB, {:.1} tok/s)",
+                          fname, out_name, ib, cb, bpb, toks);
+                res.push((fname, ib, cb, bpb, toks, true));
+            }
+            Err(e) => {
+                eprintln!("[batch] FAIL {}: {}", fname, e);
+                res.push((fname, 0, 0, 0.0, 0.0, false));
+            }
+        }
+    }
+}
+
+/// Compress a single file. Returns (input_bytes, compressed_bytes, bpb, tok_per_sec).
+fn compress_single_file(
+    model: &crate::infrastructure::rwkv7::model::Rwkv7Model,
+    tokenizer: &crate::infrastructure::rwkv7::tokenizer::WorldTokenizer,
+    input_path: &std::path::Path, output_path: &std::path::Path,
+    state: &mut Rwkv7State,
+    scratch: &mut crate::infrastructure::rwkv7::model::Scratch,
+    logits: &mut [f32],
+    ng_buf: &mut [f32], ensemble_buf: &mut [f32], probs_buf: &mut [f32],
+    v: usize, max_bytes: usize,
+    bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+) -> AzResult<(usize, usize, f64, f64)> {
+    let raw_bytes = crate::domain::error::read_file(
+        &input_path.to_string_lossy(),
+    )?;
+    let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
+    let input_slice = &raw_bytes[..total_bytes];
+
+    let tokens = tokenizer.encode(input_slice);
+
+    // Reset per-file state
+    state.reset();
+    scratch.reset_perf();
+    let mut ngram = TokenNgram::new(4, v, ngram_scale);
+    let mut bias = BiasHead::new(v, bias_lr);
+    let mut mixer = AdaptiveMixer::new(mix_eta);
+    let mut enc = RangeEncoder::new();
+    let t_start = std::time::Instant::now();
+
+    for t in 0..tokens.len() {
+        let tok = tokens[t] as usize;
+
+        if t == 0 {
+            let cdf = Cdf::uniform(v);
+            enc.encode_symbol(tok, &cdf);
+        } else {
+            ngram.compute_bias_into(ng_buf, None);
+            let b_vec = bias.bias_vector();
+            mixer.combine_into(ensemble_buf, logits, ng_buf, b_vec);
+
+            let cdf = cdf_from_logits(ensemble_buf);
+            enc.encode_symbol(tok, &cdf);
+
+            softmax_into(ensemble_buf, probs_buf);
+            mixer.update(probs_buf, ng_buf, bias.bias_vector(), tok);
+            bias.update(probs_buf, tok);
+        }
+
+        ngram.observe(tok as u32);
+        model.forward_into(tok, state, scratch, logits);
+    }
+
+    let compressed = enc.finish();
+    let elapsed = t_start.elapsed().as_secs_f64();
+
+    let input_crc = crc32::crc32(input_slice);
+    let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
+
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta);
+    let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
+    output.extend_from_slice(&hdr);
+    output.extend_from_slice(&compressed);
+    output.extend_from_slice(&input_crc.to_le_bytes());
+
+    crate::domain::error::write_file(
+        &output_path.to_string_lossy(),
+        &output,
+    )?;
+
+    let bpb = (output.len() as f64 * 8.0) / total_bytes.max(1) as f64;
+    let tok_s = tokens.len() as f64 / elapsed.max(0.001);
+
+    Ok((total_bytes, output.len(), bpb, tok_s))
 }
 
 pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
