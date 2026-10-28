@@ -596,6 +596,89 @@ Todas las optimizaciones 0% BPB risk completadas. R-016 (SVD) evaluado y abortad
 R-017 (parallel segments) bloqueado — requiere evaluación independiente.
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
+**Fase 2 (2026-10-29)**: R-023 → R-025 → R-024 → R-026.
+R-023 (CDF 24-bit) primero: 0% BPB risk, solo coder.rs, mejora directa en coder efficiency.
+R-025 (prefetch) segundo: 0% BPB risk, solo tensor.rs, micro-optimización rápida.
+R-024 (Q4 storage) tercero: 0% BPB risk pero requiere nuevo QuantMatrix variant + dequant path.
+R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere validación BPB.
+
+### Fase 2: Técnicas identificadas por auditoría de exhaustividad (2026-10-29)
+
+> Ref: `docs/internal/research/optimization-exhaustion-audit.md`
+> Estas técnicas fueron identificadas tras investigación exhaustiva confirmando
+> que todas las optimizaciones algebraicas/SIMD/codec conocidas están agotadas.
+
+#### R-023: CDF Precision Upgrade (16 → 24 bit)
+- **Estado**: PENDIENTE (prioridad INMEDIATA)
+- **Origen**: Paper Nacrith (2026) — arquitectura casi idéntica a Redukt
+- **Riesgo BPB**: NINGUNO — solo mejora coder efficiency
+- **Impacto estimado**: Reduce floor overhead de ~2 bits/token a ~0.004 bits/token (V=65536)
+- **Descripción**: El range coder actual usa CDF de 16 bits (2^16 = 65536 niveles).
+  Con vocabulario V=65536, el probability floor consume ~2 bits/token de overhead.
+  Upgrade a 24 bits (2^24 = 16M niveles) reduce el floor 256x → overhead despreciable.
+- **Archivos**: `src/domain/coder.rs`
+- **Subtareas**:
+  - [ ] Audit current coder: identificar todas las constantes de precisión CDF
+  - [ ] Implementar CDF 24-bit con range renormalization compatible
+  - [ ] Verificar backward compat: decoder v4 debe seguir leyendo archivos 16-bit
+  - [ ] Benchmark BPB: 18 archivos, comparar coder efficiency antes/después
+  - [ ] **Quality gate**: roundtrip byte-identical, BPB <= anterior en todos los archivos
+  - [ ] Actualizar FORMAT-SPEC.md si cambia el wire format
+
+#### R-024: Q4 Storage → Q8 Compute
+- **Estado**: PENDIENTE (prioridad INMEDIATA)
+- **Riesgo BPB**: NINGUNO — compute precision sigue siendo Q8
+- **Diferencia vs Q4 matmul (R-V05 RECHAZADO)**: R-V05 hacía matmul en Q4 (+13.3% BPB).
+  Aquí los weights se ALMACENAN en Q4 (~65 MB vs ~130 MB) pero se DESCOMPRIMEN a Q8
+  on-the-fly antes de cada matmul. La precisión de cómputo es idéntica a Q8 puro.
+- **Impacto estimado**: -50% DRAM traffic para weight reads, potencial +15-30% throughput
+  (actualmente 60% DRAM BW saturación a 94.8 tok/s)
+- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/domain/tensor.rs`
+- **Subtareas**:
+  - [ ] Implementar Q4 pack/unpack (2 values per byte, symmetric quantization)
+  - [ ] Añadir `QuantMatrix::Q4` variant con dequant-to-Q8 en mat_vec_mul
+  - [ ] `--storage q4` flag (distinto de `--quant` que controla compute precision)
+  - [ ] Benchmark DRAM BW: medir reducción real con perf counters
+  - [ ] Benchmark throughput: controlled A/B vs Q8 storage actual
+  - [ ] **Quality gate**: BPB bit-exact con Q8 (misma precisión de cómputo)
+  - [ ] Roundtrip byte-identical
+
+#### R-025: Software Prefetching
+- **Estado**: PENDIENTE (prioridad INMEDIATA)
+- **Riesgo BPB**: NINGUNO — no cambia cómputo, solo timing de cache loads
+- **Impacto estimado**: +5-15% en matmul kernels (hide L2/L3 miss latency)
+- **Descripción**: Insertar `_mm_prefetch(_MM_HINT_T0)` en inner loops de matmul
+  para pre-cargar la siguiente línea de cache mientras se procesa la actual.
+  Especialmente efectivo en Q8 matmul donde access pattern es predecible.
+- **Archivos**: `src/domain/tensor.rs`
+- **Subtareas**:
+  - [ ] Añadir prefetch en `mat_vec_mul_avx2_q8_into` (next row prefetch)
+  - [ ] Añadir prefetch en `mat_vec_mul_avx2_nofma_into` (F32 kernel)
+  - [ ] Micro-benchmark: matmul 768×768 con/sin prefetch (controlled A/B)
+  - [ ] End-to-end benchmark: throughput con/sin prefetch
+  - [ ] **Quality gate**: BPB bit-exact (prefetch no cambia valores)
+
+#### R-026: iGPU Offload (Intel Iris Xe) — Módulo opcional
+- **Estado**: PENDIENTE (prioridad INMEDIATA)
+- **Riesgo BPB**: BAJO — mismos cálculos, diferente hardware (float ordering puede variar)
+- **Activación**: `redukt compress --gpu` (opt-in, desactivado por defecto)
+- **Hardware target**: Intel Iris Xe (80 EUs @ 1.2 GHz, ~1.5 TFLOPS FP32)
+- **Limitación clave**: DRAM compartida — CPU y iGPU compiten por mismo bus (20.6 GB/s).
+  Beneficio neto depende de si compute > memory bottleneck en las ops offloaded.
+- **Enfoque**: Vulkan compute shaders via FFI (sin crate dependencies, como kernel32).
+  Solo offload operaciones compute-bound (head matmul, channel mix), NO state update.
+- **Archivos**: `src/infrastructure/gpu/` (nuevo módulo)
+- **Subtareas**:
+  - [ ] Vulkan device enumeration + compute queue setup (FFI, zero-dep)
+  - [ ] Shader GLSL/SPIR-V para mat_vec_mul (768×768 × batch)
+  - [ ] CPU↔GPU transfer pipeline (pinned memory, async copy)
+  - [ ] `--gpu` flag en compress/decompress/hybrid-eval
+  - [ ] Fallback automático a CPU si no hay Vulkan disponible
+  - [ ] Benchmark: iGPU vs CPU-only throughput (controlled A/B)
+  - [ ] **Quality gate**: BPB < +0.5% vs CPU-only (float ordering tolerance)
+  - [ ] Cross-path roundtrip: compress GPU → decompress CPU (y viceversa)
+  - [ ] Documentar requisitos: Vulkan 1.1+ runtime, driver compatible
+
 ### R-013: Determinismo cross-platform
 - **Estado**: PENDIENTE
 - **Subtareas**:
@@ -686,3 +769,13 @@ R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de
 | 2026-10-28 | R-016 ABORTADO: SVD evaluado empíricamente, +3.47% BPB AND 1.95x slower (MEJOR caso) |
 | 2026-10-28 | R-016: RWKV-7 0.1B alto rango efectivo, RWKV-edge NLP accuracy ≠ compression BPB |
 | 2026-10-28 | R-017 BLOQUEADO: precondición R-016 fallida, requiere evaluación BPB independiente |
+| 2026-10-29 | Auditoría de exhaustividad: investigación recursiva de todas las técnicas conocidas |
+| 2026-10-29 | Nacrith paper (2026): arquitectura casi idéntica, CDF 24-bit es la técnica adoptable |
+| 2026-10-29 | State update (62% forward) es hard ceiling — secuencial, scalar, sin optimización conocida |
+| 2026-10-29 | Descartados: rANS (coder no es bottleneck), time-domain parallel (RWKV secuencial), target-interval capture |
+| 2026-10-29 | R-023 añadido: CDF Precision 16→24 bit (0% BPB risk, mejora coder efficiency) |
+| 2026-10-29 | R-024 añadido: Q4 Storage→Q8 Compute (0% BPB risk, -50% DRAM traffic) |
+| 2026-10-29 | R-025 añadido: Software Prefetching (+5-15% matmul, 0% BPB risk) |
+| 2026-10-29 | R-026 añadido: iGPU Offload Intel Iris Xe (módulo opcional --gpu, Vulkan FFI zero-dep) |
+| 2026-10-29 | Fase 2 secuencia: R-023→R-025→R-024→R-026 (por complejidad creciente) |
+| 2026-10-29 | docs: optimization-exhaustion-audit.md — 350 líneas, 10 secciones, 10 referencias |
