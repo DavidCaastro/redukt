@@ -132,14 +132,15 @@ PHASE 1: Auditable Product (NOW — minimal new code)
 │
 PHASE 2: Minimum Viable Throughput (sequenced by BPB risk)
 │
+├── Step 0: R-018 Coder Efficiency (BPB gain, 0% risk)
 ├── Step 1: R-015 KV Batch Caching (2-3x, 0% BPB risk)
 ├── Step 2: R-012 Multi-file parallelism (Nx cores, 0% BPB risk)
-├── ── GATE: ~1 KB/s target (0% BPB loss) ──
-├── Step 3: R-016 SVD Pruning (3-5x, +2-5% BPB risk) [CONDITIONAL]
-├── Step 4: R-017 Parallel Segments (2-4x, variable BPB risk) [CONDITIONAL]
-├── ── GATE: combined BPB degradation ≤ +5% on logs ──
+├── ── GATE: ~2-3 KB/s target (0% BPB loss) ──
+├── Step 3: R-016 SVD Pruning (3-5x, +2-3% BPB risk) [CONDITIONAL]
+├── Step 4: R-017 Parallel Segments (2-4x, variable BPB risk) [STRICTLY CONDITIONAL]
+├── ── GATE: combined BPB degradation ≤ +3% on logs ──
 ├── Q4 quantization: REJECTED [MEASURED: +13.3% BPB, 7.6x slower]
-└── Goal: ≥1 KB/s sustained, <+5% BPB degradation
+└── Goal: ≥2 KB/s sustained, <+3% BPB degradation
 │
 PHASE 3: First Customer (vertical = log archival)
 │
@@ -202,7 +203,8 @@ Structure:
 
 > **CRITICAL**: Optimizations are NOT fully independent. SVD pruning and parallel
 > segment compression both degrade BPB. Combined, degradation is **compounded, not additive**.
-> A BPB degradation budget of **+5% on logs** governs the sequence.
+> A BPB degradation budget of **+3% on logs** governs the sequence (reduced from +5%
+> after 2026-10-28 correction — actual compression margin is smaller than estimated).
 > See ROADMAP.md P3 for full quality gate protocol.
 
 ### Optimization Sequence (ordered by BPB risk)
@@ -214,26 +216,30 @@ Previous measurement (R-V01): 62 B/s — improved with current binary and SIMD o
 
 | Step | Task | Speedup | BPB risk | Status | Source |
 |---|---|---|---|---|---|
-| 0 | SIMD AVX2/VNNI (R-011) | 1.3x | 0% | **COMPLETED** | [MEASURED: simd-benchmark.md] |
+| 0a | SIMD AVX2/VNNI (R-011) | 1.3x | 0% | **COMPLETED** | [MEASURED: simd-benchmark.md] |
+| 0b | Coder Efficiency (R-018) | ~1x (BPB gain) | 0% (gain) | PENDING | [ESTIMATE: header optimization] |
 | 1 | KV Batch Caching (R-015) | 2-3x | 0% | PENDING | [ESTIMATE: architectural] |
 | 2 | Multi-file parallelism (R-012) | Nx cores | 0% | PENDING | [PROJECTION: linear] |
-| 3 | SVD Pruning (R-016) | 3-5x | +2-5% | PENDING | [SOURCED: RWKV-edge, unverified for our model] |
-| 4 | Parallel Segments (R-017) | 2-4x | variable | PENDING | [ESTIMATE, depends on segment size] |
+| 3 | SVD Pruning (R-016) | 3-5x | +2-3% | PENDING | [SOURCED: RWKV-edge, unverified for our model] |
+| 4 | Parallel Segments (R-017) | 2-4x | variable | **CONDITIONAL** | [ESTIMATE, depends on +3% budget remaining] |
 
 ### Why This Order Matters
 
+Step 0b (R-018) is a **free BPB gain**: optimizing coder overhead recovers lost margin,
+expanding the budget available for later degrading optimizations.
+
 Steps 1-2 are **zero-risk**: they don't change model predictions. If KV caching delivers
-2-3x and 8 cores deliver 8x, we reach **~1-1.5 KB/s on logs without ANY BPB loss**.
-This is the minimum viable throughput for small-scale log archival (<1 GB/day).
+2-3x and 8 cores deliver 8x, we reach **~2-3 KB/s on logs without ANY BPB loss**.
+This is the minimum viable throughput for small-scale log archival (~2 GB/day).
 
 Steps 3-4 carry **BPB degradation risk**:
 - SVD pruning changes the model — predictions get worse. RWKV-edge reports -1pp accuracy
   on NLP [SOURCED], but BPB impact on compression is [UNMEASURED] and likely higher.
 - Parallel segments break context at segment boundaries — each segment starts "cold".
-- **Combined**: if SVD costs +4% BPB and segments cost +3% BPB, the combined effect
-  could be +8% or more (not +7%) due to interaction effects [UNMEASURED].
-- At +8% BPB degradation on logs, the advantage vs brotli drops from -34% to ~-29%.
-  Still viable, but margin is thinner.
+- **Combined**: if SVD costs +3% BPB and segments cost +2% BPB, the combined effect
+  could be +6% or more (not +5%) due to interaction effects [UNMEASURED].
+- At +3% BPB degradation on logs, the advantage vs brotli drops from -31% to ~-29%.
+  Still viable, but R-017 likely cannot proceed within the +3% budget.
 
 ### Quality Gates
 
@@ -241,20 +247,22 @@ Each step has a mandatory gate before proceeding:
 
 | Gate | Condition | Action if FAIL |
 |---|---|---|
+| After R-018 | BPB delta ≤ 0.000 on logs (must improve or equal) | Bug — fix implementation |
 | After R-015 | BPB delta = 0.000 on logs | Bug — fix implementation |
 | After R-012 | BPB delta = 0.000 on logs | Bug — fix implementation |
-| After R-016 | BPB delta ≤ +5% on logs | Reduce SVD aggressiveness (rank-512) |
-| After R-017 | **Combined** BPB delta ≤ +5% on logs | Increase segment size or ABORT R-017 |
+| After R-016 | BPB delta ≤ +3% on logs | Reduce SVD aggressiveness (rank-512) |
+| After R-017 | **Combined** BPB delta ≤ +3% on logs | Increase segment size or ABORT R-017 |
 
 ### Throughput Targets [ALL PROJECTIONS except row 1]
 
 | Milestone | B/s (logs) | Formula | BPB loss | Enables |
 |---|---|---|---|---|
 | Current | ~132 | [MEASURED: benchmark 2026-10-28] | 0% | Benchmark tool only |
+| +R-018 | ~132 (BPB gain) | [ESTIMATE: header opt, no throughput change] | 0% (gain) | Wider margin |
 | +R-015 | ~264-396 | [PROJECTION: 132 × 2-3] | 0% | — |
 | +R-012 (8 cores) | ~2112-3168 | [PROJECTION: above × 8] | 0% | **~2-3 GB/day log archival** |
-| +R-016 (SVD) | ~6336-15840 | [PROJECTION: above × 3-5] | +2-5% | ~5-14 GB/day |
-| +R-017 (segments) | ~12672-63360 | [PROJECTION: above × 2-4] | +3-8%? | ~11-55 GB/day |
+| +R-016 (SVD) | ~6336-15840 | [PROJECTION: above × 3-5] | +2-3% | ~5-14 GB/day |
+| +R-017 (segments) | ~12672-63360 | [PROJECTION: above × 2-4] | +3%? | ~11-55 GB/day (CONDITIONAL) |
 
 **Nota crítica sobre multiplicatividad**:
 - R-012 es genuinamente multiplicativo (paralelismo puro, procesos independientes)
@@ -264,7 +272,7 @@ Each step has a mandatory gate before proceeding:
 
 ### Minimum Viable Target
 
-**R-015 + R-012 (8 cores) = ~2-3 KB/s en logs, 0% BPB loss.**
+**R-018 + R-015 + R-012 (8 cores) = ~2-3 KB/s en logs, 0% BPB loss.**
 
 Esto es suficiente para un PoC de log archival a escala modesta (~2 GB/day a 2 KB/s
 requiere ~12 días, viable para batch semanal/mensual).
@@ -327,8 +335,8 @@ Alternative: annual license (see BUSINESS-CASES.md for detailed models).
 | Risk | Probability | Impact | Mitigation |
 |---|---|---|---|
 | Throughput insufficient for Phase 3 | High | Critical | Phase 2a (0% BPB risk) may suffice for small PoC; GPU as backup |
-| Model pruning degrades BPB >+5% | Medium | High | Quality gate: reduce SVD aggressiveness or ABORT. Budget: +5% max |
-| Combined degradation (SVD+segments) compounds | Medium | High | Measure combined, not just individual. STOP if >+5% total |
+| Model pruning degrades BPB >+3% | Medium | High | Quality gate: reduce SVD aggressiveness or ABORT. Budget: +3% max |
+| Combined degradation (SVD+segments) compounds | High | High | Measure combined, not just individual. STOP if >+3% total. R-017 likely infeasible |
 | No market interest (Phase 1) | Low | Medium | Validates early, pivots cheap |
 | Competitor ships neural compressor | Low | High | Microsoft MLVC (video only), NVIDIA NTC (early); we're ahead on text |
 | Format lock-in deters enterprise | Medium | Medium | Open-source spec + weight escrow + contractual guarantees |
@@ -355,8 +363,8 @@ Microsoft and NVIDIA validate the approach but target different verticals.
 | Phase | Duration | Dependencies | Exit Criteria |
 |---|---|---|---|
 | Phase 1 | 4-6 weeks | None | Benchmark command ships, whitepaper published |
-| Phase 2a | 4-8 weeks | Phase 1 feedback | R-015 + R-012: ≥1 KB/s, 0% BPB loss |
-| Phase 2b | 2-4 months | Phase 2a gate pass | R-016 + R-017: ≥5 KB/s, ≤+5% BPB |
+| Phase 2a | 4-8 weeks | Phase 1 feedback | R-018 + R-015 + R-012: ≥2 KB/s, 0% BPB loss |
+| Phase 2b | 2-4 months | Phase 2a gate pass | R-016 (+ R-017 conditional): ≥5 KB/s, ≤+3% BPB |
 | Phase 3 | 3-6 months | Phase 2 throughput | First paying customer or PoC signed |
 
 ---

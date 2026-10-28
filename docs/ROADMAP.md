@@ -226,9 +226,14 @@
 > **Principio rector**: las optimizaciones de throughput tienen interdependencias en
 > degradación de BPB. Se secuencian de menor a mayor riesgo, con quality gates entre cada paso.
 >
-> **Presupuesto de degradación BPB**: máximo **+5% combinado** sobre Q8 baseline en logs
-> (vertical prioritario). Si se supera, STOP — la ventaja competitiva (-34% vs brotli,
-> compresión real) se erosiona. A +10% la ventaja cae a ~-28%, margen reducido.
+> **Presupuesto de degradación BPB**: máximo **+3% combinado** sobre Q8 baseline en logs
+> (vertical prioritario). Si se supera, STOP — la ventaja competitiva (-31% vs brotli mean,
+> compresión real) se erosiona. Con +3% la ventaja cae a ~-29%, aún viable.
+> A +5% cae a ~-27%, margen peligrosamente reducido. A +10% cae a ~-24%.
+>
+> **Justificación del presupuesto +3%** (2026-10-28): La corrección de cross-entropy a
+> compresión real redujo la ventaja media en logs de -41% a -31%. El margen real es menor
+> del que se estimaba — el presupuesto debe ser más conservador para protegerlo.
 >
 > **Interdependencias documentadas**:
 > - KV caching + Multi-file parallelism: **independientes**, 0% BPB loss cada una
@@ -236,6 +241,8 @@
 > - Parallel segments: **degrada BPB** (pérdida de contexto en fronteras) [UNMEASURED]
 > - SVD + Parallel segments combinados: **degradación compuesta**, no aditiva [UNMEASURED]
 > - Cada paso debe medirse individualmente Y acumulado contra el presupuesto
+>
+> **Corrección 2026-10-28**: Presupuesto reducido de +5% a +3%. Ver justificación arriba.
 
 ### R-010: Estabilizar features experimentales en producción
 - **Estado**: EN PROGRESO
@@ -291,7 +298,28 @@
 ### Secuencia de throughput — orden por riesgo de degradación BPB
 
 > Cada paso incluye un quality gate: medir BPB en los 3 archivos de log + enwik8.
-> Si la degradación acumulada supera +5% en logs → STOP, no proceder al siguiente.
+> Si la degradación acumulada supera +3% en logs → STOP, no proceder al siguiente.
+
+#### Paso 0: R-018 — Coder Efficiency Optimization (0% BPB risk, gains only)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — mejora la eficiencia del coder, no cambia predicciones del modelo
+- **Impacto**: Recuperar BPB perdido por overhead del coder (actualmente 80-99% eficiencia)
+- **Contexto**: La corrección de benchmark (2026-10-28) reveló que la eficiencia del coder
+  varía entre 80% (apache-access.log) y 99% (sao). En archivos muy compresibles, el header
+  fijo de 32 bytes (28B header + 4B CRC) domina el output comprimido.
+  - apache: 386 bytes comprimidos, 32 bytes overhead = 8.3% del archivo
+  - facturae: 577 bytes comprimidos, 32 bytes overhead = 5.5%
+  - En archivos grandes: overhead es despreciable (<0.1%)
+- **Oportunidades identificadas**:
+  - [ ] Header compacto: campos redundantes o reducibles (¿ngram_scale/mix_eta realmente necesarios en header?)
+  - [ ] Evaluar si bias_lr/ngram_scale/mix_eta pueden usar f16 (2B c/u en vez de 4B): -6 bytes header
+  - [ ] Evaluar eliminar token_count del header (derivable de total_bytes + tokenizer): -4 bytes
+  - [ ] Evaluar formato v4 con header variable (flag byte indica qué campos están presentes)
+  - [ ] Benchmark: medir BPB ganancia en archivos de 10KB con header optimizado
+- **Quality gate**: BPB debe MEJORAR o mantenerse igual. Si empeora → bug.
+- **Beneficio estimado**: +1-5% eficiencia en archivos <1KB comprimido [ESTIMATE]
+  En archivos de log a 10KB, reduce compressed_bpb sin tocar el modelo.
+- **CAVEAT**: Cambio de formato (v4). Requiere mantener retrocompat con v3.
 
 #### Paso 1: R-015 — KV Batch Caching (0% BPB risk)
 - **Estado**: PENDIENTE
@@ -324,33 +352,34 @@
 - **Estado**: PENDIENTE
 - **Riesgo BPB**: MEDIO — reduce capacidad del modelo, degrada predicciones
 - **Speedup estimado**: 3.5-4.8x [SOURCED: RWKV-edge paper, pero en NLP no compresión]
-- **Presupuesto BPB consumido**: este paso solo, máximo +5%. Si consume +5%, no queda margen para R-017.
+- **Presupuesto BPB consumido**: este paso solo, máximo **+3%**. Si consume +3%, no queda margen para R-017.
 - **Dependencia**: R-V06 (factibilidad completada, SVD conditional GO)
 - **Archivos**: `src/infrastructure/rwkv7/model.rs`, scripts de pruning offline
 - **Subtareas**:
   - [ ] Implementar SVD rank-384 en TimeMix projections (offline, genera nuevos weights)
   - [ ] Benchmark BPB: 3 logs + enwik8 + facturae con modelo pruned vs baseline
   - [ ] Benchmark throughput: tok/s y B/s con modelo pruned
-  - [ ] **Quality gate BPB**: si degradación >+5% en logs → reducir agresividad (rank-512, rank-448)
-  - [ ] **Quality gate combinado**: medir BPB con R-015 + R-012 + R-016 todos activos
+  - [ ] **Quality gate BPB**: si degradación >+3% en logs → reducir agresividad (rank-512, rank-448)
+  - [ ] **Quality gate combinado**: medir BPB con R-018 + R-015 + R-012 + R-016 todos activos
   - [ ] Si pasa gates: generar weights pruned y añadir a `weights/MANIFEST.md`
   - [ ] Documentar BPB delta exacto por archivo [MEASURED]
   - [ ] Roundtrip test con modelo pruned
 
 #### Paso 4: R-017 — Parallel Segment Compression (BPB risk: variable)
-- **Estado**: PENDIENTE
+- **Estado**: PENDIENTE — **ESTRICTAMENTE CONDICIONAL**
 - **Riesgo BPB**: ALTO — divide el archivo en segmentos, cada uno pierde contexto previo
 - **Speedup estimado**: 2-4x [ESTIMATE — depende de tamaño de segmento]
-- **Presupuesto BPB restante**: +5% total menos lo consumido por R-016
-- **PRECONDICIÓN**: solo proceder si R-016 dejó margen en el presupuesto de +5%
+- **Presupuesto BPB restante**: +3% total menos lo consumido por R-016
+- **PRECONDICIÓN**: solo proceder si R-016 dejó margen en el presupuesto de +3%.
+  Con el presupuesto reducido, es probable que R-016 consuma todo el margen y R-017 no proceda.
 - **Archivos**: `src/application/codec.rs`, `src/domain/coder.rs`
 - **Subtareas**:
   - [ ] Diseñar formato de segmentos en AZTH (v4: segment offsets en header)
   - [ ] Implementar split → compress parallel → merge
   - [ ] Benchmark BPB por tamaño de segmento: 1KB, 4KB, 16KB, 64KB
   - [ ] **Quality gate BPB**: degradación del segmenting solo (sin SVD) en logs
-  - [ ] **Quality gate COMBINADO**: R-015 + R-012 + R-016 + R-017 todos activos
-  - [ ] Si degradación combinada >+5% en logs → ajustar tamaño de segmento o ABORT R-017
+  - [ ] **Quality gate COMBINADO**: R-018 + R-015 + R-012 + R-016 + R-017 todos activos
+  - [ ] Si degradación combinada >+3% en logs → ajustar tamaño de segmento o ABORT R-017
   - [ ] Roundtrip test con segmentos paralelos
   - [ ] Documentar curva: tamaño segmento vs BPB loss vs speedup [MEASURED]
 
@@ -362,19 +391,25 @@
 | Paso | Optimización | Speedup | B/s acum. (logs) | BPB risk acum. | Gate |
 |---|---|---|---|---|---|
 | Current | SIMD Q8 baseline | 1x | ~132 B/s [MEASURED 2026-10-28] | 0% | — |
-| R-015 | + KV caching | 2-3x | ~124-186 B/s | 0% | BPB = 0 delta |
-| R-012 | + 8 cores | 8x | ~992-1488 B/s | 0% | BPB = 0 delta |
-| R-016 | + SVD pruning | 3-5x | ~2976-7440 B/s | +2-5% | BPB ≤ +5% |
-| R-017 | + Parallel segments | 2-4x | ~5952-29760 B/s | +3-8%? | BPB ≤ +5% total |
+| R-018 | + Coder efficiency | ~1x | ~132 B/s (mejora BPB, no throughput) | 0% (mejora) | BPB mejora |
+| R-015 | + KV caching | 2-3x | ~264-396 B/s | 0% | BPB = 0 delta |
+| R-012 | + 8 cores | 8x | ~2112-3168 B/s | 0% | BPB = 0 delta |
+| R-016 | + SVD pruning | 3-5x | ~6336-15840 B/s | +2-3% | BPB ≤ +3% |
+| R-017 | + Parallel segments | 2-4x | ~12672-63360 B/s | +3%? | BPB ≤ +3% total |
 
 **Nota crítica**: Los speedups multiplicativos son teóricos. En la práctica:
+- R-018 no mejora throughput, pero reduce BPB → amplía el margen competitivo
 - R-015 × R-016 podrían ser sub-multiplicativos (ambos tocan inference path)
 - R-012 es genuinamente multiplicativo (paralelismo puro)
 - R-017 tiene overhead de merge y cold-start por segmento
-- El gate de +5% BPB puede forzar STOP antes de R-017
+- El gate de **+3%** BPB probablemente fuerza STOP antes de R-017
 
-**Target mínimo viable**: R-015 + R-012 (8 cores) = ~1 KB/s sin degradación BPB.
-Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
+**Target mínimo viable**: R-018 + R-015 + R-012 (8 cores) = ~2-3 KB/s sin degradación BPB.
+Si se alcanza, log archival de ~2 GB/día es viable sin tocar el modelo.
+
+**Secuencia revisada (2026-10-28)**: R-018 → R-015 → R-012 → R-016 → R-017 (condicional).
+R-018 es free BPB improvement y debe hacerse primero para maximizar margen antes de
+las optimizaciones que degradan.
 
 ### R-013: Determinismo cross-platform
 - **Estado**: PENDIENTE
@@ -437,3 +472,7 @@ Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
 | 2026-10-28 | 18 archivos completos con compresión real: 12/18 wins vs brotli (antes 13/18 con ce_bpb) |
 | 2026-10-28 | mozilla flipped: -15% (ce) → +2.1% (actual). nci flipped: +4.6% (ce) → -7.4% (actual) |
 | 2026-10-28 | CSV completo: `data/benchmark/results/actual-compression-benchmark.csv` |
+| 2026-10-28 | R-018 añadido: Coder efficiency optimization (Paso 0, 0% BPB risk, gains only) |
+| 2026-10-28 | Presupuesto BPB reducido de +5% a +3% — margen real menor tras corrección ce→actual |
+| 2026-10-28 | Secuencia revisada: R-018 → R-015 → R-012 → R-016 → R-017 (condicional) |
+| 2026-10-28 | R-017 estrictamente condicional — probable que R-016 consuma todo el presupuesto +3% |

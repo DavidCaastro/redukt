@@ -191,7 +191,7 @@ Processing 1 PB/year (2.74 TB/day) at 132 B/s requires:
 **Direction correct — Redukt strongly beats gzip-9 and brotli-11 on logs (-44% vs gzip, -31% vs brotli, mean of 3 log files, actual compression).**
 But compute cost at current throughput (~80 B/s mean on logs) makes the case **economically negative**.
 
-**Required for viable case**: throughput ≥1 KB/s (R-015 + R-012 + model optimization).
+**Required for viable case**: throughput ≥2 KB/s (R-018 + R-015 + R-012, 0% BPB risk; +R-016 SVD conditional, ≤+3% BPB).
 
 ---
 
