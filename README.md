@@ -6,7 +6,7 @@ Mixing and arithmetic coding.
 
 ## Highlights
 
-- **Best-in-class compression**: 54% smaller than brotli-11 on e-invoicing, 48% on server logs
+- **Best-in-class compression**: 48% smaller than brotli-11 on e-invoicing, 34% on server logs
 - **18 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
 - **Zero dependencies**: Pure Rust, single binary, CPU-only
 - **Deterministic**: Bit-identical decompression guaranteed (CRC-32 verified)
@@ -38,20 +38,19 @@ weights all prediction sources per-byte.
 Input → Tokenize → [RWKV-7 + CM ensemble + LSTM mixer] → Arithmetic Coder → .azth
 ```
 
-## Performance (Verified Q8, 10KB window, production defaults)
+## Performance (Verified Q8, 10KB window, actual AZTH compression)
+
+All BPB = `compressed_size × 8 / original_size` (actual file output, not cross-entropy estimate).
 
 | File | Domain | Redukt BPB | brotli-11 | vs brotli |
 |---|---|---|---|---|
-| apache-access.log | Server logs | **0.24** | 0.47 | **-48%** |
-| facturae-batch.xml | E-invoicing | **0.41** | 0.89 | **-54%** |
-| ubl-invoice-batch.xml | E-invoicing UBL | **0.49** | 0.89 | **-45%** |
-| xml | XML markup | **0.64** | 0.89 | **-28%** |
-| samba | Source code | **1.27** | 1.61 | **-21%** |
-| enwik8 | Text/encyclopedia | **1.28** | 1.83 | **-30%** |
-| dickens | Text/literature | **1.78** | 2.11 | **-16%** |
+| apache-access.log | Server logs | **0.31** | 0.47 | **-34%** |
+| facturae-batch.xml | E-invoicing | **0.46** | 0.89 | **-48%** |
+| enwik8 | Text/encyclopedia | **1.34** | 2.35 | **-43%** |
 
-Wins 13/18 files tested. Loses on high-entropy data (medical imaging, astronomy, databases).
-Throughput: ~23 tok/s Q8 SIMD (~51 B/s mean, ~75 B/s on logs). Batch/archival workloads.
+Roundtrip-verified (byte-identical decompression, CRC-32 checked).
+Coder efficiency: 80-95% depending on file compressibility (header overhead dominates on very small compressed outputs).
+Throughput: ~47 tok/s Q8 SIMD (~150 B/s). Batch/archival workloads.
 F32 vs Q8: <2.5% BPB difference, Q8 is 2.1x faster. See `data/benchmark/results/`.
 
 ## Requirements
@@ -74,9 +73,10 @@ pip install brotli zstandard
 python scripts/benchmark-suite.py --bytes 10240
 ```
 
-The `benchmark` command evaluates Redukt BPB on your data and compares against gzip-9
-and brotli-11 (auto-detected). Output: JSON with per-file BPB, compression ratio,
-throughput, and storage savings projection. All results are deterministic and CRC-verified.
+The `benchmark` command runs actual AZTH compression on your data and compares against gzip-9
+and brotli-11 (auto-detected). Add `--verify` for roundtrip decompression check. Output: JSON
+with per-file BPB (actual compressed size), compression ratio, throughput, coder efficiency,
+and storage savings projection. All results are deterministic and CRC-verified.
 
 ## Testing
 

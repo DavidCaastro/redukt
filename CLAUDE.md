@@ -152,41 +152,40 @@ Provenance documented in `weights/MANIFEST.md`.
 4. NOTICE file up to date
 5. README badges current
 
-## Benchmarks (Verified 2026-10-26, F32/Q8 comparison)
+## Benchmarks (Verified 2026-10-28, actual AZTH compression)
 
-Primary metric: BPB (bits per byte). Lower = better.
+Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
+All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
 Quantization: auto-selected Q8. F32 vs Q8 difference: <2.5% on all files.
 Q8 is 2.1x faster — correct production choice.
 Use `--quant f32|q8|q4|auto` to force quantization level.
 
 ### Reference BPB (enwik8 10KB)
-- **hybrid-eval Q8**: 1.2812 BPB | **F32**: 1.3041 BPB
-- **compress**: 1.3448 BPB (includes coder overhead)
-- **coder efficiency**: 95.27% (overhead = 0.064 BPB)
+- **compress (actual AZTH)**: 1.3448 BPB [MEASURED]
+- **cross-entropy (hybrid-eval)**: 1.2812 BPB (Q8) | 1.3041 BPB (F32)
+- **coder efficiency**: 95.3% on enwik8 (varies 80-95% by file)
 - **baseline (RWKV-only)**: 1.4067 BPB
 
-### Strongest Results (industry files, 10KB)
-| File | Redukt Q8 | brotli-11 | Δ |
+### Verified Results (actual compression, 10KB, roundtrip-verified)
+| File | Redukt BPB | brotli-11 | Δ | Coder eff. |
+|---|---|---|---|---|
+| apache-access.log | **0.309** | 0.466 | **-34%** | 80.3% |
+| facturae-batch.xml | **0.462** | 0.890 | **-48%** | 88.4% |
+| enwik8 | **1.345** | 2.352 | **-43%** | 95.3% |
+
+### Cross-Entropy BPB (hybrid-eval, 10KB, Q8) — pending re-measurement with actual compression
+Note: ce_bpb is 5-20% lower than actual compressed BPB due to coder overhead.
+
+| File | ce_bpb | File | ce_bpb |
 |---|---|---|---|
-| apache-access.log | **0.245** | 0.466 | **-48%** |
-| facturae-batch.xml | **0.406** | 0.891 | **-54%** |
-| ubl-invoice-batch.xml | **0.490** | 0.889 | **-45%** |
-| linux-syslog.log | **0.362** | 0.582 | **-38%** |
-| openssh-auth.log | **0.475** | 0.783 | **-39%** |
+| xml | 0.640 | samba | 1.266 |
+| nci | 0.596 | dickens | 1.779 |
+| webster | 1.760 | mozilla | 1.965 |
+| reymont | 1.808 | mr | 2.283 |
+| ooffice | 3.704 | x-ray | 6.524 |
 
-### Silesia Corpus BPB (10KB, Q8)
-| File | BPB | vs brotli | File | BPB | vs brotli |
-|---|---|---|---|---|---|
-| xml | 0.640 | -28% | samba | 1.266 | -21% |
-| nci | 0.596 | +5% | enwik8 | 1.281 | -30% |
-| dickens | 1.779 | -16% | mozilla | 1.965 | -15% |
-| webster | 1.760 | -16% | mr | 2.283 | +1% |
-| reymont | 1.808 | -4% | ooffice | 3.704 | +12% |
-| x-ray | 6.524 | +47% | sao | 9.241 | +66% |
-
-Wins 13/18 files. Loses on high-entropy data (medical img, astronomy, databases).
 Benchmark data in `data/benchmark/`. Raw CSV in `data/benchmark/results/`.
-Reproducible: `bash scripts/bench-f32-vs-q8.sh`
+Reproducible: `redukt benchmark --input <FILE> --output report.json --verify`
 
 ## Process Safety (Windows)
 

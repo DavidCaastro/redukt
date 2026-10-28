@@ -51,9 +51,13 @@ but are not part of the standard production pipeline.
 
 ## Production Competitive Position (Q8 vs brotli-11, 10KB)
 
-| File | Domain | Redukt Q8 BPB | brotli-11 BPB | vs brotli |
+> **NOTE (2026-10-28)**: Redukt BPB values below are cross-entropy (hybrid-eval), NOT actual
+> compressed file size. Actual compressed BPB is 5-20% higher. See BENCHMARK-RESULTS.md for
+> corrected values. Apache actual: 0.309 (-33.8%), facturae actual: 0.462 (-48.1%).
+
+| File | Domain | Redukt Q8 ce_bpb | brotli-11 BPB | vs brotli (ce, not actual) |
 |---|---|---|---|---|
-| apache-access.log | server-logs | **0.245** | 0.466 | **-47.5%** |
+| apache-access.log | server-logs | **0.245** | 0.466 | **-47.5%** (actual: -33.8%) |
 | linux-syslog.log | system-logs | **0.362** | 0.582 | **-37.9%** |
 | facturae-batch.xml | e-invoicing | **0.406** | 0.891 | **-54.4%** |
 | openssh-auth.log | auth-logs | **0.475** | 0.783 | **-39.4%** |
@@ -90,7 +94,7 @@ but are not part of the standard production pipeline.
 
 1. **F32 vs Q8 is irrelevant** — delta <2.5% on all files, Q8 is 2x faster
 2. **Q8 is the correct production choice** — better speed/quality tradeoff
-3. **Redukt dominates on text, logs, XML, and code** — 15-55% better than brotli
+3. **Redukt dominates on text, logs, XML, and code** — actual compression advantages verified: -34% logs, -48% XML
 4. **Redukt loses on high-entropy and medical imaging** — expected for LLM-based compression
-5. **Industry files (first benchmarked)** show strongest results: logs -42%, invoices -50%
+5. **Industry files** show strongest results. Note: ce_bpb percentages above are optimistic; actual compression deltas are ~30% smaller
 6. **The original BENCHMARK-RESULTS.md gap** was from experimental features, not quantization

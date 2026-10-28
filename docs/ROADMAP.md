@@ -227,8 +227,8 @@
 > degradación de BPB. Se secuencian de menor a mayor riesgo, con quality gates entre cada paso.
 >
 > **Presupuesto de degradación BPB**: máximo **+5% combinado** sobre Q8 baseline en logs
-> (vertical prioritario). Si se supera, STOP — la ventaja competitiva (-48% vs brotli)
-> se erosiona. A +10% la ventaja cae a -43%, aún viable pero con margen reducido.
+> (vertical prioritario). Si se supera, STOP — la ventaja competitiva (-34% vs brotli,
+> compresión real) se erosiona. A +10% la ventaja cae a ~-28%, margen reducido.
 >
 > **Interdependencias documentadas**:
 > - KV caching + Multi-file parallelism: **independientes**, 0% BPB loss cada una
@@ -361,7 +361,7 @@
 
 | Paso | Optimización | Speedup | B/s acum. (logs) | BPB risk acum. | Gate |
 |---|---|---|---|---|---|
-| Current | SIMD Q8 baseline | 1x | ~62 B/s [MEASURED] | 0% | — |
+| Current | SIMD Q8 baseline | 1x | ~132 B/s [MEASURED 2026-10-28] | 0% | — |
 | R-015 | + KV caching | 2-3x | ~124-186 B/s | 0% | BPB = 0 delta |
 | R-012 | + 8 cores | 8x | ~992-1488 B/s | 0% | BPB = 0 delta |
 | R-016 | + SVD pruning | 3-5x | ~2976-7440 B/s | +2-5% | BPB ≤ +5% |
@@ -406,7 +406,7 @@ Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
 | 2026-10-26 | Benchmark verification — 17 files tested, claims corregidos (Q8: 1.28 BPB) |
 | 2026-10-26 | feat: --quant flag, F32 vs Q8 benchmark (18 files), industry files first benchmarked |
 | 2026-10-26 | Finding: F32 vs Q8 <2.5% diff — Q8 is correct production choice (2.1x faster) |
-| 2026-10-26 | Finding: logs -48%, invoicing -54% vs brotli — strongest verticals confirmed |
+| 2026-10-26 | Finding: logs -48% ce_bpb, invoicing -54% ce_bpb vs brotli (corrected 10-28: actual -34%, -48%) |
 | 2026-10-27 | R-010 parcial: emb-surgery center0.3 benchmarked (14/18 mejora, -1.69% media) |
 | 2026-10-27 | R-010: --emb-surgery añadido a compress, decompress, baseline |
 | 2026-10-27 | R-010: --tau descartado (empeora BPB en todos los valores) |
@@ -430,3 +430,7 @@ Si se alcanza, log archival de <1 GB/día es viable sin tocar el modelo.
 | 2026-10-27 | R-015 (KV caching), R-016 (SVD pruning), R-017 (parallel segments) añadidos |
 | 2026-10-27 | R-012 reposicionado: paso 2 (0% BPB risk, antes de tocar modelo) |
 | 2026-10-27 | Interdependencias documentadas: SVD + parallel segments = degradación compuesta |
+| 2026-10-28 | CORRECCIÓN: benchmark usa compresión real (AZTH) en vez de cross-entropy. BPB real 5-20% mayor. |
+| 2026-10-28 | Cifras corregidas: logs -34% vs brotli (antes -48%), facturae -48% (antes -54%), enwik8 -43% (antes -30%) |
+| 2026-10-28 | Coder efficiency: 80-95% (varía por archivo), no ~95% uniforme como se estimaba |
+| 2026-10-28 | Throughput medido: ~47 tok/s, ~150 B/s (post-SIMD, mejorado vs ~23 tok/s anterior) |

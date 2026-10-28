@@ -17,7 +17,7 @@ Note: this is log MANAGEMENT market, not log ARCHIVAL specifically (narrower).
 
 **Pain**: 2-5 TB/day of logs [UNSOURCED — industry typical, not verified], 5-year retention (BCE, CNMV, GDPR).
 **Validation**: Cribl ($390M ARR Aug 2026 [SOURCED: Sacra/GlobeNewsWire], $3.5B valuation Series E Aug 2024 [SOURCED: Yahoo Finance/GlobeNewsWire], $600M raised, 43 Fortune 100 customers).
-**Our advantage**: -55% vs gzip-9 on apache logs, -49% syslog, -52% openssh [MEASURED: gzip9-brotli11-comparison.csv]. -48% vs brotli-11 on apache, -38% syslog, -39% openssh [MEASURED].
+**Our advantage**: -43% vs gzip-9 on apache logs (actual compression) [MEASURED: benchmark 2026-10-28]. -34% vs brotli-11 on apache (actual compression) [MEASURED 2026-10-28]. Syslog and openssh pending re-measurement with actual compression.
 **CAVEAT**: measured at 10KB only. At 100KB, gzip-9 improves from 0.55 to 0.44 BPB, brotli from 0.47 to 0.33. Redukt at larger sizes is [UNMEASURED] — see R-V04.
 **Target clients**: Banks (Bankinter, Abanca, Kutxabank), telcos (Telefonica, MasMovil), utilities.
 
@@ -28,7 +28,7 @@ Note: this is log MANAGEMENT market, not log ARCHIVAL specifically (narrower).
 - Format: XML Facturae/UBL, 6-year retention
 - Market leaders: SERES (1000M+ docs/year), Edicom (EUR 252.9M revenue 2024 [SOURCED: Valencia Plaza/El Economista], EUR 276.6M in 2025 [SOURCED: Valencia Plaza], 60% net margin [SOURCED: El Economista Jul 2025], 15K-19K clients [SOURCED: GetLatka 15K, ZoomInfo 19K])
 
-**Our advantage on XML**: -54% vs brotli-11 on Facturae (0.406 vs 0.890 BPB), -45% on UBL (0.490 vs 0.888) [MEASURED].
+**Our advantage on XML**: -48% vs brotli-11 on Facturae (0.462 vs 0.890 BPB, actual compression) [MEASURED 2026-10-28]. UBL pending re-measurement (was -45% cross-entropy).
 **BLOCKER**: PDF = 67% of e-invoice storage. PDF compression is [UNMEASURED] — see R-V03.
 
 ### 3. Medical Imaging / PACS (TAM: $3-4B [UNSOURCED])
@@ -54,8 +54,8 @@ Starlink maritime ~$6/GB [ESTIMATE: ~$5000/mo for 1TB plan, varies by region].
 **Use case**: Vessels, mining sites, oil rigs transmitting logs/telemetry over expensive links.
 **Economics** [CALCULATED from unsourced bandwidth price]:
 - Fleet of 100 vessels × 10 GB/day × $6/GB × 365 = $21.9M/year bandwidth
-- With Redukt (-48% at 10KB [MEASURED]): saves $10.5M/year on bandwidth [CALCULATED]
-- CAVEAT: -48% is measured at 10KB. Advantage at larger sizes is [UNMEASURED] (R-V04).
+- With Redukt (-34% actual compression at 10KB [MEASURED 2026-10-28]): saves $7.4M/year on bandwidth [CALCULATED]
+- CAVEAT: -34% is measured at 10KB. Advantage at larger sizes is [UNMEASURED] (R-V04).
 **Blocker**: Throughput (~69 B/s on logs [CALCULATED]) insufficient for 10 GB/day.
 **Status**: Highest value per byte compressed. Viable after throughput Phase 2.
 

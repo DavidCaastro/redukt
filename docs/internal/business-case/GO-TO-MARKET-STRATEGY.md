@@ -10,11 +10,16 @@
 
 ## Executive Summary
 
-Redukt compresses 13/18 benchmark files better than brotli-11, with decisive advantages
-in server logs (-48%) and e-invoicing XML (-54%). The compression technology works.
-The blocking constraint is **throughput**: ~117 B/s makes compute cost exceed storage
+Redukt compresses benchmark files better than brotli-11, with decisive advantages
+in server logs (-34%) and e-invoicing XML (-48%) — measured with actual AZTH compression,
+not cross-entropy estimates. The compression technology works.
+The blocking constraint is **throughput**: ~150 B/s makes compute cost exceed storage
 savings in most conventional scenarios. This document defines the optimal path to a
 first viable, quantifiable, auditable, and reproducible product.
+
+> **CORRECTION (2026-10-28)**: Previous version used cross-entropy BPB for Redukt
+> (5-20% lower than actual compressed file size). All figures updated to actual
+> compression BPB. Only 3 files verified so far; 15 pending re-measurement.
 
 ---
 
@@ -24,11 +29,12 @@ first viable, quantifiable, auditable, and reproducible product.
 
 | Metric | Value | Source |
 |---|---|---|
-| BPB enwik8 10KB (Q8) | 1.2812 | `data/benchmark/results/f32-vs-q8.csv` |
-| vs brotli-11 on logs | **-48%** | apache-access.log benchmark |
-| vs brotli-11 on XML | **-54%** | facturae-batch.xml benchmark |
-| Wins vs brotli-11 | 13/18 files | Silesia + industry corpus |
-| Coder efficiency | 95.27% | CoderMetrics (R-009) |
+| BPB enwik8 10KB (actual AZTH) | 1.3448 | [MEASURED: benchmark --verify 2026-10-28] |
+| BPB enwik8 10KB (cross-entropy) | 1.2812 | `data/benchmark/results/f32-vs-q8.csv` |
+| vs brotli-11 on logs | **-34%** | apache-access.log actual compression [MEASURED 2026-10-28] |
+| vs brotli-11 on XML | **-48%** | facturae-batch.xml actual compression [MEASURED 2026-10-28] |
+| Wins vs brotli-11 | 3/3 verified | 15 files pending re-measurement |
+| Coder efficiency | 80-95% | varies by file compressibility [MEASURED 2026-10-28] |
 | Integrity | CRC-32 + bounds check | AZTH v3 (R-001 to R-004) |
 | Error handling | Result<> propagation | R-006, zero panics in codec |
 | SIMD speedup (Q8 matmul) | 6.7x AVX2, 14.5x VNNI | R-011 micro-benchmark |
@@ -39,8 +45,7 @@ first viable, quantifiable, auditable, and reproducible product.
 
 | Constraint | Value | Source | Impact |
 |---|---|---|---|
-| Throughput (pre-SIMD) | 27-183 B/s (mean 80 B/s) | [CALCULATED from CSV] | ~4,000-8,000x slower than brotli-11 |
-| Throughput (post-SIMD, est.) | ~35-238 B/s (mean ~104 B/s) | [ESTIMATE: ×1.3 from R-011] | Post-SIMD CSV not yet measured (R-V01) |
+| Throughput (post-SIMD) | ~132-164 B/s (mean ~150 B/s) | [MEASURED: benchmark 2026-10-28] | ~3,300x slower than brotli-11 |
 | End-to-end SIMD speedup | ~1.3x (memory-bound) | [MEASURED: simd-benchmark.md] | Insufficient alone |
 | Max file size | ~4 GB (u32 TOTAL_BYTES) | [MEASURED: R-007 validation] | Limits large file use cases |
 | High-entropy data | +20% to +54% worse than brotli | [MEASURED: ooffice, osdb, sao, x-ray] | Medical imaging, astronomy, databases |
@@ -76,12 +81,12 @@ based on brotli-11 ~0.5-1 MB/s vs Redukt mean ~80 B/s [CALCULATED].
 
 **Economics** (vessel transmitting 10 GB/day of logs):
 - Bandwidth cost: 10 GB x $6/GB = $60/day = **$21,900/year**
-- With Redukt (-48%): saves $10,512/year per vessel
-- Fleet of 100 vessels: **$1.05M/year savings**
+- With Redukt (-34% actual compression): saves $7,446/year per vessel
+- Fleet of 100 vessels: **$745K/year savings**
 
-**Throughput required**: 10 GB/day at 69 B/s (logs) [CALCULATED from CSV]:
-- 1 core: 10,000,000,000 / 69 / 86400 = 1,678 days (impossible)
-- 8 cores: 210 days (still impossible)
+**Throughput required**: 10 GB/day at ~132 B/s (logs) [MEASURED 2026-10-28]:
+- 1 core: 10,000,000,000 / 132 / 86400 = 877 days (impossible)
+- 8 cores: 110 days (still impossible)
 - Need ~1 KB/s per core + 116 cores for 10 GB/day [CALCULATED: 10e9/(1000×86400)=116]
 
 **Verdict**: Highest value per byte compressed. Viable only after throughput phase.
@@ -185,8 +190,8 @@ Requirements:
 Structure:
 1. Problem: archival storage costs growing faster than capacity
 2. Approach: neural compression (RWKV-7 + Context Mixing + Arithmetic Coding)
-3. Results: 13/17 files beat brotli-11 [MEASURED], -48% on logs, -54% on XML (at 10KB)
-4. Limitations: throughput (mean 80 B/s pre-SIMD [CALCULATED]), high-entropy data, format lock-in
+3. Results: 3/3 verified files beat brotli-11 [MEASURED], -34% on logs, -48% on XML (actual compression, 10KB)
+4. Limitations: throughput (mean ~150 B/s post-SIMD [MEASURED]), high-entropy data, format lock-in
 5. **CAVEAT**: All BPB results measured at 10KB. Scale behavior unknown (R-V04).
 5. Architecture: two-tier (fast compressor inline → Redukt batch archival)
 6. Reproducibility: all benchmarks runnable with public tools
@@ -202,8 +207,8 @@ Structure:
 
 ### Optimization Sequence (ordered by BPB risk)
 
-**Baseline**: 62 B/s on logs [MEASURED: post-simd-benchmark.csv, apache-access.log].
-Mean across all files: 50.8 B/s [MEASURED: R-V01].
+**Baseline**: ~132 B/s on logs [MEASURED: benchmark 2026-10-28, apache-access.log].
+Previous measurement (R-V01): 62 B/s — improved with current binary and SIMD optimizations.
 
 **Rejected**: Q4 quantization — +13.3% BPB regression AND 7.6x slower [MEASURED: R-V05].
 
@@ -227,7 +232,7 @@ Steps 3-4 carry **BPB degradation risk**:
 - Parallel segments break context at segment boundaries — each segment starts "cold".
 - **Combined**: if SVD costs +4% BPB and segments cost +3% BPB, the combined effect
   could be +8% or more (not +7%) due to interaction effects [UNMEASURED].
-- At +8% BPB degradation on logs, the advantage vs brotli drops from -48% to ~-44%.
+- At +8% BPB degradation on logs, the advantage vs brotli drops from -34% to ~-29%.
   Still viable, but margin is thinner.
 
 ### Quality Gates
@@ -245,11 +250,11 @@ Each step has a mandatory gate before proceeding:
 
 | Milestone | B/s (logs) | Formula | BPB loss | Enables |
 |---|---|---|---|---|
-| Current | ~62 | [MEASURED: R-V01] | 0% | Benchmark tool only |
-| +R-015 | ~124-186 | [PROJECTION: 62 × 2-3] | 0% | — |
-| +R-012 (8 cores) | ~992-1488 | [PROJECTION: above × 8] | 0% | **<1 GB/day log archival** |
-| +R-016 (SVD) | ~2976-7440 | [PROJECTION: above × 3-5] | +2-5% | ~1-6 GB/day |
-| +R-017 (segments) | ~5952-29760 | [PROJECTION: above × 2-4] | +3-8%? | ~5-25 GB/day |
+| Current | ~132 | [MEASURED: benchmark 2026-10-28] | 0% | Benchmark tool only |
+| +R-015 | ~264-396 | [PROJECTION: 132 × 2-3] | 0% | — |
+| +R-012 (8 cores) | ~2112-3168 | [PROJECTION: above × 8] | 0% | **~2-3 GB/day log archival** |
+| +R-016 (SVD) | ~6336-15840 | [PROJECTION: above × 3-5] | +2-5% | ~5-14 GB/day |
+| +R-017 (segments) | ~12672-63360 | [PROJECTION: above × 2-4] | +3-8%? | ~11-55 GB/day |
 
 **Nota crítica sobre multiplicatividad**:
 - R-012 es genuinamente multiplicativo (paralelismo puro, procesos independientes)
@@ -259,10 +264,10 @@ Each step has a mandatory gate before proceeding:
 
 ### Minimum Viable Target
 
-**R-015 + R-012 (8 cores) = ~1 KB/s en logs, 0% BPB loss.**
+**R-015 + R-012 (8 cores) = ~2-3 KB/s en logs, 0% BPB loss.**
 
-Esto es suficiente para un PoC de log archival a escala modesta (<1 GB/day = ~860 MB
-que a 1 KB/s requiere ~10 días, viable solo si el archival es batch semanal/mensual).
+Esto es suficiente para un PoC de log archival a escala modesta (~2 GB/day a 2 KB/s
+requiere ~12 días, viable para batch semanal/mensual).
 
 Para viabilidad real (1 TB/day), se necesitan R-016 + R-017 o GPU offload.
 Pero el PoC puede ejecutarse antes de resolver throughput completo.
@@ -273,7 +278,7 @@ Pero el PoC puede ejecutarse antes de resolver throughput completo.
 
 ### Why Log Archival is the Optimal First Vertical
 
-1. **Strongest competitive advantage**: -48% vs brotli (largest measured delta)
+1. **Strongest competitive advantage**: -34% vs brotli on logs (actual compression) [MEASURED]
 2. **Low-entropy data**: text logs play to our strength (repetitive patterns, natural language)
 3. **Predictable volume**: X GB/day, easy to calculate ROI
 4. **Mandatory retention**: regulations (SOX, GDPR, BCE, CNMV) force multi-year storage
@@ -360,7 +365,7 @@ Microsoft and NVIDIA validate the approach but target different verticals.
 
 **Phase 1 is the correct first investment** because:
 
-1. **Zero throughput dependency**: works with current 117 B/s
+1. **Zero throughput dependency**: works with current ~150 B/s
 2. **Lowest cost**: minimal new code (benchmark command + documentation)
 3. **Maximum information gain**: real market feedback before heavy engineering
 4. **Builds foundation**: every future phase benefits from credibility established here
