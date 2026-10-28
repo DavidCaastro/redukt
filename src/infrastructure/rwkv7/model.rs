@@ -180,7 +180,6 @@ pub struct Scratch {
     ffn_proj: Vec<f32>,
     ffn_act: Vec<f32>,
     // Per-head (N*N)
-    ab: Vec<f32>,
     s_ab: Vec<f32>,
     // Per-head (N)
     kk_a: Vec<f32>,
@@ -210,7 +209,7 @@ impl Scratch {
             lora_d: vec![0.0; d], tm_out: vec![0.0; d], cm_out: vec![0.0; d],
             lora_tmp: vec![0.0; max_lora],
             ffn_proj: vec![0.0; d_ffn], ffn_act: vec![0.0; d_ffn],
-            ab: vec![0.0; nn], s_ab: vec![0.0; nn],
+            s_ab: vec![0.0; nn],
             kk_a: vec![0.0; n], neg_kk: vec![0.0; n], out_h: vec![0.0; n],
             v_q: vec![0; d_ffn.max(d)],
             perf_layers_us: 0, perf_head_us: 0,
@@ -850,16 +849,21 @@ fn time_mixing_scratch(
     }
 
     // Step 9: State update (per head)
-    // R-019: vk outer product inlined — eliminates N×N buffer + outer_product_into call
+    // R-015: Rank-1 factorization — O(N³) → O(N²) per head.
+    // Algebraic identity: state @ outer_product(u, v) = outer_product(state @ u, v)
+    // Replaces mat_mat_mul_small (64³=262K FMAs) with mat_vec + outer_product (2×64²=8K ops).
+    // 32x fewer FLOPs per head × 12 heads × 12 layers = 37M FLOPs saved per token.
     for head in 0..h {
         let ho = head * n * n;
         let hd = head * n;
 
         for j in 0..n { s.kk_a[j] = s.kk[hd + j] * s.a[hd + j]; }
         for j in 0..n { s.neg_kk[j] = -s.kk[hd + j]; }
-        outer_product_into(&mut s.ab, &s.neg_kk, &s.kk_a);
 
-        mat_mat_mul_small_into(&mut s.s_ab, &state[ho..ho + n * n], &s.ab, n);
+        // temp = state @ neg_kk (N²), then s_ab = outer_product(temp, kk_a) (N²)
+        mat_vec_mul_small_into(&mut s.out_h, &state[ho..ho + n * n], &s.neg_kk, n);
+        outer_product_into(&mut s.s_ab, &s.out_h, &s.kk_a);
+
         for i in 0..n {
             for j in 0..n {
                 let idx = ho + i * n + j;

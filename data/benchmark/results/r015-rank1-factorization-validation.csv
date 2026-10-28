@@ -1,0 +1,19 @@
+test,file,mode,round,bpb,tok_s,time_s,notes
+ab_throughput,enwik8,scalar,1,1.279167,64.6,46.5,REDUKT_NO_SIMD=1
+ab_throughput,enwik8,simd,1,1.281455,95.1,31.6,
+ab_throughput,enwik8,scalar,2,1.279167,66.1,45.4,REDUKT_NO_SIMD=1
+ab_throughput,enwik8,simd,2,1.281455,94.7,31.7,
+ab_throughput,enwik8,scalar,3,1.279167,66.3,45.4,REDUKT_NO_SIMD=1
+ab_throughput,enwik8,simd,3,1.281455,94.6,31.8,
+multifile_bpb,enwik8,simd,,1.281455,94.8,,from ab mean
+multifile_bpb,enwik8,scalar,,1.279167,65.7,,from ab mean
+multifile_bpb,apache-access.log,simd,,0.245488,95.1,37.6,
+multifile_bpb,apache-access.log,scalar,,0.244871,66.5,53.7,
+multifile_bpb,linux-syslog.log,simd,,0.361174,96.5,41.7,
+multifile_bpb,linux-syslog.log,scalar,,0.362449,66.8,60.2,
+multifile_bpb,openssh-auth.log,simd,,0.474113,95.4,42.0,
+multifile_bpb,openssh-auth.log,scalar,,0.475260,66.1,60.6,
+comparison_vs_pre_r015,enwik8,scalar_pre_r015,,1.281205,32.8,,R-022 validation baseline
+comparison_vs_pre_r015,enwik8,simd_pre_r015,,1.279568,40.4,,R-022 validation baseline
+comparison_vs_pre_r015,enwik8,scalar_post_r015,,1.279167,65.7,,rank-1 factorization scalar
+comparison_vs_pre_r015,enwik8,simd_post_r015,,1.281455,94.8,,rank-1 factorization SIMD

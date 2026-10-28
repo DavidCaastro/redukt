@@ -1061,6 +1061,7 @@ pub fn outer_product_into(out: &mut [f32], a: &[f32], b: &[f32]) {
     }
 }
 
+#[allow(dead_code)] // R-015: no longer used in hot path (rank-1 factorization)
 pub fn mat_mat_mul_small_into(c: &mut [f32], a: &[f32], b: &[f32], n: usize) {
     for v in c[..n * n].iter_mut() { *v = 0.0; }
     for i in 0..n {
@@ -1636,6 +1637,44 @@ mod tests {
             assert!(err < 5e-7, "tanh: got {} expected {} err {:e}",
                 vals[i], expected[i], err);
         }
+    }
+
+    // ---- R-015: Rank-1 factorization correctness ----
+
+    #[test]
+    fn test_rank1_factorization_equivalence() {
+        // Verify: state @ outer_product(u, v) ≈ outer_product(state @ u, v)
+        let n = 64;
+        let nn = n * n;
+
+        // Create synthetic state matrix and vectors
+        let state: Vec<f32> = (0..nn).map(|i| ((i as f32) * 0.007).sin() * 2.0).collect();
+        let u: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).cos() * 1.5).collect();
+        let v: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.019).sin() * 1.0).collect();
+
+        // Method 1 (original): ab = outer_product(u, v), result = state @ ab
+        let mut ab = vec![0.0f32; nn];
+        outer_product_into(&mut ab, &u, &v);
+        let mut result_original = vec![0.0f32; nn];
+        mat_mat_mul_small_into(&mut result_original, &state, &ab, n);
+
+        // Method 2 (factored): temp = state @ u, result = outer_product(temp, v)
+        let mut temp = vec![0.0f32; n];
+        mat_vec_mul_small_into(&mut temp, &state, &u, n);
+        let mut result_factored = vec![0.0f32; nn];
+        outer_product_into(&mut result_factored, &temp, &v);
+
+        let mut max_err = 0.0f32;
+        let mut mismatches = 0;
+        for i in 0..nn {
+            let err = (result_original[i] - result_factored[i]).abs();
+            if err > max_err { max_err = err; }
+            if result_original[i].to_bits() != result_factored[i].to_bits() {
+                mismatches += 1;
+            }
+        }
+        eprintln!("rank-1 factorization: {}/{} bit mismatches, max_err={:e}", mismatches, nn, max_err);
+        assert!(max_err < 1e-4, "rank-1 max error {:e} too large", max_err);
     }
 
     // ---- Throughput benchmarks (run with --ignored --nocapture) ----
