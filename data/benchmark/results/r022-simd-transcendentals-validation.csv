@@ -1,0 +1,15 @@
+test,file,mode,round,bpb,tok_s,time_s,notes
+ab_throughput,enwik8,scalar,1,1.281205,35.0,85.9,REDUKT_NO_SIMD=1
+ab_throughput,enwik8,simd,1,1.279568,42.9,70.1,
+ab_throughput,enwik8,scalar,2,1.281205,33.1,90.7,REDUKT_NO_SIMD=1
+ab_throughput,enwik8,simd,2,1.279568,42.1,71.5,
+ab_throughput,enwik8,scalar,3,1.281205,30.2,99.6,REDUKT_NO_SIMD=1 thermal degradation visible
+ab_throughput,enwik8,simd,3,1.279568,36.2,83.1,thermal degradation visible
+multifile_bpb,enwik8,simd,,1.279568,42.9,,from ab round 1
+multifile_bpb,enwik8,scalar,,1.281205,35.0,,from ab round 1
+multifile_bpb,apache-access.log,simd,,0.244638,24.5,145.8,thermally degraded from prior runs
+multifile_bpb,apache-access.log,scalar,,0.244821,35.8,99.7,ran after cooldown
+multifile_bpb,linux-syslog.log,simd,,0.360471,44.8,89.8,
+multifile_bpb,linux-syslog.log,scalar,,0.361655,37.3,108.0,
+multifile_bpb,openssh-auth.log,simd,,0.474473,44.8,89.5,
+multifile_bpb,openssh-auth.log,scalar,,0.474918,35.8,112.1,

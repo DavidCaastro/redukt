@@ -347,8 +347,8 @@
 
 ### R-022: SIMD transcendentals (tanh, sigmoid, exp) — COMPLETADO
 - **Estado**: COMPLETADO (2026-10-28)
-- **Riesgo BPB**: delta +0.11% (1.2781 → 1.2796) — within polynomial approximation tolerance
-- **Impacto real**: +32.6% end-to-end throughput (35 → 46.4 tok/s) [MEASURED]
+- **Riesgo BPB**: delta -0.13% (1.2812 → 1.2796) — polynomial approx marginally better on all 4 tested files
+- **Impacto real**: +23.2% end-to-end throughput (controlled A/B, 3 rounds) [MEASURED]
 - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/rwkv7/model.rs`
 - **Implementación**:
   - Cephes-style `fast_exp_ps` (AVX2): Cody-Waite reduction + Horner degree-5 polynomial
@@ -372,12 +372,25 @@
   - sigmoid_inplace: 1800 ns (1.00x — LLVM auto-vectorizes simple loop)
 - **Cross-path determinism**: same-tier deterministic. SIMD polynomial ≠ scalar stdlib
   (different computation → different rounding). `REDUKT_NO_SIMD=1` forces scalar path.
+- **Controlled A/B validation** [MEASURED: r022-simd-transcendentals-validation.csv]:
+  - 3 rounds alternating SIMD/scalar on same build, enwik8 10KB:
+    - Scalar mean: 32.8 tok/s (range 30.2-35.0, thermal variance)
+    - SIMD mean: 40.4 tok/s (range 36.2-42.9, thermal variance)
+    - Per-round ratios: 1.23x, 1.27x, 1.20x → mean **1.23x (+23.2%)**
+  - Multi-file BPB (SIMD vs scalar, 4 files):
+    - enwik8: 1.2796 vs 1.2812 (delta -0.128%)
+    - apache-access: 0.2446 vs 0.2448 (delta -0.075%)
+    - linux-syslog: 0.3605 vs 0.3617 (delta -0.327%)
+    - openssh-auth: 0.4745 vs 0.4749 (delta -0.094%)
+    - ALL 4 files: SIMD BPB marginally BETTER (no regression)
+  - BPB perfectly deterministic within each mode (3 rounds identical)
+  - **Correction**: initial claim of +32.6% was inflated (cross-session comparison)
 - **Quality gate PASSED**:
   - [x] 107 tests passed (7 new), 0 failed
-  - [x] BPB: 1.2796 (delta +0.11% vs 1.2781 baseline — polynomial approximation)
+  - [x] BPB: no regression on any tested file (4/4 improved marginally)
   - [x] Roundtrip: compress → decompress → CRC-32 verified → byte-identical
   - [x] Coder efficiency: 95.93% [MEASURED]
-  - [x] Throughput: 46.4 tok/s (+32.6% vs 35 tok/s baseline) [MEASURED]
+  - [x] Throughput: +23.2% controlled A/B (not +32.6% as initially reported) [MEASURED]
 
 ### R-HW1: HardwareGovernor — regulación dinámica de recursos
 - **Estado**: PENDIENTE
@@ -437,10 +450,11 @@
 
 #### Paso 1.5: R-022 — SIMD transcendentals ✅ COMPLETADO
 - **Estado**: COMPLETADO (2026-10-28)
-- **BPB delta**: +0.11% (1.2781 → 1.2796) — polynomial approximation, within tolerance
-- **Speedup real**: +32.6% end-to-end (35 → 46.4 tok/s) [MEASURED]
-- **Key insight**: speedup comes from fused ops (avoid 3 passes over D=768), not raw SIMD exp
-- **Quality gate PASSED**: 107 tests, roundtrip byte-identical, CRC-32 verified
+- **BPB delta**: -0.13% (improved, 4/4 files) [MEASURED: controlled A/B, validation CSV]
+- **Speedup real**: +23.2% controlled A/B (3 rounds, mean SIMD/scalar ratio) [MEASURED]
+- **Correction**: initial +32.6% claim was inflated by cross-session thermal variance
+- **Key insight**: speedup from fused ops (avoid 3 passes over D=768), not raw SIMD exp
+- **Quality gate PASSED**: 107 tests, roundtrip byte-identical, CRC-32 verified, 4-file BPB OK
 
 #### Paso 2: R-015 — KV Batch Caching (0% BPB risk)
 - **Estado**: PENDIENTE
@@ -515,7 +529,7 @@
 | R-018 ✅ | + Coder efficiency | ~1x | ~150 B/s (mejora BPB, no throughput) | 0% (mejora) | BPB mejora |
 | R-019 | + Math refactor + zero-alloc | 1.3-1.5x | ~195-225 B/s | 0% | BPB bit-exact |
 | R-021 ✅ | + F32 AVX2 noFMA | 1.19x | ~232-268 B/s [MEASURED: +19.2%] | 0% | BPB bit-exact |
-| R-022 ✅ | + SIMD transcendentals | 1.33x | ~308-356 B/s [MEASURED: +32.6%] | +0.11% | BPB +0.11% |
+| R-022 ✅ | + SIMD transcendentals | 1.23x | ~285-330 B/s [MEASURED: +23.2% A/B] | -0.13% | BPB -0.13% (improved) |
 | R-015 | + KV caching | 1.5-2x | ~338-567 B/s | 0% | BPB = 0 delta |
 | R-012 | + 10 cores | 10x | ~3375-5670 B/s | 0% | BPB = 0 delta |
 | R-016 | + SVD pruning | 3-5x | ~10125-28350 B/s | +2-3% | BPB ≤ +3% |
@@ -609,6 +623,9 @@ R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de
 | 2026-10-28 | Presupuesto BPB +5%→+3% en R-016/R-017 quality gates |
 | 2026-10-28 | Multi-file scaling actualizado: 10 cores (no 8) por PROTO-05 results |
 | 2026-10-28 | R-021 COMPLETADO: F32 AVX2 noFMA, +19.2% throughput, same-path roundtrip OK |
-| 2026-10-28 | R-022 COMPLETADO: SIMD transcendentals, +32.6% throughput (35→46.4 tok/s), BPB +0.11% |
+| 2026-10-28 | R-022 COMPLETADO: SIMD transcendentals, +23.2% controlled A/B (corregido de +32.6%) |
 | 2026-10-28 | R-022: Cephes fast_exp_ps + fused ops (decay_sigmoid, sigmoid_add, sigmoid_mix) |
 | 2026-10-28 | R-022: 107 tests (7 new), accuracy <2.4e-7 max error, roundtrip byte-identical |
+| 2026-10-28 | R-022 VALIDATION: controlled A/B (3 rounds), multi-file BPB (4 files), scalar baseline |
+| 2026-10-28 | R-022 CORRECTION: BPB -0.13% (improved, not +0.11% degraded), throughput +23.2% (not +32.6%) |
+| 2026-10-28 | R-022: thermal variance confirmed — all measurements subject to Dell Vostro throttling |
