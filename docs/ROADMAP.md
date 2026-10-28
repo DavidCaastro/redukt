@@ -596,10 +596,10 @@ Todas las optimizaciones 0% BPB risk completadas. R-016 (SVD) evaluado y abortad
 R-017 (parallel segments) bloqueado — requiere evaluación independiente.
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
-**Fase 2 (2026-10-29)**: R-023 → R-025 → R-024 → R-026.
-R-023 (CDF 24-bit) primero: 0% BPB risk, solo coder.rs, mejora directa en coder efficiency.
-R-025 (prefetch) segundo: 0% BPB risk, solo tensor.rs, micro-optimización rápida.
-R-024 (Q4 storage) tercero: 0% BPB risk pero requiere nuevo QuantMatrix variant + dequant path.
+**Fase 2 (2026-10-29)**: R-023 N/A (ya implementado) → R-025 → R-024 → R-026.
+R-023 (CDF 24-bit): YA IMPLEMENTADO — coder.rs ya usa TOP=2^24 desde el diseño original.
+R-025 (prefetch) primero: 0% BPB risk, solo tensor.rs, micro-optimización rápida.
+R-024 (Q4 storage) segundo: 0% BPB risk pero requiere nuevo QuantMatrix variant + dequant path.
 R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere validación BPB.
 
 ### Fase 2: Técnicas identificadas por auditoría de exhaustividad (2026-10-29)
@@ -608,22 +608,14 @@ R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere
 > Estas técnicas fueron identificadas tras investigación exhaustiva confirmando
 > que todas las optimizaciones algebraicas/SIMD/codec conocidas están agotadas.
 
-#### R-023: CDF Precision Upgrade (16 → 24 bit)
-- **Estado**: PENDIENTE (prioridad INMEDIATA)
+#### R-023: CDF Precision Upgrade (16 → 24 bit) — YA IMPLEMENTADO
+- **Estado**: NO APLICA (2026-10-29)
 - **Origen**: Paper Nacrith (2026) — arquitectura casi idéntica a Redukt
-- **Riesgo BPB**: NINGUNO — solo mejora coder efficiency
-- **Impacto estimado**: Reduce floor overhead de ~2 bits/token a ~0.004 bits/token (V=65536)
-- **Descripción**: El range coder actual usa CDF de 16 bits (2^16 = 65536 niveles).
-  Con vocabulario V=65536, el probability floor consume ~2 bits/token de overhead.
-  Upgrade a 24 bits (2^24 = 16M niveles) reduce el floor 256x → overhead despreciable.
-- **Archivos**: `src/domain/coder.rs`
-- **Subtareas**:
-  - [ ] Audit current coder: identificar todas las constantes de precisión CDF
-  - [ ] Implementar CDF 24-bit con range renormalization compatible
-  - [ ] Verificar backward compat: decoder v4 debe seguir leyendo archivos 16-bit
-  - [ ] Benchmark BPB: 18 archivos, comparar coder efficiency antes/después
-  - [ ] **Quality gate**: roundtrip byte-identical, BPB <= anterior en todos los archivos
-  - [ ] Actualizar FORMAT-SPEC.md si cambia el wire format
+- **Hallazgo**: El range coder de Redukt YA usa CDF de 24 bits (`const TOP: u32 = 1 << 24`
+  en `src/domain/coder.rs:12`). El paper sugería upgrade de 16→24, pero nuestro coder
+  fue diseñado directamente con 24-bit precision desde el inicio.
+- **Floor overhead actual**: V=65536, TOP=2^24 → min_alloc/total = 0.39% — despreciable.
+- **Conclusión**: No hay cambio que hacer. La técnica del paper ya está presente.
 
 #### R-024: Q4 Storage → Q8 Compute
 - **Estado**: PENDIENTE (prioridad INMEDIATA)
@@ -643,20 +635,33 @@ R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere
   - [ ] **Quality gate**: BPB bit-exact con Q8 (misma precisión de cómputo)
   - [ ] Roundtrip byte-identical
 
-#### R-025: Software Prefetching
-- **Estado**: PENDIENTE (prioridad INMEDIATA)
-- **Riesgo BPB**: NINGUNO — no cambia cómputo, solo timing de cache loads
-- **Impacto estimado**: +5-15% en matmul kernels (hide L2/L3 miss latency)
-- **Descripción**: Insertar `_mm_prefetch(_MM_HINT_T0)` en inner loops de matmul
-  para pre-cargar la siguiente línea de cache mientras se procesa la actual.
-  Especialmente efectivo en Q8 matmul donde access pattern es predecible.
+#### R-025: Software Prefetching ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-29)
+- **Riesgo BPB**: NINGUNO — confirmado: BPB 1.281455 idéntico con/sin prefetch
+- **Impacto real**: +3.2% end-to-end throughput [MEASURED: 4 rounds, order-controlled A/B]
+- **Descripción**: `_mm_prefetch(_MM_HINT_T0)` en los 3 SIMD kernels (VNNI, AVX2 Q8, F32 noFMA).
+  Dos estrategias: (1) prefetch primeras cache lines del siguiente bloque de 4 filas,
+  (2) prefetch 2-4 chunks adelante en inner loop para ocultar latencia L2 (~14 cycles).
 - **Archivos**: `src/domain/tensor.rs`
+- **Control A/B**: `REDUKT_NO_PREFETCH=1` desactiva prefetch para benchmarking.
+- **Micro-benchmark**: inconcluso en 768×768 aislado (matrices caben en L2, hardware prefetcher
+  ya maneja el patrón secuencial). El beneficio es end-to-end cuando múltiples layers
+  compiten por cache y el working set excede L2.
+- **End-to-end (4 rounds, enwik8 10KB Q8)** [MEASURED]:
+  - R1 (PF first): prefetch 93.9 vs no-prefetch 89.2 (+5.3%)
+  - R2 (PF first): prefetch 95.2 vs no-prefetch 93.2 (+2.1%)
+  - R3 (NoPF first): prefetch 96.9 vs no-prefetch 94.7 (+2.3%)
+  - R4 (NoPF first): prefetch 96.0 vs no-prefetch 93.1 (+3.1%)
+  - Mean: 95.5 vs 92.6 tok/s = **+3.2%** [MEASURED]
+  - BPB: 1.281455 identical all 8 runs (0.000 delta)
 - **Subtareas**:
-  - [ ] Añadir prefetch en `mat_vec_mul_avx2_q8_into` (next row prefetch)
-  - [ ] Añadir prefetch en `mat_vec_mul_avx2_nofma_into` (F32 kernel)
-  - [ ] Micro-benchmark: matmul 768×768 con/sin prefetch (controlled A/B)
-  - [ ] End-to-end benchmark: throughput con/sin prefetch
-  - [ ] **Quality gate**: BPB bit-exact (prefetch no cambia valores)
+  - [x] Prefetch en `q8_mat_vec_mul_vnni_into` (next row block + inner loop 2 chunks ahead)
+  - [x] Prefetch en `q8_mat_vec_mul_avx2_into` (next row block + inner loop 2 chunks ahead)
+  - [x] Prefetch en `mat_vec_mul_avx2_nofma_into` (next row block + inner loop 4 chunks ahead)
+  - [x] `REDUKT_NO_PREFETCH=1` env var for controlled A/B
+  - [x] Micro-benchmark: inconcluso (L2-resident matrices, <3% delta within noise)
+  - [x] End-to-end benchmark: +3.2% confirmed (4 rounds, order-controlled)
+  - [x] **Quality gate PASSED**: BPB identical, 111 tests pass, zero warnings
 
 #### R-026: iGPU Offload (Intel Iris Xe) — Módulo opcional
 - **Estado**: PENDIENTE (prioridad INMEDIATA)
@@ -779,3 +784,7 @@ R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere
 | 2026-10-29 | R-026 añadido: iGPU Offload Intel Iris Xe (módulo opcional --gpu, Vulkan FFI zero-dep) |
 | 2026-10-29 | Fase 2 secuencia: R-023→R-025→R-024→R-026 (por complejidad creciente) |
 | 2026-10-29 | docs: optimization-exhaustion-audit.md — 350 líneas, 10 secciones, 10 referencias |
+| 2026-10-29 | R-023 NO APLICA: coder.rs ya usa CDF 24-bit (TOP=2^24) desde diseño original |
+| 2026-10-29 | R-025 COMPLETADO: software prefetch en 3 kernels SIMD, +3.2% e2e [MEASURED: 4 rounds] |
+| 2026-10-29 | R-025: BPB 1.281455 idéntico con/sin prefetch (0.000 delta), 111 tests pass |
+| 2026-10-29 | R-025: REDUKT_NO_PREFETCH=1 env var añadida para controlled A/B benchmarking |

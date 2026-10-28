@@ -246,6 +246,7 @@ unsafe fn q8_mat_vec_mul_vnni_into(out: &mut [f32], mat: &Q8Tensor, v_q: &[i8], 
 
     let bias = _mm256_set1_epi8(-128i8); // 0x80 for XOR trick
     let chunks = cols / 32;
+    let prefetch = !no_prefetch_override();
 
     let q = mat.q_data.as_ptr();
     let v_ptr = v_q.as_ptr();
@@ -264,8 +265,27 @@ unsafe fn q8_mat_vec_mul_vnni_into(out: &mut [f32], mat: &Q8Tensor, v_q: &[i8], 
         let base2 = base1 + cols;
         let base3 = base2 + cols;
 
+        // Prefetch first cache lines of next 4-row block
+        if prefetch && r + 4 < rows {
+            let nb = (r + 4) * cols;
+            _mm_prefetch(q.add(nb) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + 2 * cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + 3 * cols) as *const i8, _MM_HINT_T0);
+        }
+
         for ch in 0..chunks {
             let off = ch * 32;
+
+            // Prefetch 2 chunks ahead to hide L2 latency
+            if prefetch && ch + 2 < chunks {
+                let poff = (ch + 2) * 32;
+                _mm_prefetch(q.add(base0 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(base1 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(base2 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(base3 + poff) as *const i8, _MM_HINT_T0);
+            }
+
             let vb = _mm256_loadu_si256(v_ptr.add(off) as *const __m256i);
 
             let w0 = _mm256_loadu_si256(q.add(base0 + off) as *const __m256i);
@@ -316,6 +336,7 @@ unsafe fn q8_mat_vec_mul_avx2_into(
     let cols = mat.cols;
     let chunks = cols / 32;
     let rem_start = chunks * 32;
+    let prefetch = !no_prefetch_override();
 
     let q = mat.q_data.as_ptr();
     let v_ptr = v_q.as_ptr();
@@ -334,9 +355,27 @@ unsafe fn q8_mat_vec_mul_avx2_into(
         let b2 = b1 + cols;
         let b3 = b2 + cols;
 
+        // Prefetch first cache lines of next 4-row block
+        if prefetch && r + 4 < rows {
+            let nb = (r + 4) * cols;
+            _mm_prefetch(q.add(nb) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + 2 * cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(q.add(nb + 3 * cols) as *const i8, _MM_HINT_T0);
+        }
+
         for ch in 0..chunks {
             let off = ch * 32;
             let vb = _mm256_loadu_si256(v_ptr.add(off) as *const __m256i);
+
+            // Prefetch 2 chunks ahead to hide L2 latency (~14 cycles)
+            if prefetch && ch + 2 < chunks {
+                let poff = (ch + 2) * 32;
+                _mm_prefetch(q.add(b0 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(b1 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(b2 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(q.add(b3 + poff) as *const i8, _MM_HINT_T0);
+            }
 
             macro_rules! dot {
                 ($base:expr, $acc:expr) => {{
@@ -819,6 +858,7 @@ unsafe fn mat_vec_mul_avx2_nofma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]
     let v = vec.as_ptr();
     let chunks = cols / 8;
     let rem_start = chunks * 8;
+    let prefetch = !no_prefetch_override();
 
     let rows_4 = rows / 4 * 4;
     for r in (0..rows_4).step_by(4) {
@@ -832,8 +872,27 @@ unsafe fn mat_vec_mul_avx2_nofma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]
         let b2 = b1 + cols;
         let b3 = b2 + cols;
 
+        // Prefetch first cache lines of next 4-row block
+        if prefetch && r + 4 < rows {
+            let nb = (r + 4) * cols;
+            _mm_prefetch(m.add(nb) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(m.add(nb + cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(m.add(nb + 2 * cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(m.add(nb + 3 * cols) as *const i8, _MM_HINT_T0);
+        }
+
         for ch in 0..chunks {
             let off = ch * 8;
+
+            // Prefetch 4 chunks ahead (32 floats = 128 bytes = 2 cache lines)
+            if prefetch && ch + 4 < chunks {
+                let poff = (ch + 4) * 8;
+                _mm_prefetch(m.add(b0 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(m.add(b1 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(m.add(b2 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(m.add(b3 + poff) as *const i8, _MM_HINT_T0);
+            }
+
             let vv = _mm256_loadu_ps(v.add(off));
             a0 = _mm256_add_ps(a0, _mm256_mul_ps(_mm256_loadu_ps(m.add(b0 + off)), vv));
             a1 = _mm256_add_ps(a1, _mm256_mul_ps(_mm256_loadu_ps(m.add(b1 + off)), vv));
@@ -996,6 +1055,11 @@ pub fn quantize_vec_i8_into(v: &[f32], q: &mut [i8]) -> f32 {
 /// Returns true if REDUKT_NO_SIMD env var is set (forces scalar fallback).
 fn no_simd_override() -> bool {
     std::env::var("REDUKT_NO_SIMD").map(|v| v == "1").unwrap_or(false)
+}
+
+/// Returns true if REDUKT_NO_PREFETCH env var is set (disables software prefetch).
+fn no_prefetch_override() -> bool {
+    std::env::var("REDUKT_NO_PREFETCH").map(|v| v == "1").unwrap_or(false)
 }
 
 /// Q8 mat-vec into pre-allocated output + reusable v_q buffer.
