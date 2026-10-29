@@ -188,6 +188,15 @@ This detects:
 9. Write output file
 ```
 
+### Streaming Mode (R-014)
+
+When `--streaming` is specified (v4 files only):
+- Output bytes are written progressively to disk via `BufWriter`
+- CRC-32 is computed incrementally (not from final buffer)
+- Peak memory reduced from O(file_size) to O(buffer_size)
+- On CRC mismatch: output file is deleted, error reported
+- Without `--streaming`: behavior unchanged (full buffer + verify + write)
+
 ### v2/v3 (token-count driven, legacy)
 
 ```

@@ -808,6 +808,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
+    let mut streaming = false;
     let mut verbose = false;
 
     let mut i = 0;
@@ -818,6 +819,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
+            "--streaming" => { streaming = true; }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -897,11 +899,36 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let t_start = std::time::Instant::now();
 
     let total_bytes = hdr.total_bytes;
-    let mut output_bytes = Vec::with_capacity(total_bytes);
     let mut t: usize = 0;
 
+    // Streaming mode (R-014): write bytes progressively to disk via BufWriter.
+    // Reduces peak memory from O(file_size) to O(buffer_size).
+    // CRC computed incrementally; output deleted on verification failure.
+    let mut writer: Option<std::io::BufWriter<std::fs::File>> = if streaming
+        && hdr.token_count.is_none()
+    {
+        let f = std::fs::File::create(&output_path)
+            .map_err(|e| AzError::Io { path: output_path.clone(), source: e })?;
+        eprintln!("[decompress] streaming mode: writing progressively to {}", output_path);
+        Some(std::io::BufWriter::new(f))
+    } else {
+        if streaming && hdr.token_count.is_some() {
+            eprintln!("[decompress] WARNING: --streaming ignored for v2/v3 format");
+        }
+        None
+    };
+    let is_streaming = writer.is_some();
+
+    let mut output_bytes: Vec<u8> = if is_streaming {
+        Vec::new()
+    } else {
+        Vec::with_capacity(total_bytes)
+    };
+    let mut crc_state = crc32::CRC32_INIT;
+    let mut bytes_written: usize = 0;
+
     if let Some(token_count) = hdr.token_count {
-        // v2/v3 path: token-count driven loop
+        // v2/v3 path: token-count driven loop (batch only)
         let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
         for t in 0..token_count {
             let tok = if t == 0 {
@@ -930,8 +957,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         }
         eprintln!();
         for &tok in &decoded_tokens {
-            output_bytes.extend_from_slice(tokenizer.decode_token(tok));
+            let token_bytes = tokenizer.decode_token(tok);
+            output_bytes.extend_from_slice(token_bytes);
+            crc_state = crc32::crc32_update(crc_state, token_bytes);
         }
+        bytes_written = output_bytes.len();
         t = token_count;
     } else {
         // v4 path: byte-count driven, interleaved decode+detokenize
@@ -951,9 +981,18 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 sym
             };
 
-            output_bytes.extend_from_slice(tokenizer.decode_token(tok));
+            let token_bytes = tokenizer.decode_token(tok);
+            if let Some(ref mut w) = writer {
+                use std::io::Write;
+                w.write_all(token_bytes)
+                    .map_err(|e| AzError::Io { path: output_path.clone(), source: e })?;
+            } else {
+                output_bytes.extend_from_slice(token_bytes);
+            }
+            crc_state = crc32::crc32_update(crc_state, token_bytes);
+            bytes_written += token_bytes.len();
 
-            if output_bytes.len() >= total_bytes {
+            if bytes_written >= total_bytes {
                 t += 1;
                 break;
             }
@@ -964,7 +1003,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
             if t % 1000 == 0 {
                 let elapsed = t_start.elapsed().as_secs_f64();
-                let pct = 100.0 * output_bytes.len() as f64 / total_bytes as f64;
+                let pct = 100.0 * bytes_written as f64 / total_bytes as f64;
                 eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
                         pct, t, t as f64 / elapsed);
             }
@@ -972,16 +1011,25 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         eprintln!();
     }
 
+    // Flush streaming writer before verification
+    if let Some(ref mut w) = writer {
+        use std::io::Write;
+        w.flush().map_err(|e| AzError::Io { path: output_path.clone(), source: e })?;
+    }
+    drop(writer);
+
     timer.start("verify");
-    if output_bytes.len() != total_bytes {
+    if bytes_written != total_bytes {
+        if is_streaming { let _ = std::fs::remove_file(&output_path); }
         return Err(AzError::Integrity(format!(
-            "size mismatch: decoded {} bytes, expected {}", output_bytes.len(), total_bytes
+            "size mismatch: decoded {} bytes, expected {}", bytes_written, total_bytes
         )));
     }
 
+    let actual_crc = crc32::crc32_finalize(crc_state);
     if let Some(expected_crc) = stored_crc {
-        let actual_crc = crc32::crc32(&output_bytes);
         if actual_crc != expected_crc {
+            if is_streaming { let _ = std::fs::remove_file(&output_path); }
             return Err(AzError::Integrity(format!(
                 "CRC-32 mismatch: expected {:08X}, got {:08X} — file or weights corrupted",
                 expected_crc, actual_crc
@@ -990,13 +1038,16 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         eprintln!("[decompress] CRC-32: {:08X} (verified OK)", actual_crc);
     }
 
-    timer.start("write");
-    crate::domain::error::write_file(&output_path, &output_bytes)?;
+    if !is_streaming {
+        timer.start("write");
+        crate::domain::error::write_file(&output_path, &output_bytes)?;
+    }
     timer.stop();
 
     let total_time = timer.total_secs();
     eprintln!();
-    eprintln!("[decompress] output: {} ({} bytes)", output_path, output_bytes.len());
+    eprintln!("[decompress] output: {} ({} bytes{})", output_path, bytes_written,
+              if is_streaming { ", streamed" } else { "" });
     eprintln!("[decompress] time: {:.1}s ({:.1} tok/s)", total_time, t as f64 / total_time);
     eprintln!("[decompress] done.");
 

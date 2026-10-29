@@ -67,6 +67,7 @@ fn print_usage() {
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
     eprintln!("  --quant <LEVEL>      Force quantization: f32, q8, q4, auto (default: auto)");
+    eprintln!("  --streaming          Decompress: write output progressively (lower memory)");
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");

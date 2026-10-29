@@ -725,10 +725,20 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - 117 tests (113+4), 4 nuevos tests de determinismo
 
 ### R-014: Streaming decompression
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO
+- **Impacto**: `--streaming` flag para decompress command, output progresivo a disco
+- **Restricción**: v4 only — v2/v3 legacy emite warning y cae back a batch
+- **Archivos**: `src/application/codec.rs`
+- **Implementación**:
+  - `BufWriter<File>` para escritura progresiva a disco conforme se decodifica
+  - CRC-32 incremental: `crc32_update` por chunk + `crc32_finalize` al final
+  - Peak memory: O(buffer_size) en vez de O(file_size)
+  - On CRC failure: output file deleted automatically (cleanup on error)
+  - Batch mode (sin `--streaming`) unchanged — comportamiento idéntico al anterior
+- **Resultado**: verified byte-identical output batch vs streaming, CRC D124164C identical
 - **Subtareas**:
-  - [ ] Evaluar viabilidad (el modelo es secuencial, pero output puede ser progresivo)
-  - [ ] Útil para archivos grandes: emitir bytes conforme se decodifican
+  - [x] Evaluar viabilidad: v4 interleaved decode+detokenize ya existía, solo faltaba progressive write
+  - [x] Emitir bytes conforme se decodifican: BufWriter flush progresivo, CRC incremental
 
 ---
 
@@ -832,6 +842,8 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-013: SHA-256 zero-dep implementado en tests, HashMap ngram.rs descartado como falso positivo |
 | 2026-10-29 | R-013b COMPLETADO: portable transcendentals — ALL scalar libm reemplazado con Cephes/musl portables |
 | 2026-10-29 | R-013b: BIT-EXACT con SIMD (0 ULP), BPB 1.281455 sin cambio, 3 nuevos tests |
+| 2026-10-29 | R-014 COMPLETADO: streaming decompression con --streaming flag, CRC incremental, output progresivo |
+| 2026-10-29 | R-014: 2 nuevos tests CRC incremental, 132 tests total, batch=streaming=original verificado |
 | 2026-10-29 | R-013b: cross-platform same-tier determinism CONSEGUIDO. Cross-tier sigue fallando (F32 matmul acum.) |
 | 2026-10-29 | R-010 COMPLETADO: emb-surgery method stored in AZTH v4 header (FLAGS 0x02), roundtrip transparente |
 | 2026-10-29 | R-010: 9 nuevos unit tests para header emb-surgery, 130 tests total |

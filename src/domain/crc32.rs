@@ -28,14 +28,27 @@ const fn make_table() -> [u32; 256] {
 
 static TABLE: [u32; 256] = make_table();
 
-/// Compute CRC-32 (IEEE) of a byte slice.
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
+/// Initial CRC-32 state for incremental computation.
+pub const CRC32_INIT: u32 = 0xFFFF_FFFF;
+
+/// Update CRC-32 state incrementally. Call with CRC32_INIT for first chunk.
+/// Returns raw state (NOT finalized — call crc32_finalize to get final hash).
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
         let idx = ((crc ^ b as u32) & 0xFF) as usize;
         crc = (crc >> 8) ^ TABLE[idx];
     }
+    crc
+}
+
+/// Finalize CRC-32 from raw state.
+pub fn crc32_finalize(crc: u32) -> u32 {
     crc ^ 0xFFFF_FFFF
+}
+
+/// Compute CRC-32 (IEEE) of a byte slice.
+pub fn crc32(data: &[u8]) -> u32 {
+    crc32_finalize(crc32_update(CRC32_INIT, data))
 }
 
 #[cfg(test)]
@@ -65,5 +78,33 @@ mod tests {
         let full = crc32(data);
         // Verify determinism
         assert_eq!(crc32(data), full);
+    }
+
+    #[test]
+    fn incremental_chunked_matches_batch() {
+        let data = b"The quick brown fox jumps over the lazy dog";
+        let batch = crc32(data);
+
+        // Split into 3 chunks and compute incrementally
+        let mut state = CRC32_INIT;
+        state = crc32_update(state, &data[..10]);
+        state = crc32_update(state, &data[10..25]);
+        state = crc32_update(state, &data[25..]);
+        let incremental = crc32_finalize(state);
+
+        assert_eq!(incremental, batch);
+    }
+
+    #[test]
+    fn incremental_byte_by_byte_matches_batch() {
+        let data = b"123456789";
+        let batch = crc32(data);
+
+        let mut state = CRC32_INIT;
+        for &b in data.iter() {
+            state = crc32_update(state, &[b]);
+        }
+        assert_eq!(crc32_finalize(state), batch);
+        assert_eq!(batch, 0xCBF4_3926); // standard test vector
     }
 }
