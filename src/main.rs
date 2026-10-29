@@ -69,6 +69,7 @@ fn print_usage() {
     eprintln!("  --quant <LEVEL>      Force quantization: f32, q8, q4, auto (default: auto)");
     eprintln!("  --streaming          Decompress: write output progressively (lower memory)");
     eprintln!("  --e8e9 <MODE>        E8E9 x86 preprocessing: auto (default), on, off");
+    eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
     eprintln!("  --no-governor        Disable hardware governor (battery/RAM monitoring)");
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");

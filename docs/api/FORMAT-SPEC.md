@@ -27,8 +27,8 @@ var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 ```
 
-Header size: **13 bytes** (default) or **18 bytes** (emb-surgery) or **25 bytes** (custom HP) or **30 bytes** (both).
-CRC-32 trailer: 4 bytes. Total fixed overhead: **17 to 34 bytes**.
+Header size: **13 bytes** (default), +5 (emb-surgery), +12 (custom HP), +1 (shuffle stride).
+Max header: 31 bytes (all flags set). CRC-32 trailer: 4 bytes.
 
 ### FLAGS byte
 
@@ -37,7 +37,8 @@ CRC-32 trailer: 4 bytes. Total fixed overhead: **17 to 34 bytes**.
 | 0   | `0x01` | CUSTOM_HP       | Hyperparameters follow FLAGS (12 bytes)    |
 | 1   | `0x02` | EMB_SURGERY     | Embedding surgery method follows FLAGS (5 bytes) |
 | 2   | `0x04` | E8E9            | E8/E9 x86 preprocessing was applied (R-027) |
-| 3-7 | `0xF8` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 3   | `0x08` | SHUFFLE         | Byte-plane shuffle was applied (R-029, 1B stride follows) |
+| 4-7 | `0xF0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -59,6 +60,25 @@ is overridden by the header value when present.
 
 If the flag is absent (files without emb-surgery), the decoder uses embeddings as-is
 unless the user explicitly passes `--emb-surgery` on the CLI (backward compatibility).
+
+### Byte-Plane Shuffle (SHUFFLE flag, R-029)
+
+When FLAGS bit 3 (0x08) is set, byte-plane shuffling was applied before encoding.
+One additional byte follows in the header:
+
+| Field  | Size | Description                         |
+|--------|------|-------------------------------------|
+| STRIDE | 1B   | Shuffle stride (2, 4, or 8 bytes)   |
+
+**Transform**: For stride N, input bytes are transposed so that all byte-0's of
+each N-byte group come first, then all byte-1's, etc. For float32 arrays (N=4),
+this clusters exponent bytes (low entropy) together, improving compression.
+
+**Auto-detection** (`--shuffle auto`, default): Applied when the content-type
+detector (R-028) classifies input as `FloatArray`. Override with `--shuffle on`,
+`--shuffle on:N` (custom stride), or `--shuffle off`.
+
+**CRC note**: CRC covers the post-shuffle bytes (after all preprocessing).
 
 ### E8E9 Preprocessing (E8E9 flag, R-027)
 
@@ -96,7 +116,7 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13–30       | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes), emb-surgery (R-010), E8E9 flag (R-027) |
+| v4      | `\x04`      | 13–31       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle), compact header |
 
 The decoder accepts v2, v3, and v4 files:
 - **v2**: no CRC check (backward compatible)

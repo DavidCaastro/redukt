@@ -480,22 +480,27 @@
   - GenericBinary: mozilla, mr, osdb, samba ✓ (mr podría ser FloatArray — refinable en R-029)
 
 #### R-029: Byte shuffle para datos float
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO en texto — solo se activa cuando R-028 detecta float-array
-- **Impacto**: sao (-15-30% BPB), x-ray (-15-25% BPB)
-- **Archivos**: nuevo `src/domain/byte_shuffle.rs`, `src/application/codec.rs`
+- **Estado**: COMPLETADO (2026-10-29)
+- **Riesgo BPB**: NINGUNO en texto — solo se activa cuando R-028 detecta FloatArray
+- **Impacto**: x-ray **-8.5% BPB** (6.5896 → 6.0280) [MEASURED]. sao +0.8% (correctly rejected by auto-detect).
+- **Archivos**: `src/domain/byte_shuffle.rs` (nuevo), `src/application/codec.rs`, `docs/api/FORMAT-SPEC.md`
 - **Diseño**:
-  - Transponer N-byte values: agrupar byte-0, byte-1, ..., byte-(N-1)
-  - Stride auto-detectado por R-028 (4 para float32, 8 para float64, 2 para int16)
-  - Exponent bytes (~2-3 bits entropy) se concentran → alta compresibilidad
-  - FLAG 0x08 en AZTH v4 header + stride byte
-  - ~30 líneas de Rust (transpose + inverse)
+  - Transpone N-byte groups: agrupa byte-0, byte-1, ..., byte-(N-1)
+  - Stride=4 default (float32). CLI: `--shuffle auto|on|on:N|off`
+  - FLAG 0x08 en AZTH v4 header + 1 byte stride
+  - Auto-dispatch: FloatArray (R-028) → shuffle stride=4
+  - Decompress: unshuffle antes de E8E9 inverse
 - **Subtareas**:
-  - [ ] Implementar shuffle(data, stride) → shuffled
-  - [ ] Implementar unshuffle(data, stride) → original
-  - [ ] FLAG en header + stride encoding
-  - [ ] Roundtrip: sao compress→decompress byte-identical
-  - [ ] Benchmark: sao BPB antes/después
+  - [x] Implementar `byte_shuffle(data, stride)` y `byte_unshuffle(data, stride)`
+  - [x] 9 unit tests (roundtrip stride 2/4/8, remainder, identity, known output, float clustering, large)
+  - [x] FLAG 0x08 + stride byte en header (parse + build)
+  - [x] Integración compress: auto si FloatArray, `--shuffle` CLI
+  - [x] Integración decompress: unshuffle + streaming support
+  - [x] Roundtrip: x-ray compress→decompress byte-identical (PASS)
+  - [x] Roundtrip: dickens con shuffle forzado (PASS, BPB terrible pero lossless)
+  - [x] Benchmark: x-ray -8.5%, sao +0.8% (auto-detect correcto)
+  - [x] Texto NO shuffled en auto mode (PASS)
+  - [x] FORMAT-SPEC.md actualizado
 
 #### R-030: Delta coding (stride-N)
 - **Estado**: PENDIENTE
@@ -1004,3 +1009,4 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-027 COMPLETADO: E8E9 integrado en pipeline — FLAG 0x04, auto-detect, --e8e9 CLI, roundtrip PASS |
 | 2026-10-29 | R-027: mozilla 10KB neutral (2.0536 vs 2.0520 BPB, solo 3 E8 en header) — beneficio en EXE puros |
 | 2026-10-29 | R-028 COMPLETADO: content_detect.rs — 6 tipos, decision tree, 11 tests, 14/17 benchmark validados |
+| 2026-10-29 | R-029 COMPLETADO: byte shuffle stride=4, FLAG 0x08, x-ray -8.5% BPB, sao +0.8% (auto-reject), 9 tests |
