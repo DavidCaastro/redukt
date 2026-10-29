@@ -27,8 +27,8 @@ var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 ```
 
-Header size: **13 bytes** (default), +5 (emb-surgery), +12 (custom HP), +1 (shuffle stride).
-Max header: 31 bytes (all flags set). CRC-32 trailer: 4 bytes.
+Header size: **13 bytes** (default), +12 (custom HP), +5 (emb-surgery), +1 (shuffle), +1 (delta).
+Max header: 32 bytes (all flags set). CRC-32 trailer: 4 bytes.
 
 ### FLAGS byte
 
@@ -38,7 +38,8 @@ Max header: 31 bytes (all flags set). CRC-32 trailer: 4 bytes.
 | 1   | `0x02` | EMB_SURGERY     | Embedding surgery method follows FLAGS (5 bytes) |
 | 2   | `0x04` | E8E9            | E8/E9 x86 preprocessing was applied (R-027) |
 | 3   | `0x08` | SHUFFLE         | Byte-plane shuffle was applied (R-029, 1B stride follows) |
-| 4-7 | `0xF0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 4   | `0x10` | DELTA           | Delta coding was applied (R-030, 1B stride follows) |
+| 5-7 | `0xE0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -80,6 +81,24 @@ detector (R-028) classifies input as `FloatArray`. Override with `--shuffle on`,
 
 **CRC note**: CRC covers the post-shuffle bytes (after all preprocessing).
 
+### Delta Coding (DELTA flag, R-030)
+
+When FLAGS bit 4 (0x10) is set, delta coding was applied before encoding.
+One additional byte follows in the header:
+
+| Field  | Size | Description                       |
+|--------|------|-----------------------------------|
+| STRIDE | 1B   | Delta stride (typically 1)        |
+
+**Transform**: `out[i] = in[i] - in[i-stride]` (wrapping subtraction).
+First `stride` bytes are copied unchanged.
+
+**Auto-detection** (`--delta auto`, default): Applied when byte-plane shuffle
+is also applied (FloatArray pipeline). Override with `--delta on`, `--delta on:N`,
+or `--delta off`.
+
+**Decode order**: delta decode → unshuffle → E8E9 decode.
+
 ### E8E9 Preprocessing (E8E9 flag, R-027)
 
 When FLAGS bit 2 (0x04) is set, the compressor applied E8/E9 x86 preprocessing
@@ -116,7 +135,7 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13–31       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle), compact header |
+| v4      | `\x04`      | 13–32       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta) |
 
 The decoder accepts v2, v3, and v4 files:
 - **v2**: no CRC check (backward compatible)

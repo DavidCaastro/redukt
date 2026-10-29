@@ -503,21 +503,29 @@
   - [x] FORMAT-SPEC.md actualizado
 
 #### R-030: Delta coding (stride-N)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO en texto — solo con float/image data
-- **Impacto**: sao (-10-25% adicional tras R-029), x-ray (-20-40% con left-pixel delta)
-- **Archivos**: `src/domain/byte_shuffle.rs` o nuevo módulo
+- **Estado**: COMPLETADO (2026-10-29)
+- **Riesgo BPB**: NINGUNO en texto — auto solo activa con shuffle (FloatArray)
+- **Impacto**: x-ray **-11.4% BPB total** (6.5896 → 5.8416 con shuffle+delta) [MEASURED]
+  - Delta sola: -3.1% adicional sobre shuffle (-8.5%)
+  - sao: shuffle+delta PEOR (+16.9%) — auto-detect correcto (no aplica)
+  - mr: shuffle+delta PEOR (+89.9%) — auto-detect correcto (no aplica)
+- **Archivos**: `src/domain/delta.rs` (nuevo), `src/application/codec.rs`, `docs/api/FORMAT-SPEC.md`
 - **Diseño**:
-  - `out[i] = in[i] - in[i - stride]` (byte-level subtraction con wrapping)
-  - Inverse: `in[i] = out[i] + in[i - stride]` (cumulative sum)
-  - Se aplica DESPUÉS del byte shuffle para máximo efecto
-  - Cadena: raw → byte shuffle → delta → model → encode
-  - ~10 líneas de Rust
+  - `delta_encode(data, stride)`: `out[i] = in[i].wrapping_sub(in[i-stride])`
+  - `delta_decode(data, stride)`: `out[i] = in[i].wrapping_add(out[i-stride])`
+  - Cadena: E8E9 → shuffle → delta → CRC → encode
+  - FLAG 0x10 + 1 byte stride en header
+  - Auto: activa si shuffle activo (FloatArray pipeline)
+  - CLI: `--delta auto|on|on:N|off`
 - **Subtareas**:
-  - [ ] Implementar delta_encode(data, stride) + delta_decode(data, stride)
-  - [ ] Combinación con R-029 (shuffle + delta)
-  - [ ] FLAG encoding en header
-  - [ ] Benchmark: sao, x-ray BPB antes/después
+  - [x] Implementar delta_encode + delta_decode (~20 líneas)
+  - [x] 9 unit tests (roundtrip, constant→zeros, ramp→constant, wrapping, shuffle+delta combo)
+  - [x] FLAG 0x10 + stride byte en header (parse + build)
+  - [x] Integración compress: auto si shuffle activo
+  - [x] Integración decompress: delta decode antes de unshuffle
+  - [x] Roundtrip: x-ray shuffle+delta → byte-identical (PASS)
+  - [x] Texto no afectado en auto mode (PASS)
+  - [x] FORMAT-SPEC.md actualizado
 
 #### R-031: Record detection + column transposition
 - **Estado**: PENDIENTE
@@ -1010,3 +1018,4 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-027: mozilla 10KB neutral (2.0536 vs 2.0520 BPB, solo 3 E8 en header) — beneficio en EXE puros |
 | 2026-10-29 | R-028 COMPLETADO: content_detect.rs — 6 tipos, decision tree, 11 tests, 14/17 benchmark validados |
 | 2026-10-29 | R-029 COMPLETADO: byte shuffle stride=4, FLAG 0x08, x-ray -8.5% BPB, sao +0.8% (auto-reject), 9 tests |
+| 2026-10-29 | R-030 COMPLETADO: delta coding stride=1, FLAG 0x10, x-ray -11.4% total (shuffle+delta), 9 tests |
