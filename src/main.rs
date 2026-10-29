@@ -71,7 +71,6 @@ fn print_usage() {
     eprintln!("  --e8e9 <MODE>        E8E9 x86 preprocessing: auto (default), on, off");
     eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
     eprintln!("  --delta <MODE>       Delta coding: auto (default), on, on:N, off");
-    eprintln!("  --cm-only <MODE>     CM-only bypass: auto (default), on, off");
     eprintln!("  --no-governor        Disable hardware governor (battery/RAM monitoring)");
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");

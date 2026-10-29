@@ -553,33 +553,21 @@
   - [x] Roundtrip: synthetic records → byte-identical
 
 #### R-032: CM-only bypass para datos binarios
-- **Estado**: COMPLETADO — resultado NEGATIVO, auto deshabilitado (2026-10-29)
-- **Riesgo BPB**: ALTO — +14-20% en binarios, +110% en texto
-- **Impacto real**: Velocidad 8.2x (700 vs 85 tok/s), pero BPB catastrófico
-- **Archivos**: `src/application/codec.rs`, `src/application/model_loader.rs`, `docs/api/FORMAT-SPEC.md`
-- **Diseño implementado**:
-  - FLAG 0x20 en header, `--cm-only on|off` (auto=off)
-  - Skip RWKV forward_into en hot loop, logits=0
-  - Carga condicional: tokenizer-only si cm_only (skip ~130MB modelo)
-  - N-gram + BiasHead como únicos predictores
-- **Resultados** [MEASURED, 10KB]:
-  | Archivo | Full BPB | CM-only BPB | Δ | brotli-11 |
-  |---------|----------|-------------|---|-----------|
-  | sao | 6.590 | 7.867 | **+19.4%** | 4.246 |
-  | osdb | 5.706 | 6.489 | **+13.7%** | 4.678 |
-  | enwik8 | 1.333 | 2.795 | **+109.7%** | 2.352 |
-  - Throughput: ~700 tok/s (cm-only) vs ~85 tok/s (full) = **8.2x**
-  - Roundtrip: PASS (sao compress → decompress, CRC verified, byte-identical)
-- **Root cause**: RWKV ayuda incluso en datos de alta entropía. El tokenizer crea
-  tokens con estructura que RWKV predice, incluso para datos near-random. La hipótesis
-  de que RWKV es "ruido" para binarios era incorrecta.
-- **Decisión**: Auto DESHABILITADO. Flag disponible como speed-mode manual.
+- **Estado**: PENDIENTE (investigación)
+- **Riesgo BPB**: Variable — bypass completo de RWKV-7 en regiones binarias
+- **Impacto**: TODOS archivos binarios (-20-40% estimado, sin tokenizer mismatch)
+- **Archivos**: `src/application/codec.rs`, posiblemente nuevo modo en coder
+- **Diseño** (basado en Nacrith NC06):
+  - Cuando R-028 detecta generic-binary o random: skip RWKV-7
+  - Usar solo los 19 CM hash-table models (ya byte-level)
+  - CM models ya existen en AdaptiveMixer — solo eliminar RWKV del ensemble
+  - Alternativa: Nacrith-style segmentación text/binary dentro del mismo archivo
+  - Requiere evaluación empírica extensiva
 - **Subtareas**:
-  - [x] Prototipo: CM-only mode (sin RWKV) implementado
-  - [x] Benchmark: comparar CM-only vs full ensemble en 3 archivos
-  - [x] **Resultado: CM-only PEOR que full en todos los archivos** (+14-110%)
-  - [x] Auto-detect deshabilitado, `--cm-only on` solo manual
-  - [x] Roundtrip verificado, 3 unit tests header, FORMAT-SPEC actualizado
+  - [ ] Prototipo: CM-only mode (sin RWKV) en archivos binarios
+  - [ ] Benchmark: comparar CM-only vs full ensemble en 5 archivos binarios
+  - [ ] Si CM-only < brotli → implementar como modo automático
+  - [ ] Si CM-only > brotli → evaluar hybrid segmentation
 
 #### Secuencia de implementación Fase 3
 
@@ -1040,6 +1028,3 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-031 COMPLETADO: record detection via autocorrelation (Q1 baseline, 5.0x threshold, min stride 4) |
 | 2026-10-29 | R-031: reuses SHUFFLE flag, GenericBinary → detect → shuffle. Synthetic 8B records: 0.694 BPB, roundtrip PASS |
 | 2026-10-29 | R-031: zero false positives on all 18 benchmark files (osdb 4.1x, apache 5.3x — both below 5.0x threshold) |
-| 2026-10-29 | R-032 COMPLETADO (resultado NEGATIVO): CM-only +19% sao, +14% osdb, +110% enwik8. Auto DESHABILITADO |
-| 2026-10-29 | R-032: FLAG 0x20, --cm-only on/off, tokenizer-only load, 8.2x throughput pero BPB inaceptable |
-| 2026-10-29 | R-032: RWKV ayuda incluso en high-entropy — hipótesis "RWKV es ruido para binarios" REFUTADA |

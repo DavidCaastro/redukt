@@ -39,8 +39,7 @@ Max header: 32 bytes (all flags set). CRC-32 trailer: 4 bytes.
 | 2   | `0x04` | E8E9            | E8/E9 x86 preprocessing was applied (R-027) |
 | 3   | `0x08` | SHUFFLE         | Byte-plane shuffle was applied (R-029, 1B stride follows) |
 | 4   | `0x10` | DELTA           | Delta coding was applied (R-030, 1B stride follows) |
-| 5   | `0x20` | CM_ONLY         | CM-only mode: skip RWKV forward pass (R-032) |
-| 6-7 | `0xC0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 5-7 | `0xE0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -81,21 +80,6 @@ detector (R-028) classifies input as `FloatArray`. Override with `--shuffle on`,
 `--shuffle on:N` (custom stride), or `--shuffle off`.
 
 **CRC note**: CRC covers the post-shuffle bytes (after all preprocessing).
-
-### CM-Only Mode (CM_ONLY flag, R-032)
-
-When FLAGS bit 5 (0x20) is set, the file was compressed without RWKV-7 neural
-predictions (N-gram + BiasHead only). No additional header data is stored.
-
-**Effect**: The decompressor skips `model.forward_into()` — logits remain zero,
-and only the online-learning components (N-gram hash tables, adaptive bias head)
-generate predictions. Model weights are not loaded.
-
-**Use case**: Manual speed mode (`--cm-only on`). Achieves ~700 tok/s (vs ~85
-with RWKV) at significant BPB cost (+14–20% on binary, +110% on text).
-
-**Auto-detection**: Disabled. Benchmarking showed RWKV helps even on high-entropy
-data. Only activates with explicit `--cm-only on`.
 
 ### Delta Coding (DELTA flag, R-030)
 
