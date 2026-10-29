@@ -553,21 +553,19 @@
   - [x] Roundtrip: synthetic records → byte-identical
 
 #### R-032: CM-only bypass para datos binarios
-- **Estado**: PENDIENTE (investigación)
+- **Estado**: ABORTADO + REVERTIDO (2f34173)
 - **Riesgo BPB**: Variable — bypass completo de RWKV-7 en regiones binarias
-- **Impacto**: TODOS archivos binarios (-20-40% estimado, sin tokenizer mismatch)
-- **Archivos**: `src/application/codec.rs`, posiblemente nuevo modo en coder
-- **Diseño** (basado en Nacrith NC06):
-  - Cuando R-028 detecta generic-binary o random: skip RWKV-7
-  - Usar solo los 19 CM hash-table models (ya byte-level)
-  - CM models ya existen en AdaptiveMixer — solo eliminar RWKV del ensemble
-  - Alternativa: Nacrith-style segmentación text/binary dentro del mismo archivo
-  - Requiere evaluación empírica extensiva
-- **Subtareas**:
-  - [ ] Prototipo: CM-only mode (sin RWKV) en archivos binarios
-  - [ ] Benchmark: comparar CM-only vs full ensemble en 5 archivos binarios
-  - [ ] Si CM-only < brotli → implementar como modo automático
-  - [ ] Si CM-only > brotli → evaluar hybrid segmentation
+- **Hipótesis**: RWKV-7 es ruido para datos binarios de alta entropía → REFUTADA
+- **Resultado empírico** (10KB, Q8):
+  | Archivo | Normal BPB | CM-only BPB | Δ |
+  |---------|-----------|-------------|-----|
+  | sao | 6.776 | 8.090 | +19.4% |
+  | osdb | 4.363 | 4.960 | +13.7% |
+  | enwik8 | 1.281 | 2.687 | +109.7% |
+- **Velocidad**: ~700 tok/s (8.2x vs 85 tok/s normal) pero calidad inaceptable
+- **Conclusión**: RWKV-7 aporta predicciones útiles incluso en datos binarios.
+  El modelo captura patrones de bytes que CM solo no detecta.
+  Código revertido para no contaminar lecturas de benchmark.
 
 #### Secuencia de implementación Fase 3
 
@@ -1028,3 +1026,5 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-031 COMPLETADO: record detection via autocorrelation (Q1 baseline, 5.0x threshold, min stride 4) |
 | 2026-10-29 | R-031: reuses SHUFFLE flag, GenericBinary → detect → shuffle. Synthetic 8B records: 0.694 BPB, roundtrip PASS |
 | 2026-10-29 | R-031: zero false positives on all 18 benchmark files (osdb 4.1x, apache 5.3x — both below 5.0x threshold) |
+| 2026-10-29 | R-032 ABORTADO + REVERTIDO: CM-only bypass — RWKV ayuda incluso en binarios (sao +19.4%, enwik8 +109.7%) |
+| 2026-10-29 | R-032: hipótesis "RWKV es ruido para binarios" REFUTADA empíricamente. Código revertido (2f34173) |
