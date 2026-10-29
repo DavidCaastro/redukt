@@ -423,6 +423,130 @@
   - [x] Roundtrip verificado: compress→decompress byte-identical con governor activo
   - [x] 137 tests pasando (133 unit + 4 integration)
 
+### Fase 3: Binary Preprocessing Pipeline (2026-10-29)
+
+> Investigación completa: `docs/internal/research/binary-compression-research.md`
+> Redukt pierde en 5/17 archivos binarios (sao +54%, x-ray +44%, ooffice +37%,
+> osdb +22%, mozilla +1.5%). Diagnóstico: tokenizer de texto destruye estructura
+> byte-level. Solución: detect + preprocess antes del modelo.
+> Todas las técnicas son zero-dep, reversibles, sin riesgo BPB en texto.
+
+#### R-027: Integración E8E9 en pipeline de compresión
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO en texto — solo se activa en ejecutables detectados
+- **Impacto**: mozilla (-5-10% BPB), ooffice (parcial, tiene código x86 embebido)
+- **Archivos**: `src/domain/preprocess.rs` (YA IMPLEMENTADO), `src/application/codec.rs`
+- **Diseño**:
+  - `e8e9_encode_with_stats()` ya existe con 5 tests passing
+  - `e8e9_decode()` ya existe (inverse transform)
+  - Necesita: FLAG 0x04 en AZTH v4 header, detección automática (heurística E8/E9 density)
+  - compress: detect → transform → encode → store FLAG
+  - decompress: read FLAG → decode → inverse transform
+- **Subtareas**:
+  - [ ] Añadir FLAG `V4_FLAG_E8E9 = 0x04` en header
+  - [ ] Implementar detección automática de ejecutables (E8/E9 density threshold)
+  - [ ] Integrar encode en cmd_compress antes de tokenización
+  - [ ] Integrar decode en cmd_decompress después de detokenización
+  - [ ] `--e8e9` flag para forzar/deshabilitar
+  - [ ] Roundtrip: mozilla compress→decompress byte-identical
+  - [ ] Benchmark: mozilla BPB antes/después
+
+#### R-028: Data-type detector (content classification)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO — solo clasificación, no modifica datos
+- **Impacto**: Habilita R-029, R-030, R-031 — es el dispatcher central
+- **Archivos**: nuevo `src/domain/content_detect.rs`
+- **Diseño** (basado en G2-V3 AIT Challenge 2026):
+  - Analizar primeros 4-64KB del archivo
+  - Features: Shannon entropy, alphabet size, printable ASCII ratio,
+    even/odd byte imbalance, float32 exponent-byte patterns, magic numbers
+  - Clasificar en: text, structured-text, executable, float-array,
+    fixed-records, generic-binary, random/incompressible
+  - Decision tree, ~200-300 líneas de Rust
+- **Subtareas**:
+  - [ ] Implementar feature extraction (entropy, ASCII ratio, etc.)
+  - [ ] Implementar clasificación por decision tree
+  - [ ] Tests con archivos conocidos (cada tipo representado en benchmark)
+  - [ ] Logging: reportar tipo detectado en stderr
+
+#### R-029: Byte shuffle para datos float
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO en texto — solo se activa cuando R-028 detecta float-array
+- **Impacto**: sao (-15-30% BPB), x-ray (-15-25% BPB)
+- **Archivos**: nuevo `src/domain/byte_shuffle.rs`, `src/application/codec.rs`
+- **Diseño**:
+  - Transponer N-byte values: agrupar byte-0, byte-1, ..., byte-(N-1)
+  - Stride auto-detectado por R-028 (4 para float32, 8 para float64, 2 para int16)
+  - Exponent bytes (~2-3 bits entropy) se concentran → alta compresibilidad
+  - FLAG 0x08 en AZTH v4 header + stride byte
+  - ~30 líneas de Rust (transpose + inverse)
+- **Subtareas**:
+  - [ ] Implementar shuffle(data, stride) → shuffled
+  - [ ] Implementar unshuffle(data, stride) → original
+  - [ ] FLAG en header + stride encoding
+  - [ ] Roundtrip: sao compress→decompress byte-identical
+  - [ ] Benchmark: sao BPB antes/después
+
+#### R-030: Delta coding (stride-N)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO en texto — solo con float/image data
+- **Impacto**: sao (-10-25% adicional tras R-029), x-ray (-20-40% con left-pixel delta)
+- **Archivos**: `src/domain/byte_shuffle.rs` o nuevo módulo
+- **Diseño**:
+  - `out[i] = in[i] - in[i - stride]` (byte-level subtraction con wrapping)
+  - Inverse: `in[i] = out[i] + in[i - stride]` (cumulative sum)
+  - Se aplica DESPUÉS del byte shuffle para máximo efecto
+  - Cadena: raw → byte shuffle → delta → model → encode
+  - ~10 líneas de Rust
+- **Subtareas**:
+  - [ ] Implementar delta_encode(data, stride) + delta_decode(data, stride)
+  - [ ] Combinación con R-029 (shuffle + delta)
+  - [ ] FLAG encoding en header
+  - [ ] Benchmark: sao, x-ray BPB antes/después
+
+#### R-031: Record detection + column transposition
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: NINGUNO en texto — solo para detected fixed-width records
+- **Impacto**: osdb (-15-30% BPB)
+- **Archivos**: nuevo `src/domain/record_detect.rs`
+- **Diseño**:
+  - Autocorrelación del byte stream para encontrar record length R
+  - Transponer datos como matriz NxR → R columnas homogéneas
+  - Cada columna (ej: timestamps, IDs) tiene menor entropy individual
+  - Combinable con delta coding por columna
+  - ~200-300 líneas (detección + transpose)
+- **Subtareas**:
+  - [ ] Autocorrelación para detectar stride/record-length
+  - [ ] Transpose(data, R) + inverse
+  - [ ] FLAG en header + record length
+  - [ ] Benchmark: osdb BPB antes/después
+
+#### R-032: CM-only bypass para datos binarios
+- **Estado**: PENDIENTE (investigación)
+- **Riesgo BPB**: Variable — bypass completo de RWKV-7 en regiones binarias
+- **Impacto**: TODOS archivos binarios (-20-40% estimado, sin tokenizer mismatch)
+- **Archivos**: `src/application/codec.rs`, posiblemente nuevo modo en coder
+- **Diseño** (basado en Nacrith NC06):
+  - Cuando R-028 detecta generic-binary o random: skip RWKV-7
+  - Usar solo los 19 CM hash-table models (ya byte-level)
+  - CM models ya existen en AdaptiveMixer — solo eliminar RWKV del ensemble
+  - Alternativa: Nacrith-style segmentación text/binary dentro del mismo archivo
+  - Requiere evaluación empírica extensiva
+- **Subtareas**:
+  - [ ] Prototipo: CM-only mode (sin RWKV) en archivos binarios
+  - [ ] Benchmark: comparar CM-only vs full ensemble en 5 archivos binarios
+  - [ ] Si CM-only < brotli → implementar como modo automático
+  - [ ] Si CM-only > brotli → evaluar hybrid segmentation
+
+#### Secuencia de implementación Fase 3
+
+```
+R-028 (detector) → R-027 (E8E9) → R-029 (shuffle) → R-030 (delta) → R-031 (records) → R-032 (CM-only)
+```
+
+R-028 es prerequisito para activación automática de todos los demás.
+R-027 puede implementarse antes con detección ad-hoc (E8/E9 density).
+
 ### Secuencia de throughput — orden por riesgo de degradación BPB
 
 > Cada paso incluye un quality gate: medir BPB en los 3 archivos de log + enwik8.
@@ -858,3 +982,12 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-HW1: ThrottleLevel {Full, Eco, Abort}, watchdog 2s, governor.apply() cada 100 tokens |
 | 2026-10-29 | R-HW1: integrado en compress + decompress, --no-governor flag, 5 unit tests, 137 total |
 | 2026-10-29 | R-HW1: roundtrip byte-identical verificado, BPB sin cambio (governor no afecta predicción) |
+| 2026-10-29 | BENCHMARK COMPLETO: 18 archivos × 10KB + 3 × 50KB + 3 × 100KB, gzip-9 + brotli-11 + Redukt Q8 |
+| 2026-10-29 | Baseline actualizada: Redukt gana 12/17 vs brotli-11, pierde 5 binarios (sao +54%, x-ray +44%) |
+| 2026-10-29 | Batch mode validado: modelo cargado una vez (2.8-3.5s), 3 archivos × 100KB en 1544s |
+| 2026-10-29 | Escala confirmada: ventaja CRECE con tamaño (dickens -35%→-45%, apache -37%→-32%) |
+| 2026-10-29 | Investigación binarios: 3 agentes, 15 fuentes, Nacrith/NNCP/PAQ8/CMIX/G2-V3 analizados |
+| 2026-10-29 | Diagnóstico: tokenizer texto destruye estructura byte-level en datos binarios |
+| 2026-10-29 | Fase 3 definida: R-027 (E8E9) → R-028 (detector) → R-029 (shuffle) → R-030 (delta) → R-031 (records) → R-032 (CM-only) |
+| 2026-10-29 | R-027: E8E9 ya codificado en preprocess.rs (5 tests), solo falta integración en pipeline |
+| 2026-10-29 | docs: binary-compression-research.md — investigación completa con 15 referencias |
