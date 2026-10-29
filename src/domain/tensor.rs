@@ -546,6 +546,177 @@ pub fn q4_mat_vec_mul(mat: &Q4Tensor, vec: &Tensor) -> Tensor {
 }
 
 
+/// Q4 mat-vec into pre-allocated output, using SIMD Q8-style dot product per group.
+/// Unpacks Q4→i8 on-the-fly, then uses sign-trick + maddubs for each group.
+/// Set REDUKT_NO_SIMD=1 to force scalar path (benchmarking).
+pub fn q4_mat_vec_mul_into(out: &mut [f32], mat: &Q4Tensor, vec: &[f32], v_q: &mut [i8]) {
+    let cols = mat.cols;
+    let v_scale = quantize_vec_i8_into(&vec[..cols], &mut v_q[..cols]);
+
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") && mat.group_size == 32 {
+        unsafe { q4_mat_vec_mul_avx2_into(out, mat, &v_q[..cols], v_scale) };
+        return;
+    }
+
+    q4_mat_vec_mul_scalar_into(out, mat, &v_q[..cols], v_scale);
+}
+
+/// Scalar fallback for Q4 mat-vec with pre-quantized vector.
+fn q4_mat_vec_mul_scalar_into(
+    out: &mut [f32], mat: &Q4Tensor, v_q: &[i8], v_scale: f32,
+) {
+    let rows = mat.rows;
+    let cols = mat.cols;
+    let gs = mat.group_size;
+    let groups_per_row = (cols + gs - 1) / gs;
+
+    for r in 0..rows {
+        let row_start = r * cols;
+        let mut row_sum = 0.0f32;
+
+        for g in 0..groups_per_row {
+            let g_start = g * gs;
+            let g_end = (g_start + gs).min(cols);
+            let global_group = (row_start + g_start) / gs;
+            let w_scale = mat.scales[global_group];
+
+            let mut acc = 0i32;
+            for c in g_start..g_end {
+                let idx = row_start + c;
+                let byte = mat.packed[idx / 2];
+                let nibble = if idx % 2 == 0 { byte & 0x0F } else { byte >> 4 };
+                let val = if nibble & 0x08 != 0 {
+                    (nibble | 0xF0) as i8
+                } else {
+                    nibble as i8
+                };
+                acc += val as i32 * v_q[c] as i32;
+            }
+            row_sum += acc as f32 * (w_scale * v_scale);
+        }
+        out[r] = row_sum;
+    }
+}
+
+/// AVX2 kernel for Q4 mat-vec: unpack Q4→i8, then i8*i8→i32 sign-trick per group.
+/// Requires group_size == 32 (one AVX2 register per group).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn q4_mat_vec_mul_avx2_into(
+    out: &mut [f32], mat: &Q4Tensor, v_q: &[i8], v_scale: f32,
+) {
+    let rows = mat.rows;
+    let cols = mat.cols;
+    let gs = mat.group_size; // must be 32
+    let groups_per_row = cols / gs;
+    let packed = mat.packed.as_ptr();
+    let scales = mat.scales.as_ptr();
+    let v_ptr = v_q.as_ptr();
+    let ones = _mm256_set1_epi16(1);
+    let lo_mask = _mm256_set1_epi8(0x0F);
+    let sign_thresh = _mm256_set1_epi8(7);
+    let sign_bits = _mm256_set1_epi8(-16i8); // 0xF0
+
+    let rows_4 = rows / 4 * 4;
+    for r in (0..rows_4).step_by(4) {
+        let mut sum0 = 0.0f32;
+        let mut sum1 = 0.0f32;
+        let mut sum2 = 0.0f32;
+        let mut sum3 = 0.0f32;
+
+        for g in 0..groups_per_row {
+            let g_start = g * gs;
+            let vb = _mm256_loadu_si256(v_ptr.add(g_start) as *const __m256i);
+
+            // For each of the 4 rows, unpack Q4 and compute dot product
+            macro_rules! q4_dot {
+                ($row:expr) => {{
+                    let row_start = $row * cols;
+                    let pack_off = (row_start + g_start) / 2;
+                    // Load 16 packed bytes = 32 Q4 values
+                    let p = _mm_loadu_si128(packed.add(pack_off) as *const __m128i);
+                    // Low nibbles (even indices)
+                    let lo = _mm_and_si128(p, _mm256_castsi256_si128(lo_mask));
+                    // High nibbles (odd indices)
+                    let hi = _mm_and_si128(
+                        _mm_srli_epi16(p, 4),
+                        _mm256_castsi256_si128(lo_mask),
+                    );
+                    // Interleave: [val0, val1, val2, val3, ...]
+                    let interleaved = _mm256_set_m128i(
+                        _mm_unpackhi_epi8(lo, hi),
+                        _mm_unpacklo_epi8(lo, hi),
+                    );
+                    // Sign extend: values > 7 are negative in 4-bit signed
+                    let need_sign = _mm256_cmpgt_epi8(interleaved, sign_thresh);
+                    let w = _mm256_or_si256(
+                        interleaved,
+                        _mm256_and_si256(need_sign, sign_bits),
+                    );
+                    // Sign-trick dot product (same as Q8 kernel)
+                    let w_abs = _mm256_abs_epi8(w);
+                    let v_signed = _mm256_sign_epi8(vb, w);
+                    let p16 = _mm256_maddubs_epi16(w_abs, v_signed);
+                    let p32 = _mm256_madd_epi16(p16, ones);
+                    hsum_i32_avx2(p32)
+                }};
+            }
+
+            let d0 = q4_dot!(r);
+            let d1 = q4_dot!(r + 1);
+            let d2 = q4_dot!(r + 2);
+            let d3 = q4_dot!(r + 3);
+
+            // Apply per-group weight scale
+            let global_g0 = (r * cols + g_start) / gs;
+            let global_g1 = ((r + 1) * cols + g_start) / gs;
+            let global_g2 = ((r + 2) * cols + g_start) / gs;
+            let global_g3 = ((r + 3) * cols + g_start) / gs;
+
+            sum0 += d0 as f32 * (*scales.add(global_g0) * v_scale);
+            sum1 += d1 as f32 * (*scales.add(global_g1) * v_scale);
+            sum2 += d2 as f32 * (*scales.add(global_g2) * v_scale);
+            sum3 += d3 as f32 * (*scales.add(global_g3) * v_scale);
+        }
+        out[r] = sum0;
+        out[r + 1] = sum1;
+        out[r + 2] = sum2;
+        out[r + 3] = sum3;
+    }
+
+    // Remainder rows
+    for r in rows_4..rows {
+        let mut row_sum = 0.0f32;
+        for g in 0..groups_per_row {
+            let g_start = g * gs;
+            let vb = _mm256_loadu_si256(v_ptr.add(g_start) as *const __m256i);
+            let row_start = r * cols;
+            let pack_off = (row_start + g_start) / 2;
+            let p = _mm_loadu_si128(packed.add(pack_off) as *const __m128i);
+            let lo = _mm_and_si128(p, _mm256_castsi256_si128(lo_mask));
+            let hi = _mm_and_si128(
+                _mm_srli_epi16(p, 4),
+                _mm256_castsi256_si128(lo_mask),
+            );
+            let interleaved = _mm256_set_m128i(
+                _mm_unpackhi_epi8(lo, hi),
+                _mm_unpacklo_epi8(lo, hi),
+            );
+            let need_sign = _mm256_cmpgt_epi8(interleaved, sign_thresh);
+            let w = _mm256_or_si256(interleaved, _mm256_and_si256(need_sign, sign_bits));
+            let w_abs = _mm256_abs_epi8(w);
+            let v_signed = _mm256_sign_epi8(vb, w);
+            let p16 = _mm256_maddubs_epi16(w_abs, v_signed);
+            let p32 = _mm256_madd_epi16(p16, ones);
+            let d = hsum_i32_avx2(p32);
+            let global_g = (row_start + g_start) / gs;
+            row_sum += d as f32 * (*scales.add(global_g) * v_scale);
+        }
+        out[r] = row_sum;
+    }
+}
+
 /// LayerNorm: (x - mean) / sqrt(var + eps) * weight + bias
 pub fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f32) -> Tensor {
     let n = x.numel();
@@ -1331,6 +1502,48 @@ mod tests {
 
         assert!((ref_out.data[0] - out[0]).abs() < 1e-2,
             "single row: ref={} got={}", ref_out.data[0], out[0]);
+    }
+
+    #[test]
+    fn test_q4_simd_matches_scalar() {
+        // Q4 SIMD kernel must match scalar Q4 output (both use same precision)
+        let mat_f32 = make_test_matrix(64, 768);
+        let mat_q4 = Q4Tensor::from_f32(&mat_f32, 32);
+        let v = make_test_vec(768);
+        let mut v_q = vec![0i8; 768];
+        let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+
+        let mut out_scalar = vec![0.0f32; 64];
+        q4_mat_vec_mul_scalar_into(&mut out_scalar, &mat_q4, &v_q, v_scale);
+
+        let mut out_dispatch = vec![0.0f32; 64];
+        let mut v_q2 = vec![0i8; 768];
+        q4_mat_vec_mul_into(&mut out_dispatch, &mat_q4, &v, &mut v_q2);
+
+        for i in 0..64 {
+            assert!((out_scalar[i] - out_dispatch[i]).abs() < 1e-1,
+                "row {}: scalar={} dispatch={}", i, out_scalar[i], out_dispatch[i]);
+        }
+    }
+
+    #[test]
+    fn test_q4_simd_matches_allocating() {
+        // Q4 SIMD into-buffer must match allocating Q4 mat_vec_mul
+        let mat_f32 = make_test_matrix(32, 768);
+        let mat_q4 = Q4Tensor::from_f32(&mat_f32, 32);
+        let v = make_test_vec(768);
+
+        let v_tensor = Tensor::from_data(v.clone(), vec![768]);
+        let ref_out = q4_mat_vec_mul(&mat_q4, &v_tensor);
+
+        let mut out = vec![0.0f32; 32];
+        let mut v_q = vec![0i8; 768];
+        q4_mat_vec_mul_into(&mut out, &mat_q4, &v, &mut v_q);
+
+        for i in 0..32 {
+            assert!((ref_out.data[i] - out[i]).abs() < 1e-1,
+                "row {}: ref={} got={}", i, ref_out.data[i], out[i]);
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

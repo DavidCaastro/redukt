@@ -326,12 +326,7 @@ impl QuantMatrix {
         match self {
             QuantMatrix::F32(t) => mat_vec_mul_into(out, t, vec),
             QuantMatrix::Q8(t) => q8_mat_vec_mul_into(out, t, vec, v_q),
-            QuantMatrix::Q4(t) => {
-                // Q4 fallback: use allocating path (Q4 is never auto-selected)
-                let v_tensor = Tensor::from_data(vec.to_vec(), std::vec![vec.len()]);
-                let result = q4_mat_vec_mul(t, &v_tensor);
-                out[..result.data.len()].copy_from_slice(&result.data);
-            }
+            QuantMatrix::Q4(t) => q4_mat_vec_mul_into(out, t, vec, v_q),
             QuantMatrix::Gguf(t) => {
                 t.mat_vec_mul(vec, out);
             }

@@ -596,11 +596,11 @@ Todas las optimizaciones 0% BPB risk completadas. R-016 (SVD) evaluado y abortad
 R-017 (parallel segments) bloqueado — requiere evaluación independiente.
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
-**Fase 2 (2026-10-29)**: R-023 N/A (ya implementado) → R-025 → R-024 → R-026.
-R-023 (CDF 24-bit): YA IMPLEMENTADO — coder.rs ya usa TOP=2^24 desde el diseño original.
-R-025 (prefetch) primero: 0% BPB risk, solo tensor.rs, micro-optimización rápida.
-R-024 (Q4 storage) segundo: 0% BPB risk pero requiere nuevo QuantMatrix variant + dequant path.
-R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere validación BPB.
+**Fase 2 (2026-10-29)**: R-023 N/A → R-025 ✅ → R-024 ❌ → R-026 pendiente.
+R-023 (CDF 24-bit): N/A — ya implementado desde el diseño original.
+R-025 (prefetch): ✅ +3.2% throughput, 0% BPB risk.
+R-024 (Q4 storage): ❌ ABORTADO — +12.7% BPB, 15.3x slower. Q4 no viable para RWKV-7.
+R-026 (iGPU) pendiente: mayor complejidad (Vulkan FFI), módulo opcional.
 
 ### Fase 2: Técnicas identificadas por auditoría de exhaustividad (2026-10-29)
 
@@ -617,23 +617,32 @@ R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere
 - **Floor overhead actual**: V=65536, TOP=2^24 → min_alloc/total = 0.39% — despreciable.
 - **Conclusión**: No hay cambio que hacer. La técnica del paper ya está presente.
 
-#### R-024: Q4 Storage → Q8 Compute
-- **Estado**: PENDIENTE (prioridad INMEDIATA)
-- **Riesgo BPB**: NINGUNO — compute precision sigue siendo Q8
-- **Diferencia vs Q4 matmul (R-V05 RECHAZADO)**: R-V05 hacía matmul en Q4 (+13.3% BPB).
-  Aquí los weights se ALMACENAN en Q4 (~65 MB vs ~130 MB) pero se DESCOMPRIMEN a Q8
-  on-the-fly antes de cada matmul. La precisión de cómputo es idéntica a Q8 puro.
-- **Impacto estimado**: -50% DRAM traffic para weight reads, potencial +15-30% throughput
-  (actualmente 60% DRAM BW saturación a 94.8 tok/s)
-- **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/domain/tensor.rs`
+#### R-024: Q4 Storage → Q8 Compute — ABORTADO
+- **Estado**: ABORTADO (2026-10-29)
+- **Premisa original**: "0% BPB risk" — INCORRECTA. 4 bits no pueden representar la misma
+  información que 8 bits. Cualquier Q4 storage pierde precisión en weights.
+- **Implementación**: Q4 SIMD matmul con AVX2 unpack (Q4→i8 sign extend + sign-trick
+  dot product per group), reemplazando el anterior Q4 scalar fallback.
+- **Archivos**: `src/domain/tensor.rs` (q4_mat_vec_mul_into, q4_mat_vec_mul_avx2_into),
+  `src/domain/quant.rs` (wired Q4 path to new SIMD kernel)
+- **Resultado** [MEASURED: enwik8 10KB]:
+  - Q8: BPB 1.281, 79.3 tok/s
+  - Q4 SIMD: BPB 1.444, 5.2 tok/s
+  - **BPB delta: +12.7%** (4x sobre presupuesto +3%)
+  - **Throughput: 15.3x más lento** (per-group hsum overhead domina)
+- **Root cause**: Q4 requiere per-group scale application (24 groups/row × hsum = 24 hsums/row,
+  vs 1 hsum/row en Q8). El overhead de desempaquetar Q4→i8 + acumular por grupo
+  destruye completamente el beneficio de reducir DRAM reads.
+- **Consistencia con R-V05**: BPB +12.7% vs R-V05's +13.3% — confirma que Q4 weight
+  precision es fundamentalmente insuficiente para RWKV-7 0.1B.
+- **Código retenido**: Q4 SIMD kernel se mantiene como mejora al path Q4 existente
+  (non-allocating + SIMD vs anterior allocating scalar). Útil para testing/research.
 - **Subtareas**:
-  - [ ] Implementar Q4 pack/unpack (2 values per byte, symmetric quantization)
-  - [ ] Añadir `QuantMatrix::Q4` variant con dequant-to-Q8 en mat_vec_mul
-  - [ ] `--storage q4` flag (distinto de `--quant` que controla compute precision)
-  - [ ] Benchmark DRAM BW: medir reducción real con perf counters
-  - [ ] Benchmark throughput: controlled A/B vs Q8 storage actual
-  - [ ] **Quality gate**: BPB bit-exact con Q8 (misma precisión de cómputo)
-  - [ ] Roundtrip byte-identical
+  - [x] Implementar Q4 SIMD matmul (AVX2 unpack + sign-trick per group)
+  - [x] Q4 scalar fallback (non-allocating)
+  - [x] Correctness tests: SIMD vs scalar, SIMD vs allocating (2 tests added)
+  - [x] Benchmark: Q4 vs Q8 (BPB +12.7%, 15.3x slower)
+  - [x] **Quality gate FAILED**: BPB +12.7% >> +3% budget, throughput catastrophic
 
 #### R-025: Software Prefetching ✅ COMPLETADO
 - **Estado**: COMPLETADO (2026-10-29)
@@ -788,3 +797,7 @@ R-026 (iGPU) último: mayor complejidad (Vulkan FFI), módulo opcional, requiere
 | 2026-10-29 | R-025 COMPLETADO: software prefetch en 3 kernels SIMD, +3.2% e2e [MEASURED: 4 rounds] |
 | 2026-10-29 | R-025: BPB 1.281455 idéntico con/sin prefetch (0.000 delta), 111 tests pass |
 | 2026-10-29 | R-025: REDUKT_NO_PREFETCH=1 env var añadida para controlled A/B benchmarking |
+| 2026-10-29 | R-024 ABORTADO: Q4 SIMD implementado, pero +12.7% BPB y 15.3x slower que Q8 |
+| 2026-10-29 | R-024: confirma R-V05 — Q4 precision insuficiente para RWKV-7 0.1B (4 bits < 8 bits) |
+| 2026-10-29 | R-024: Q4 SIMD kernel retenido como mejora al path Q4 (non-allocating + SIMD) |
+| 2026-10-29 | R-024: 2 tests añadidos (q4_simd_matches_scalar, q4_simd_matches_allocating), 113 total |
