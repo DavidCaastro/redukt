@@ -124,7 +124,8 @@ impl TokenNgram {
                 for (&tok, &count) in &entry.counts {
                     let prob = (count as f32 + alpha) / denom;
                     let base_prob = alpha / denom;
-                    logits[tok as usize] += w * effective_scale * (prob / base_prob).ln();
+                    logits[tok as usize] += w * effective_scale
+                        * crate::domain::tensor::portable_lnf(prob / base_prob);
                 }
             }
         }

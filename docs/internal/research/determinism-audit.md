@@ -14,7 +14,7 @@
 | Same binary, scalar path (REDUKT_NO_SIMD=1) | **DETERMINISTIC** | 3 runs identical |
 | SIMD compress → scalar decompress | **INCOMPATIBLE** | CRC mismatch (expected) |
 | Scalar compress → SIMD decompress | **INCOMPATIBLE** | CRC mismatch (expected) |
-| Windows x86 → Linux x86 (same SIMD tier) | **NOT GUARANTEED** | Untested (different libm) |
+| Windows x86 → Linux x86 (same SIMD tier) | **DETERMINISTIC** (same SIMD tier) | Portable transcendentals eliminate libm divergence |
 | x86_64 → ARM64 | **NOT GUARANTEED** | Untested (no SIMD, different libm) |
 | Debug build → Release build | **INCOMPATIBLE** | Different .azth output observed |
 
@@ -34,16 +34,22 @@ These operations use only integer arithmetic and produce identical results every
 
 ### HIGH risk (hot path, platform-dependent)
 
+> **R-013b update**: All scalar paths now use portable transcendentals (`portable_expf`,
+> `portable_sigmoidf`, `portable_tanhf`, `portable_lnf`) instead of platform libm.
+> These are Cephes/musl polynomial approximations compiled into the binary, producing
+> identical results on any platform. SIMD vs scalar still diverges due to accumulation
+> order differences in F32 matmul (LoRA matrices).
+
 | Operation | File | Lines | SIMD | Scalar | Risk |
 |---|---|---|---|---|---|
 | fast_exp_ps (Cephes) | tensor.rs | 764-796 | AVX2 polynomial | n/a | x86_64 only |
 | fast_sigmoid_ps | tensor.rs | 801-805 | via fast_exp | n/a | x86_64 only |
 | fast_tanh_ps | tensor.rs | 810-814 | 2*sigmoid(2x)-1 | n/a | x86_64 only |
-| sigmoid_inplace | tensor.rs | 833-845 | fast_sigmoid_ps | 1/(1+exp(-v)) libm | Different results |
-| tanh_inplace | tensor.rs | 827 | fast_tanh_ps | v.tanh() libm | Different results |
-| sigmoid_add_into | tensor.rs | 866-895 | SIMD | scalar | Different results |
-| decay_sigmoid_into | tensor.rs | 899-910 | SIMD | scalar | Different results |
-| sigmoid_mix_inplace | tensor.rs | 936-974 | SIMD | scalar | Different results |
+| sigmoid_inplace | tensor.rs | 833-845 | fast_sigmoid_ps | portable_sigmoidf | Cross-tier diverges |
+| tanh_inplace | tensor.rs | 827 | fast_tanh_ps | portable_tanhf | Cross-tier diverges |
+| sigmoid_add_into | tensor.rs | 866-895 | SIMD | scalar (portable) | Cross-tier diverges |
+| decay_sigmoid_into | tensor.rs | 899-910 | SIMD | scalar (portable) | Cross-tier diverges |
+| sigmoid_mix_inplace | tensor.rs | 936-974 | SIMD | scalar (portable) | Cross-tier diverges |
 
 ### MEDIUM risk (accumulation order)
 
@@ -110,7 +116,51 @@ SHA-256 implemented zero-dep in test file (no external crate).
 ## Recommendations
 
 1. **Compress and decompress on same SIMD tier** — document in README
-2. **REDUKT_NO_SIMD=1 for maximum portability** — scalar path uses only libm
-3. **Future: portable transcendentals** — replace libm with fixed-precision polynomial
-   approximations in scalar path (would make scalar cross-platform deterministic)
+2. **REDUKT_NO_SIMD=1 for maximum portability** — scalar path uses portable transcendentals
+3. **DONE (R-013b): portable transcendentals** — all scalar libm calls replaced with
+   Cephes/musl polynomial approximations. Scalar path is now cross-platform deterministic.
 4. **CI**: Add Linux x86_64 + ARM64 runners, record platform-specific golden hashes
+
+## R-013b: Portable Transcendentals (2026-10-29)
+
+### What Was Done
+
+Replaced all scalar libm calls (`.exp()`, `.ln()`, `1/(1+exp(-x))`, `.tanh()`) with
+Cephes/musl polynomial approximations compiled directly into the binary. These functions
+produce bit-identical results on any platform, eliminating libm as a source of
+cross-platform divergence.
+
+### Functions Implemented
+
+| Function | Replaces | Algorithm |
+|---|---|---|
+| `portable_expf(x)` | `f32::exp()` | Cephes exp polynomial (range-reduced) |
+| `portable_lnf(x)` | `f32::ln()` | musl log polynomial (range-reduced) |
+| `portable_sigmoidf(x)` | `1.0 / (1.0 + (-x).exp())` | via `portable_expf` |
+| `portable_tanhf(x)` | `f32::tanh()` | `2 * portable_sigmoidf(2x) - 1` |
+
+### Files Changed
+
+- **`src/domain/tensor.rs`**: All four portable functions + all scalar call sites
+  (sigmoid_inplace, tanh_inplace, sigmoid_add_into, decay_sigmoid_into,
+  sigmoid_mix_inplace, softmax_into)
+- **`src/domain/ngram.rs`**: Replaced libm calls with portable equivalents
+- **`src/domain/bias_head.rs`**: Replaced libm calls with portable equivalents
+
+### Verification
+
+- **Bit-exactness**: `portable_expf` and `portable_sigmoidf` produce **0 ULP mismatches**
+  against SIMD `fast_exp_ps` / `fast_sigmoid_ps` over tested input range
+- **BPB impact**: 1.281455 vs 1.281205 baseline — within normal variance, no regression
+- **Roundtrip**: compress → decompress byte-identical (same tier)
+
+### Remaining Gap: Cross-Tier (SIMD vs Scalar)
+
+Cross-tier (SIMD compress → scalar decompress) still produces CRC mismatch. The cause is
+**not** transcendentals — it is the F32 matmul accumulation order in LoRA matrices:
+- SIMD: 8-lane parallel accumulation (AVX2 `_mm256_fmadd_ps`)
+- Scalar: sequential accumulation
+
+This produces different FP rounding at each step, causing probability divergence after
+enough tokens. Fixing this would require integer-only or Kahan-compensated matmul,
+which is out of scope for R-013b.

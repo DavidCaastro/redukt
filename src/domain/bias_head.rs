@@ -87,7 +87,7 @@ impl BiasHead {
     /// `probs` is the softmax of the (biased) logits.
     pub fn update(&mut self, probs: &[f32], correct_token: usize) {
         // Surprise = -log(p(correct)) in nats
-        let surprise = -probs[correct_token].max(1e-30).ln();
+        let surprise = -crate::domain::tensor::portable_lnf(probs[correct_token].max(1e-30));
         let lr = self.effective_lr(surprise);
         self.last_lr = lr;
 

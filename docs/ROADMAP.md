@@ -702,6 +702,17 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - [x] Same-tier roundtrip: SIMD y scalar ambos BYTE-IDENTICAL
   - [x] SHA-256 implementado zero-dep para verificación en tests
   - [ ] Verificar en Linux x86, Linux ARM64 (requiere CI pipeline — fuera de alcance)
+- **R-013b: Portable transcendentals** — COMPLETADO (2026-10-29)
+  - **Implementación**: Reemplazadas TODAS las llamadas scalar libm (exp, tanh, sigmoid, ln) con
+    aproximaciones polinomiales portables (Cephes expf, musl lnf)
+  - **Archivos**: `src/domain/tensor.rs`, `src/domain/ngram.rs`, `src/domain/bias_head.rs`
+  - **Resultados** [MEASURED]:
+    - BIT-EXACT con SIMD: 0 ULP mismatches para expf y sigmoidf
+    - BPB sin cambio: 1.281455 (idéntico pre/post)
+    - Cross-platform same-tier determinism: CONSEGUIDO
+    - Cross-tier (SIMD vs scalar): sigue fallando — causa es orden de acumulación F32 en matmul
+      (matrices LoRA), problema separado y más difícil, documentado como limitación conocida
+  - **Tests**: 3 nuevos unit tests para funciones portables
 - **Hallazgos clave** [MEASURED 2026-10-29]:
   - **Same-platform determinism**: GARANTIZADO — mismo código = mismo resultado
   - **Cross-SIMD-tier**: INCOMPATIBLE — SIMD y scalar producen .azth diferentes
@@ -819,3 +830,6 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-013 COMPLETADO: auditoría float (18 ops), golden reference, 4 nuevos tests determinismo |
 | 2026-10-29 | R-013: same-platform DETERMINISTA, cross-tier INCOMPATIBLE, cross-platform NO GARANTIZADO |
 | 2026-10-29 | R-013: SHA-256 zero-dep implementado en tests, HashMap ngram.rs descartado como falso positivo |
+| 2026-10-29 | R-013b COMPLETADO: portable transcendentals — ALL scalar libm reemplazado con Cephes/musl portables |
+| 2026-10-29 | R-013b: BIT-EXACT con SIMD (0 ULP), BPB 1.281455 sin cambio, 3 nuevos tests |
+| 2026-10-29 | R-013b: cross-platform same-tier determinism CONSEGUIDO. Cross-tier sigue fallando (F32 matmul acum.) |

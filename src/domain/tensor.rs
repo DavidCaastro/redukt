@@ -754,6 +754,107 @@ pub fn mul_into(out: &mut [f32], a: &[f32], b: &[f32]) {
     for (o, (&a, &b)) in out.iter_mut().zip(a.iter().zip(b.iter())) { *o = a * b; }
 }
 
+// ---- Portable transcendentals (R-013b) ----
+// Pure-Rust implementations using ONLY IEEE 754 basic operations (+, -, *, /, bitwise).
+// These produce BIT-IDENTICAL results on all platforms (x86, ARM64, WASM).
+// Coefficients match fast_exp_ps (Cephes) for SIMD/scalar cross-tier determinism.
+
+/// Portable exp(f32) — Cephes degree-5 polynomial + range reduction.
+/// Same coefficients as fast_exp_ps: SIMD lane == scalar result.
+#[inline]
+pub fn portable_expf(x: f32) -> f32 {
+    const LOG2E: f32 = 1.44269504088896341;
+    const LN2_HI: f32 = 6.93145751953125E-1;
+    const LN2_LO: f32 = 1.42860682030941723212E-6;
+    const EXP_LO: f32 = -87.3365447505531;
+    const EXP_HI: f32 = 88.3762626647949;
+    const P0: f32 = 1.9875691500E-4;
+    const P1: f32 = 1.3981999507E-3;
+    const P2: f32 = 8.3334519073E-3;
+    const P3: f32 = 4.1665795894E-2;
+    const P4: f32 = 1.6666665459E-1;
+    const P5: f32 = 5.0000001201E-1;
+
+    let x = if x < EXP_LO { EXP_LO } else if x > EXP_HI { EXP_HI } else { x };
+    let fx = x * LOG2E;
+    // Round-to-nearest-even (matches _mm256_cvtps_epi32 default rounding)
+    let nf = portable_roundeven(fx);
+    let n = nf as i32;
+    let r = (x - nf * LN2_HI) - nf * LN2_LO;
+    let r2 = r * r;
+    let mut y = P0;
+    y = y * r + P1;
+    y = y * r + P2;
+    y = y * r + P3;
+    y = y * r + P4;
+    y = y * r + P5;
+    y = (y * r2 + r) + 1.0;
+    let pow2n = f32::from_bits(((n + 127) as u32) << 23);
+    y * pow2n
+}
+
+/// Portable natural log (f32) — musl/FreeBSD algorithm.
+/// Uses only IEEE 754 basic ops. Bit-exact across all platforms.
+#[inline]
+pub fn portable_lnf(x: f32) -> f32 {
+    const LN2_HI: f32 = 6.9313812256e-01;
+    const LN2_LO: f32 = 9.0580006145e-06;
+    const LG1: f32 = 0.66666662693;
+    const LG2: f32 = 0.40000972152;
+    const LG3: f32 = 0.28498786688;
+    const LG4: f32 = 0.24279078841;
+
+    let mut ix = x.to_bits();
+    let mut k: i32 = 0;
+
+    if ix < 0x00800000 || (ix >> 31) != 0 {
+        if ix << 1 == 0 { return f32::NEG_INFINITY; } // log(+-0)
+        if (ix >> 31) != 0 { return f32::NAN; } // log(negative)
+        k -= 25;
+        ix = (x * f32::from_bits(0x4c000000)).to_bits(); // x * 2^25
+    } else if ix >= 0x7f800000 {
+        return x; // +inf or NaN passthrough
+    } else if ix == 0x3f800000 {
+        return 0.0; // log(1) = 0 exact
+    }
+
+    // Normalize to [sqrt(2)/2, sqrt(2)]
+    ix = ix.wrapping_add(0x3f800000u32.wrapping_sub(0x3f3504f3));
+    k += ((ix >> 23) as i32) - 0x7f;
+    ix = (ix & 0x007fffff) + 0x3f3504f3;
+    let xn = f32::from_bits(ix);
+
+    let f = xn - 1.0;
+    let s = f / (2.0 + f);
+    let dk = k as f32;
+    let z = s * s;
+    let w = z * z;
+    let t1 = w * (LG2 + w * LG4);
+    let t2 = z * (LG1 + w * LG3);
+    let r = t2 + t1;
+    let hfsq = 0.5 * f * f;
+    s * (hfsq + r) + dk * LN2_LO - hfsq + f + dk * LN2_HI
+}
+
+/// Portable sigmoid(f32) = 1/(1+exp(-x)).
+#[inline]
+pub fn portable_sigmoidf(x: f32) -> f32 {
+    1.0 / (1.0 + portable_expf(-x))
+}
+
+/// Portable tanh(f32) = 2*sigmoid(2x) - 1.
+#[inline]
+pub fn portable_tanhf(x: f32) -> f32 {
+    2.0 * portable_sigmoidf(2.0 * x) - 1.0
+}
+
+/// Round-to-nearest-even for f32 (matches IEEE 754 default / _mm256_cvtps_epi32).
+#[inline]
+fn portable_roundeven(x: f32) -> f32 {
+    const MAGIC: f32 = 8388608.0; // 2^23
+    if x >= 0.0 { (x + MAGIC) - MAGIC } else { (x - MAGIC) + MAGIC }
+}
+
 // ---- AVX2 transcendental approximations (R-022) ----
 
 /// Fast exp(x) for 8 packed f32 — Cephes-style polynomial, ~23-bit accuracy.
@@ -824,7 +925,7 @@ unsafe fn tanh_inplace_avx2(x: &mut [f32]) {
         _mm256_storeu_ps(p.add(off), fast_tanh_ps(v));
     }
     for i in (chunks * 8)..x.len() {
-        *x.get_unchecked_mut(i) = x.get_unchecked(i).tanh();
+        *x.get_unchecked_mut(i) = portable_tanhf(*x.get_unchecked(i));
     }
 }
 
@@ -840,7 +941,7 @@ unsafe fn sigmoid_inplace_avx2(x: &mut [f32]) {
     }
     for i in (chunks * 8)..x.len() {
         let v = *x.get_unchecked(i);
-        *x.get_unchecked_mut(i) = 1.0 / (1.0 + (-v).exp());
+        *x.get_unchecked_mut(i) = portable_sigmoidf(v);
     }
 }
 
@@ -850,7 +951,7 @@ pub fn tanh_inplace(x: &mut [f32]) {
         unsafe { tanh_inplace_avx2(x) };
         return;
     }
-    for v in x.iter_mut() { *v = v.tanh(); }
+    for v in x.iter_mut() { *v = portable_tanhf(*v); }
 }
 
 pub fn sigmoid_inplace(x: &mut [f32]) {
@@ -859,7 +960,7 @@ pub fn sigmoid_inplace(x: &mut [f32]) {
         unsafe { sigmoid_inplace_avx2(x) };
         return;
     }
-    for v in x.iter_mut() { *v = 1.0 / (1.0 + (-*v).exp()); }
+    for v in x.iter_mut() { *v = portable_sigmoidf(*v); }
 }
 
 /// out[i] = sigmoid(base[i] + offset[i]). Used by model Steps 4, 8.
@@ -870,7 +971,7 @@ pub fn sigmoid_add_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
         return;
     }
     for i in 0..out.len() {
-        out[i] = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        out[i] = portable_sigmoidf(base[i] + offset[i]);
     }
 }
 
@@ -891,7 +992,7 @@ unsafe fn sigmoid_add_into_avx2(out: &mut [f32], base: &[f32], offset: &[f32]) {
         _mm256_storeu_ps(dp.add(off), fast_sigmoid_ps(sum));
     }
     for i in (chunks * 8)..n {
-        *out.get_unchecked_mut(i) = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        *out.get_unchecked_mut(i) = portable_sigmoidf(base[i] + offset[i]);
     }
 }
 
@@ -904,7 +1005,7 @@ pub fn decay_sigmoid_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
     }
     for i in 0..out.len() {
         let val = base[i] + offset[i];
-        out[i] = (-0.606531f32 * (1.0 / (1.0 + (-val).exp()))).exp();
+        out[i] = portable_expf(-0.606531f32 * portable_sigmoidf(val));
     }
 }
 
@@ -928,7 +1029,7 @@ unsafe fn decay_sigmoid_into_avx2(out: &mut [f32], base: &[f32], offset: &[f32])
     }
     for i in (chunks * 8)..n {
         let val = base[i] + offset[i];
-        *out.get_unchecked_mut(i) = (-0.606531f32 * (1.0 / (1.0 + (-val).exp()))).exp();
+        *out.get_unchecked_mut(i) = portable_expf(-0.606531f32 * portable_sigmoidf(val));
     }
 }
 
@@ -942,7 +1043,7 @@ pub fn sigmoid_mix_inplace(
         return;
     }
     for i in 0..v_out.len() {
-        let mix = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        let mix = portable_sigmoidf(base[i] + offset[i]);
         v_out[i] += (v_first[i] - v_out[i]) * mix;
     }
 }
@@ -971,7 +1072,7 @@ unsafe fn sigmoid_mix_inplace_avx2(
         _mm256_storeu_ps(vp.add(off), result);
     }
     for i in (chunks * 8)..n {
-        let mix = 1.0 / (1.0 + (-(base[i] + offset[i])).exp());
+        let mix = portable_sigmoidf(base[i] + offset[i]);
         *v_out.get_unchecked_mut(i) += (v_first[i] - v_out[i]) * mix;
     }
 }
@@ -1326,7 +1427,7 @@ pub fn softmax(x: &Tensor) -> Tensor {
         let uniform = 1.0 / n as f32;
         return Tensor::from_data(vec![uniform; n], x.shape.clone());
     }
-    let exps: Vec<f32> = x.data.iter().map(|&v| (v - max_val).exp()).collect();
+    let exps: Vec<f32> = x.data.iter().map(|&v| portable_expf(v - max_val)).collect();
     let sum: f32 = exps.iter().sum();
     let data: Vec<f32> = exps.iter().map(|&v| v / sum.max(f32::EPSILON)).collect();
     Tensor::from_data(data, x.shape.clone())
@@ -1344,7 +1445,7 @@ pub fn softmax_into(logits: &[f32], out: &mut [f32]) {
     }
     let mut sum = 0.0f32;
     for i in 0..logits.len() {
-        let e = (logits[i] - max_val).exp();
+        let e = portable_expf(logits[i] - max_val);
         out[i] = e;
         sum += e;
     }
@@ -1356,13 +1457,13 @@ pub fn softmax_into(logits: &[f32], out: &mut [f32]) {
 /// Uses numerically stable softmax internally.
 pub fn entropy_from_logits(logits: &[f32]) -> f32 {
     let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let exps: Vec<f32> = logits.iter().map(|&v| (v - max_val).exp()).collect();
+    let exps: Vec<f32> = logits.iter().map(|&v| portable_expf(v - max_val)).collect();
     let sum: f32 = exps.iter().sum();
     let mut h = 0.0f32;
     for &e in &exps {
         let p = e / sum;
         if p > 1e-30 {
-            h -= p * p.ln();
+            h -= p * portable_lnf(p);
         }
     }
     h
@@ -2172,5 +2273,104 @@ mod tests {
             ns_decay_scalar as f64 / ns_decay.max(1) as f64);
         eprintln!("  sigmoid_add_into:   {:>6} ns", ns_sigadd);
         eprintln!("  sigmoid_mix_inplace:{:>6} ns", ns_sigmix);
+    }
+
+    // ---- R-013b: Portable transcendental bit-exactness ----
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn portable_expf_matches_simd() {
+        // Verify portable_expf produces bit-identical results to fast_exp_ps
+        let test_vals: Vec<f32> = (-870..=880).map(|i| i as f32 * 0.1).collect();
+        let mut max_ulp = 0u32;
+        let mut mismatches = 0;
+        for chunk in test_vals.chunks(8) {
+            if chunk.len() < 8 { continue; }
+            let mut simd_out = [0.0f32; 8];
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    let v = _mm256_loadu_ps(chunk.as_ptr());
+                    _mm256_storeu_ps(simd_out.as_mut_ptr(), fast_exp_ps(v));
+                }
+                for i in 0..8 {
+                    let scalar = portable_expf(chunk[i]);
+                    let s_bits = scalar.to_bits();
+                    let v_bits = simd_out[i].to_bits();
+                    if s_bits != v_bits {
+                        let ulp = (s_bits as i64 - v_bits as i64).unsigned_abs() as u32;
+                        if ulp > max_ulp { max_ulp = ulp; }
+                        mismatches += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("portable_expf vs fast_exp_ps: {} mismatches, max {} ULP", mismatches, max_ulp);
+        assert_eq!(mismatches, 0, "portable_expf must be bit-exact with fast_exp_ps");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn portable_sigmoidf_matches_simd() {
+        let test_vals: Vec<f32> = (-100..=100).map(|i| i as f32 * 0.1).collect();
+        let mut mismatches = 0;
+        for chunk in test_vals.chunks(8) {
+            if chunk.len() < 8 { continue; }
+            let mut simd_out = [0.0f32; 8];
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    let v = _mm256_loadu_ps(chunk.as_ptr());
+                    _mm256_storeu_ps(simd_out.as_mut_ptr(), fast_sigmoid_ps(v));
+                }
+                for i in 0..8 {
+                    let scalar = portable_sigmoidf(chunk[i]);
+                    if scalar.to_bits() != simd_out[i].to_bits() {
+                        if mismatches < 5 {
+                            eprintln!("  sigmoid({:.4}): scalar={:e} (0x{:08x}) simd={:e} (0x{:08x})",
+                                chunk[i], scalar, scalar.to_bits(), simd_out[i], simd_out[i].to_bits());
+                        }
+                        mismatches += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("portable_sigmoidf vs fast_sigmoid_ps: {} mismatches out of {}",
+            mismatches, test_vals.len());
+        assert_eq!(mismatches, 0, "portable_sigmoidf must be bit-exact with fast_sigmoid_ps");
+    }
+
+    #[test]
+    fn portable_expf_known_values() {
+        // Verify known values to catch polynomial bugs
+        let cases: [(f32, f32); 5] = [
+            (0.0, 1.0),
+            (1.0, std::f32::consts::E),
+            (-1.0, 1.0 / std::f32::consts::E),
+            (-87.0, (-87.0f32).exp()),  // near underflow
+            (88.0, (88.0f32).exp()),    // near overflow
+        ];
+        for &(x, expected) in &cases {
+            let got = portable_expf(x);
+            let rel_err = ((got - expected) / expected).abs();
+            assert!(rel_err < 1e-6, "portable_expf({}) = {}, expected {}, rel_err {:e}",
+                x, got, expected, rel_err);
+        }
+    }
+
+    #[test]
+    fn portable_lnf_known_values() {
+        let cases: [(f32, f32); 5] = [
+            (1.0, 0.0),
+            (std::f32::consts::E, 1.0),
+            (0.5, (0.5f32).ln()),
+            (10.0, (10.0f32).ln()),
+            (1e-10, (1e-10f32).ln()),
+        ];
+        for &(x, expected) in &cases {
+            let got = portable_lnf(x);
+            let abs_err = (got - expected).abs();
+            let tol = if expected.abs() > 1.0 { expected.abs() * 1e-6 } else { 1e-6 };
+            assert!(abs_err < tol, "portable_lnf({}) = {}, expected {}, err {:e}",
+                x, got, expected, abs_err);
+        }
     }
 }
