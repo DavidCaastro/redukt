@@ -242,3 +242,302 @@ fn decompress_rejects_corrupted_crc() {
     std::fs::remove_dir_all(&tmp).ok();
     eprintln!("CRC corruption detection OK");
 }
+
+// ---------------------------------------------------------------------------
+// R-013: Cross-platform determinism tests
+// ---------------------------------------------------------------------------
+
+/// Golden reference: compress a known 40-byte input and verify the output
+/// matches the expected SHA-256 hash. This detects any change in the
+/// compression pipeline (model, quantization, coder, format).
+///
+/// Platform: Windows x86_64, AVX2, Q8 auto. Generated 2026-10-29.
+/// If this test fails on a new platform, record the new hash as the
+/// platform-specific golden reference.
+#[test]
+#[ignore] // requires weights
+fn golden_reference_determinism() {
+    let bin = ensure_bin();
+    if !has_weights() { eprintln!("SKIP: no weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_golden");
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let input = tmp.join("golden-input.bin");
+    let compressed = tmp.join("golden.azth");
+    let restored = tmp.join("golden-restored.bin");
+
+    // Deterministic 40-byte input
+    let golden_input = b"Determinism: the quick brown fox jumps!";
+    std::fs::write(&input, golden_input).unwrap();
+
+    assert!(compress(&bin, &input, &compressed), "golden compress failed");
+
+    // Verify compressed output matches golden reference
+    let azth_bytes = std::fs::read(&compressed).unwrap();
+    assert_eq!(azth_bytes.len(), 35,
+        "golden: expected 35 bytes, got {}", azth_bytes.len());
+
+    let hash = sha256_hex(&azth_bytes);
+    // Golden SHA-256 for Windows x86_64 AVX2 Q8 (2026-10-29)
+    let expected = "736a2024822ef712bf9847cffd2b1065f03f7f1de152329a02b816f71b6c3e21";
+    assert_eq!(hash, expected,
+        "golden hash mismatch — platform or pipeline changed?\n  got:      {}\n  expected: {}",
+        hash, expected);
+
+    // Verify roundtrip
+    assert!(decompress(&bin, &compressed, &restored), "golden decompress failed");
+    let original = std::fs::read(&input).unwrap();
+    let recovered = std::fs::read(&restored).unwrap();
+    assert_eq!(original, recovered, "golden roundtrip FAILED: bytes differ");
+
+    std::fs::remove_dir_all(&tmp).ok();
+    eprintln!("golden reference OK: {} bytes, hash={}", azth_bytes.len(), &hash[..16]);
+}
+
+/// Multi-process determinism: compress the same input 5 times in separate
+/// processes and verify all outputs are byte-identical.
+#[test]
+#[ignore] // requires weights
+fn multi_process_determinism() {
+    let bin = ensure_bin();
+    if !has_weights() { eprintln!("SKIP: no weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_multiproc");
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let input = tmp.join("input.txt");
+    let test_data = b"Multi-process determinism test: identical output expected.";
+    std::fs::write(&input, test_data).unwrap();
+
+    let runs = 5;
+    let mut hashes = Vec::new();
+    for i in 0..runs {
+        let out = tmp.join(format!("run{}.azth", i));
+        assert!(compress(&bin, &input, &out), "compress run {} failed", i);
+        let bytes = std::fs::read(&out).unwrap();
+        hashes.push(sha256_hex(&bytes));
+    }
+
+    for i in 1..runs {
+        assert_eq!(hashes[0], hashes[i],
+            "determinism FAILED: run 0 vs run {} differ\n  run0: {}\n  run{}: {}",
+            i, hashes[0], i, hashes[i]);
+    }
+
+    std::fs::remove_dir_all(&tmp).ok();
+    eprintln!("multi-process determinism OK: {} runs identical ({})", runs, &hashes[0][..16]);
+}
+
+/// Cross-SIMD-tier roundtrip: compress with SIMD, decompress with scalar.
+/// On Q8 (default), cross-tier roundtrip may fail due to transcendental
+/// approximation differences (SIMD Cephes vs scalar libm).
+/// This test documents the current behavior.
+#[test]
+#[ignore] // requires weights
+fn cross_tier_roundtrip_documents_divergence() {
+    let bin = ensure_bin();
+    if !has_weights() { eprintln!("SKIP: no weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_cross_tier");
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let input = tmp.join("input.txt");
+    let compressed_simd = tmp.join("simd.azth");
+    let compressed_scalar = tmp.join("scalar.azth");
+    let restored_cross = tmp.join("cross.bin");
+
+    let test_data = b"Cross-tier determinism test data for SIMD vs scalar.";
+    std::fs::write(&input, test_data).unwrap();
+
+    // Compress with default SIMD
+    assert!(compress(&bin, &input, &compressed_simd), "SIMD compress failed");
+
+    // Compress with scalar (REDUKT_NO_SIMD=1)
+    let ok_scalar = Command::new(&bin)
+        .args(["compress", "--input", input.to_str().unwrap(),
+               "--output", compressed_scalar.to_str().unwrap()])
+        .env("REDUKT_NO_SIMD", "1")
+        .status()
+        .expect("failed to run scalar compress")
+        .success();
+    assert!(ok_scalar, "scalar compress failed");
+
+    let simd_bytes = std::fs::read(&compressed_simd).unwrap();
+    let scalar_bytes = std::fs::read(&compressed_scalar).unwrap();
+
+    if simd_bytes == scalar_bytes {
+        eprintln!("cross-tier: SIMD and scalar produce IDENTICAL output (unexpected but good)");
+    } else {
+        eprintln!("cross-tier: SIMD and scalar produce DIFFERENT output (expected)");
+        eprintln!("  SIMD:   {} bytes, hash={}", simd_bytes.len(), &sha256_hex(&simd_bytes)[..16]);
+        eprintln!("  scalar: {} bytes, hash={}", scalar_bytes.len(), &sha256_hex(&scalar_bytes)[..16]);
+    }
+
+    // Try cross-tier decompress: SIMD-compressed → scalar decompress
+    let cross_ok = Command::new(&bin)
+        .args(["decompress", "--input", compressed_simd.to_str().unwrap(),
+               "--output", restored_cross.to_str().unwrap()])
+        .env("REDUKT_NO_SIMD", "1")
+        .status()
+        .expect("failed to run cross-tier decompress")
+        .success();
+
+    if cross_ok {
+        let original = std::fs::read(&input).unwrap();
+        let recovered = std::fs::read(&restored_cross).unwrap();
+        if original == recovered {
+            eprintln!("cross-tier roundtrip: PASS (byte-identical)");
+        } else {
+            eprintln!("cross-tier roundtrip: data differs (CRC passed but content wrong)");
+        }
+    } else {
+        // Expected: CRC mismatch because SIMD and scalar produce different logits
+        eprintln!("cross-tier roundtrip: CRC MISMATCH (expected — different SIMD tiers)");
+        eprintln!("  This confirms: compress and decompress MUST use the same SIMD tier.");
+    }
+
+    // Same-tier roundtrips must always work
+    let restored_simd = tmp.join("simd-restored.bin");
+    assert!(decompress(&bin, &compressed_simd, &restored_simd), "same-tier SIMD roundtrip failed");
+    assert_eq!(std::fs::read(&input).unwrap(), std::fs::read(&restored_simd).unwrap(),
+        "same-tier SIMD roundtrip: bytes differ");
+
+    let restored_scalar = tmp.join("scalar-restored.bin");
+    let ok_scalar_rt = Command::new(&bin)
+        .args(["decompress", "--input", compressed_scalar.to_str().unwrap(),
+               "--output", restored_scalar.to_str().unwrap()])
+        .env("REDUKT_NO_SIMD", "1")
+        .status()
+        .expect("failed to run scalar decompress")
+        .success();
+    assert!(ok_scalar_rt, "same-tier scalar roundtrip failed");
+    assert_eq!(std::fs::read(&input).unwrap(), std::fs::read(&restored_scalar).unwrap(),
+        "same-tier scalar roundtrip: bytes differ");
+
+    std::fs::remove_dir_all(&tmp).ok();
+    eprintln!("cross-tier test complete: same-tier roundtrips PASS, cross-tier CRC mismatch expected");
+}
+
+/// Scalar-only determinism: verify that scalar path (REDUKT_NO_SIMD=1)
+/// produces identical output across multiple runs.
+#[test]
+#[ignore] // requires weights
+fn scalar_determinism() {
+    let bin = ensure_bin();
+    if !has_weights() { eprintln!("SKIP: no weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_scalar_det");
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let input = tmp.join("input.txt");
+    std::fs::write(&input, b"Scalar determinism: three runs must match.").unwrap();
+
+    let runs = 3;
+    let mut hashes = Vec::new();
+    for i in 0..runs {
+        let out = tmp.join(format!("scalar{}.azth", i));
+        let ok = Command::new(&bin)
+            .args(["compress", "--input", input.to_str().unwrap(),
+                   "--output", out.to_str().unwrap()])
+            .env("REDUKT_NO_SIMD", "1")
+            .status()
+            .expect("failed to run scalar compress")
+            .success();
+        assert!(ok, "scalar compress run {} failed", i);
+        hashes.push(sha256_hex(&std::fs::read(&out).unwrap()));
+    }
+
+    for i in 1..runs {
+        assert_eq!(hashes[0], hashes[i],
+            "scalar determinism FAILED: run 0 vs run {}", i);
+    }
+
+    std::fs::remove_dir_all(&tmp).ok();
+    eprintln!("scalar determinism OK: {} runs identical", runs);
+}
+
+// ---------------------------------------------------------------------------
+// Utility: SHA-256 (minimal, no external deps)
+// ---------------------------------------------------------------------------
+
+fn sha256_hex(data: &[u8]) -> String {
+    let hash = sha256(data);
+    hash.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let k: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ];
+
+    // Padding
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while (padded.len() % 64) != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    // Process 64-byte blocks
+    for chunk in padded.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([chunk[4*i], chunk[4*i+1], chunk[4*i+2], chunk[4*i+3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i-15].rotate_right(7) ^ w[i-15].rotate_right(18) ^ (w[i-15] >> 3);
+            let s1 = w[i-2].rotate_right(17) ^ w[i-2].rotate_right(19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16].wrapping_add(s0).wrapping_add(w[i-7]).wrapping_add(s1);
+        }
+
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(k[i]).wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            hh = g; g = f; f = e;
+            e = d.wrapping_add(temp1);
+            d = c; c = b; b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a); h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c); h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e); h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g); h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = [0u8; 32];
+    for i in 0..8 {
+        out[4*i..4*i+4].copy_from_slice(&h[i].to_be_bytes());
+    }
+    out
+}

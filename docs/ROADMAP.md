@@ -689,12 +689,29 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   Solo tendría sentido con batch dispatch o si head matmul fuera >50% del forward.
   State update (62% del forward) sigue siendo el hard ceiling real.
 
-### R-013: Determinismo cross-platform
-- **Estado**: PENDIENTE
+### R-013: Determinismo cross-platform ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-29)
+- **Archivos**: `tests/roundtrip.rs`, `data/test-fixtures/`, `docs/internal/research/determinism-audit.md`
 - **Subtareas**:
-  - [ ] Generar golden files (input → .azth → restored) en CI
-  - [ ] Verificar en Windows x86, Linux x86, Linux ARM64
-  - [ ] Auditar operaciones float que podrían divergir entre plataformas
+  - [x] Auditar operaciones float que podrían divergir entre plataformas (18 operaciones, 6 archivos)
+  - [x] Generar golden files (input → .azth → restored, SHA-256 verificado)
+  - [x] Golden reference test: 39B input → 35B AZTH, SHA-256 hardcoded
+  - [x] Multi-process determinism: 5 runs, SHA-256 idéntico
+  - [x] Scalar determinism: 3 runs con REDUKT_NO_SIMD=1, idéntico
+  - [x] Cross-tier roundtrip: SIMD→scalar CRC mismatch (esperado, documentado)
+  - [x] Same-tier roundtrip: SIMD y scalar ambos BYTE-IDENTICAL
+  - [x] SHA-256 implementado zero-dep para verificación en tests
+  - [ ] Verificar en Linux x86, Linux ARM64 (requiere CI pipeline — fuera de alcance)
+- **Hallazgos clave** [MEASURED 2026-10-29]:
+  - **Same-platform determinism**: GARANTIZADO — mismo código = mismo resultado
+  - **Cross-SIMD-tier**: INCOMPATIBLE — SIMD y scalar producen .azth diferentes
+  - **Cross-platform**: NO GARANTIZADO — libm y SIMD difieren entre plataformas
+  - **Coder (range coder)**: 100% entero → determinista en toda plataforma
+  - **CRC-32, E8E9 preprocess**: Enteros → determinista
+  - **HashMap en ngram.rs**: Falso positivo — cada token actualiza un índice independiente
+  - **Riesgo principal**: transcendentales (exp, sigmoid, tanh) — SIMD Cephes vs libm scalar
+  - Compresión y descompresión DEBEN usar el mismo SIMD tier
+  - 117 tests (113+4), 4 nuevos tests de determinismo
 
 ### R-014: Streaming decompression
 - **Estado**: PENDIENTE
@@ -799,3 +816,6 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-026 ABORTADO: iGPU Vulkan 2.68x slower que CPU — dispatch overhead, head matmul solo 12% |
 | 2026-10-29 | R-026: código revertido, resultado negativo documentado. Fase 2 completa (1/3 exitoso) |
 | 2026-10-29 | R-024: 2 tests añadidos (q4_simd_matches_scalar, q4_simd_matches_allocating), 113 total |
+| 2026-10-29 | R-013 COMPLETADO: auditoría float (18 ops), golden reference, 4 nuevos tests determinismo |
+| 2026-10-29 | R-013: same-platform DETERMINISTA, cross-tier INCOMPATIBLE, cross-platform NO GARANTIZADO |
+| 2026-10-29 | R-013: SHA-256 zero-dep implementado en tests, HashMap ngram.rs descartado como falso positivo |
