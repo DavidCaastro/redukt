@@ -292,6 +292,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
     let mut verbose = false;
+    let mut use_gpu = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -309,6 +310,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
+            "--gpu" => { use_gpu = true; }
             _ => {}
         }
         i += 1;
@@ -350,6 +352,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
+    }
+    if use_gpu {
+        model.init_gpu();
     }
 
     timer.start("tokenize");
@@ -724,6 +729,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
     let mut verbose = false;
+    let mut use_gpu = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -734,6 +740,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
+            "--gpu" => { use_gpu = true; }
             _ => {}
         }
         i += 1;
@@ -777,6 +784,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
+    }
+    if use_gpu {
+        model.init_gpu();
     }
 
     timer.start("decode");
@@ -920,6 +930,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut emb_surgery = String::new();
     let mut quant_str = String::new();
     let mut verbose = false;
+    let mut use_gpu = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -935,6 +946,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
+            "--gpu" => { use_gpu = true; }
             _ => {}
         }
         i += 1;
@@ -955,6 +967,9 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
+    }
+    if use_gpu {
+        model.init_gpu();
     }
 
     timer.start("tokenize");
@@ -1068,6 +1083,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
     let mut verbose = false;
+    let mut use_gpu = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -1079,6 +1095,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
+            "--gpu" => { use_gpu = true; }
             _ => {}
         }
         i += 1;
@@ -1099,6 +1116,9 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
+    }
+    if use_gpu {
+        model.init_gpu();
     }
 
     timer.start("tokenize");

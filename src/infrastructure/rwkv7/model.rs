@@ -10,6 +10,7 @@ use crate::domain::quant::{QuantLevel, QuantMatrix, QuantPolicy, quantize_matrix
 use crate::domain::ram_monitor::{check_ram_or_abort, log_ram};
 use crate::infrastructure::rwkv7::safetensors::SafeTensorsFile;
 use crate::infrastructure::rwkv7::gguf::GgufFile;
+use crate::infrastructure::gpu::GpuContext;
 
 pub struct Rwkv7Config {
     pub n_layer: usize,
@@ -106,6 +107,7 @@ pub struct Rwkv7Model {
     ln_out_w: Tensor,      // (D,)
     ln_out_b: Tensor,      // (D,)
     head_w: QuantMatrix,    // (V, D) — auto-quantized (biggest matrix)
+    gpu: Option<GpuContext>, // Optional GPU offload for head matmul
 }
 
 
@@ -327,7 +329,7 @@ impl Rwkv7Model {
         eprintln!("[rwkv7] loaded {} layers, D={}, H={}, N={}, V={}",
                   config.n_layer, d, config.n_head, config.head_size, v);
 
-        Self { config, emb, layers, ln_out_w, ln_out_b, head_w }
+        Self { config, emb, layers, ln_out_w, ln_out_b, head_w, gpu: None }
     }
 
     /// Load model from a GGUF file.
@@ -462,7 +464,7 @@ impl Rwkv7Model {
         eprintln!("[rwkv7] loaded {} layers, D={}, H={}, N={}, V={}",
                   config.n_layer, d, config.n_head, config.head_size, v);
 
-        Self { config, emb, layers, ln_out_w, ln_out_b, head_w }
+        Self { config, emb, layers, ln_out_w, ln_out_b, head_w, gpu: None }
     }
 
     /// Auto-detect format and load model with optional quantization override.
@@ -622,6 +624,24 @@ impl Rwkv7Model {
     }
 
     /// Create a pre-allocated scratch workspace for zero-alloc forward passes.
+    /// Initialize GPU offload for head matmul. Dequantizes head_w to F32
+    /// and uploads to GPU memory. No-op if Vulkan is unavailable.
+    pub fn init_gpu(&mut self) {
+        let (rows, cols) = self.head_w.shape();
+        eprintln!("[gpu] dequantizing head matrix ({} x {}) for GPU upload...", rows, cols);
+        let data = self.head_w.dequantize_f32_flat();
+        match GpuContext::try_init(&data, rows, cols) {
+            Some(ctx) => {
+                eprintln!("[gpu] initialized: {} (head {}x{}, {:.1} MB on GPU)",
+                    ctx.device_name, rows, cols, (rows * cols * 4) as f64 / 1_048_576.0);
+                self.gpu = Some(ctx);
+            }
+            None => {
+                eprintln!("[gpu] Vulkan not available, falling back to CPU");
+            }
+        }
+    }
+
     pub fn create_scratch(&self) -> Scratch {
         let d = self.config.n_embd;
         let n = self.config.head_size;
@@ -693,7 +713,11 @@ impl Rwkv7Model {
         let t_head = std::time::Instant::now();
         layer_norm_into(&mut scratch.ln_buf, &scratch.x,
                         &self.ln_out_w.data, &self.ln_out_b.data, 1e-5);
-        self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
+        if let Some(gpu) = &self.gpu {
+            gpu.mat_vec_mul_into(out_logits, &scratch.ln_buf);
+        } else {
+            self.head_w.mat_vec_mul_into(out_logits, &scratch.ln_buf, &mut scratch.v_q);
+        }
         let head_us = t_head.elapsed().as_micros();
 
         scratch.perf_layers_us += layers_us as u64;
