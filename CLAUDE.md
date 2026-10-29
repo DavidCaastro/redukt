@@ -32,15 +32,17 @@ AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministi
 ```
 MAGIC:       8B  "AZTH\x04\x00\x00\x00"
 TOTAL_BYTES: 4B  LE (original size, validated ≤ u32::MAX)
-FLAGS:       1B  (0x00=defaults, 0x01=custom HP follow)
+FLAGS:       1B  (0x00=defaults, 0x01=custom HP, 0x02=emb-surgery)
 [BIAS_LR]:   4B  LE f32 (only if FLAGS & 0x01)
 [NGRAM_SCALE]:4B  LE f32 (only if FLAGS & 0x01)
 [MIX_ETA]:   4B  LE f32 (only if FLAGS & 0x01)
+[EMB_METHOD]:1B  (only if FLAGS & 0x02; 0=none,1=center,2=norm,3=spread)
+[EMB_ALPHA]: 4B  LE f32 (only if FLAGS & 0x02)
 STREAM:      var (arithmetic coded probability stream)
 CRC32:       4B  LE (CRC-32 IEEE of original data)
 ```
 
-Header: 13B (defaults) or 25B (custom HP). v3 was 28B (fixed).
+Header: 13B (defaults) or 18B (emb-surgery) or 25B (custom HP) or 30B (both). v3 was 28B (fixed).
 TOKEN_COUNT removed in v4 — decoder terminates by byte count.
 Decompression requires IDENTICAL model + weights.
 CRC-32 verified on decompression (v3+). Decoder accepts v2, v3, and v4.

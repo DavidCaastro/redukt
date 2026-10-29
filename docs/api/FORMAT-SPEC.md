@@ -19,24 +19,45 @@ Offset  Size  Field          Description
 0x11    4B    NGRAM_SCALE    N-gram logit bias scale (little-endian f32)
 0x15    4B    MIX_ETA        Adaptive mixer learning rate (little-endian f32)
 --- endif ---
+--- if FLAGS & 0x02 (emb-surgery): ---
++5B     1B    EMB_METHOD     Surgery method (0=none, 1=center, 2=norm, 3=spread)
++5B     4B    EMB_ALPHA      Alpha parameter (little-endian f32, meaningful for center)
+--- endif ---
 var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 ```
 
-Header size: **13 bytes** (default HP) or **25 bytes** (custom HP).
-CRC-32 trailer: 4 bytes. Total fixed overhead: **17 or 29 bytes**.
+Header size: **13 bytes** (default) or **18 bytes** (emb-surgery) or **25 bytes** (custom HP) or **30 bytes** (both).
+CRC-32 trailer: 4 bytes. Total fixed overhead: **17 to 34 bytes**.
 
 ### FLAGS byte
 
 | Bit | Mask   | Name            | Description                                |
 |-----|--------|-----------------|--------------------------------------------|
 | 0   | `0x01` | CUSTOM_HP       | Hyperparameters follow FLAGS (12 bytes)    |
-| 1-7 | `0xFE` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 1   | `0x02` | EMB_SURGERY     | Embedding surgery method follows FLAGS (5 bytes) |
+| 2-7 | `0xFC` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
 - NGRAM_SCALE = 0.50
 - MIX_ETA = 0.01
+
+### Embedding Surgery (EMB_SURGERY flag, R-010)
+
+When FLAGS bit 1 (0x02) is set, 5 bytes follow (after custom HP if both set):
+
+| Field      | Size | Description                                  |
+|------------|------|----------------------------------------------|
+| EMB_METHOD | 1B   | 0=none, 1=center, 2=norm, 3=spread          |
+| EMB_ALPHA  | 4B   | f32 LE alpha parameter (default 0.3 for center) |
+
+On decompression, the decoder reads `EMB_METHOD` and `EMB_ALPHA` from the header
+and applies the matching embedding surgery automatically. CLI `--emb-surgery` flag
+is overridden by the header value when present.
+
+If the flag is absent (files without emb-surgery), the decoder uses embeddings as-is
+unless the user explicitly passes `--emb-surgery` on the CLI (backward compatibility).
 
 ### Key change from v3: TOKEN_COUNT removed
 
@@ -52,7 +73,7 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13 or 25    | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes) |
+| v4      | `\x04`      | 13–30       | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes), emb-surgery (R-010) |
 
 The decoder accepts v2, v3, and v4 files:
 - **v2**: no CRC check (backward compatible)
@@ -142,7 +163,7 @@ This detects:
      g. RangeEncoder.encode_symbol(token, CDF)
 6. Update all models with observed token
 7. RangeEncoder.finish() -> compressed bytes
-8. Write: MAGIC + TOTAL_BYTES + FLAGS [+ HP] + STREAM + CRC32
+8. Write: MAGIC + TOTAL_BYTES + FLAGS [+ HP] [+ EMB_SURGERY] + STREAM + CRC32
 ```
 
 ## Decompression Pipeline
@@ -151,7 +172,8 @@ This detects:
 
 ```
 1. Read AZTH file, validate MAGIC (accept v2, v3, or v4)
-2. Parse header (TOTAL_BYTES, FLAGS, optional HP)
+2. Parse header (TOTAL_BYTES, FLAGS, optional HP, optional emb-surgery)
+2b. If emb-surgery stored in header: apply matching surgery to model
 3. Validate hyperparameters if custom (reject NaN/Inf)
 4. Extract STREAM and CRC32
 5. Initialize RangeDecoder with STREAM
@@ -185,6 +207,7 @@ Decompression produces byte-identical output if and only if:
 2. Same World tokenizer vocabulary file
 3. Same hyperparameters (stored in header; ngram order=4 is fixed)
 4. Same forward pass implementation (floating-point order matters)
+5. Same embedding surgery method (stored in v4 header since R-010)
 
 This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 

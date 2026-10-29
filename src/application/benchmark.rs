@@ -195,7 +195,7 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
         );
 
         // Redukt ACTUAL compression
-        let (azth, mut redukt) = compress_and_measure(data, &model, &tokenizer);
+        let (azth, mut redukt) = compress_and_measure(data, &model, &tokenizer, &emb_surgery);
         eprintln!(
             "  redukt:    {:.4} BPB (actual) | {:.4} BPB (ce) | {:.1}% coder eff | {:.1} B/s | {:.1}s",
             redukt.compressed_bpb,
@@ -306,6 +306,7 @@ fn compress_and_measure(
     data: &[u8],
     model: &Rwkv7Model,
     tokenizer: &WorldTokenizer,
+    emb_surgery: &str,
 ) -> (Vec<u8>, ReduktResult) {
     let v = model.config.vocab_size;
     let tokens = tokenizer.encode(data);
@@ -372,7 +373,7 @@ fn compress_and_measure(
 
     // Build AZTH v4 (identical to cmd_compress output)
     let input_crc = crc32::crc32(data);
-    let hdr = build_v4_header(total_bytes as u32, 0.30, 0.50, 0.01);
+    let hdr = build_v4_header(total_bytes as u32, 0.30, 0.50, 0.01, &emb_surgery);
     let mut azth = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     azth.extend_from_slice(&hdr);
     azth.extend_from_slice(&compressed);

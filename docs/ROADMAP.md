@@ -245,7 +245,7 @@
 > **Corrección 2026-10-28**: Presupuesto reducido de +5% a +3%. Ver justificación arriba.
 
 ### R-010: Estabilizar features experimentales en producción
-- **Estado**: EN PROGRESO
+- **Estado**: COMPLETADO
 - **Impacto**: `--emb-surgery center0.3` mejora 14/18 archivos, media -1.69% BPB
 - **Contexto**: F32 vs Q8 confirmó que cuantización NO es el gap (<2.5%). Las features experimentales sí.
 - **Archivos**: `src/infrastructure/rwkv7/model.rs`, `src/application/codec.rs`
@@ -260,10 +260,10 @@
   - [x] Benchmark `--emb-surgery` variantes (center0.3, norm, spread, center0.1-0.5)
   - [x] Benchmark `--tau` variantes (0, 0.05, 0.1, 0.2, 0.5) — DESCARTADO, empeora
   - [x] Añadir `--emb-surgery` a cmd_compress, cmd_decompress, cmd_baseline
-  - [ ] Evaluar almacenar método en header (v4) para roundtrip transparente
-  - [ ] Documentar que compress/decompress deben usar el mismo `--emb-surgery`
-  - [ ] `--match` (longest-match predictor): sólo spec en docs/research/, -0.0095 BPB, bajo ROI
-  - [ ] `--hierarchical`: supersedido por AdaptiveMixer actual, no portar
+  - [x] Evaluar almacenar método en header (v4) para roundtrip transparente — DONE: stored in v4 header FLAGS 0x02 (5 bytes: 1B method + 4B alpha)
+  - [x] Documentar que compress/decompress deben usar el mismo `--emb-surgery` — DONE: header auto-applies on decompress, CLI overridden by header when present
+  - [x] `--match` (longest-match predictor) — DESCARTADO: -0.0095 BPB, bajo ROI, no se porta
+  - [x] `--hierarchical` — DESCARTADO: supersedido por AdaptiveMixer actual
 
 ### R-011: Throughput — SIMD vectorización
 - **Estado**: COMPLETADO
@@ -833,3 +833,5 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-013b COMPLETADO: portable transcendentals — ALL scalar libm reemplazado con Cephes/musl portables |
 | 2026-10-29 | R-013b: BIT-EXACT con SIMD (0 ULP), BPB 1.281455 sin cambio, 3 nuevos tests |
 | 2026-10-29 | R-013b: cross-platform same-tier determinism CONSEGUIDO. Cross-tier sigue fallando (F32 matmul acum.) |
+| 2026-10-29 | R-010 COMPLETADO: emb-surgery method stored in AZTH v4 header (FLAGS 0x02), roundtrip transparente |
+| 2026-10-29 | R-010: 9 nuevos unit tests para header emb-surgery, 130 tests total |
