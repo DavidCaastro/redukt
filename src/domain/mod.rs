@@ -13,3 +13,4 @@ pub mod preprocess;
 pub mod content_detect;
 pub mod byte_shuffle;
 pub mod delta;
+pub mod record_detect;

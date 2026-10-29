@@ -537,11 +537,21 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             (4, Some(shuffled))
         }
         _ => {
-            // auto: apply if content_type == FloatArray
-            if content_type == crate::domain::content_detect::ContentType::FloatArray {
+            use crate::domain::content_detect::ContentType;
+            if content_type == ContentType::FloatArray {
+                // FloatArray: stride=4 for float32 byte-plane grouping
                 let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, 4);
                 eprintln!("[compress] shuffle: auto-applied stride=4 (float-array detected)");
                 (4, Some(shuffled))
+            } else if content_type == ContentType::GenericBinary {
+                // GenericBinary: try record-length detection (R-031)
+                if let Some(r) = crate::domain::record_detect::detect_records(post_e8e9) {
+                    let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, r);
+                    eprintln!("[compress] shuffle: auto-applied stride={} (records detected)", r);
+                    (r as u8, Some(shuffled))
+                } else {
+                    (0, None)
+                }
             } else {
                 (0, None)
             }
@@ -567,10 +577,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             (1, Some(encoded))
         }
         _ => {
-            // auto: apply if shuffle was applied (FloatArray pipeline)
-            if shuffle_applied > 0 {
+            // auto: apply only for FloatArray pipeline (shuffle stride=4)
+            use crate::domain::content_detect::ContentType;
+            if shuffle_applied > 0 && content_type == ContentType::FloatArray {
                 let encoded = crate::domain::delta::delta_encode(post_shuffle, 1);
-                eprintln!("[compress] delta: auto-applied stride=1 (after shuffle)");
+                eprintln!("[compress] delta: auto-applied stride=1 (float-array pipeline)");
                 (1, Some(encoded))
             } else {
                 (0, None)
