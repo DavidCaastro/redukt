@@ -1,0 +1,550 @@
+{
+  "context": {
+    "date": "2026-10-29T14:56:48.660090+00:00",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 4, GenuineIntel",
+    "python": "3.13.5",
+    "compressors": {
+      "gzip": "9 (stdlib)",
+      "brotli": "11 (pip 1.2.1)",
+      "zstd": "19 (pip 0.25.0)"
+    },
+    "git_commit": "382cf08",
+    "redukt_bin": "target\\release\\redukt.exe"
+  },
+  "window_bytes": 10000,
+  "results": [
+    {
+      "file": "enwik8",
+      "domain": "text/encyclopedia",
+      "bytes": 10000,
+      "sha256": "321868b6f37a7bc0b1253c7fa04c3823de4a6f4a61f939cd514720d2aef38284",
+      "gzip9": {
+        "size": 3715,
+        "bpb": 2.972,
+        "time_s": 0.0013581000021076761
+      },
+      "brotli11": {
+        "size": 2940,
+        "bpb": 2.352,
+        "time_s": 0.009754399994562846
+      },
+      "zstd19": {
+        "size": 3665,
+        "bpb": 2.932,
+        "time_s": 0.0028118999980506487
+      },
+      "redukt": {
+        "size": 1666,
+        "bpb": 1.3328,
+        "time_s": 45.42250049999711,
+        "roundtrip": true,
+        "restored_sha256": "321868b6f37a7bc0b1253c7fa04c3823de4a6f4a61f939cd514720d2aef38284"
+      }
+    },
+    {
+      "file": "dickens",
+      "domain": "text/literature",
+      "bytes": 10000,
+      "sha256": "321a58f334032b67304b20d57c9a5c1f5ced91fc90a63a3c14e26d76f7a7d4a6",
+      "gzip9": {
+        "size": 4526,
+        "bpb": 3.6208,
+        "time_s": 0.00028500000189524144
+      },
+      "brotli11": {
+        "size": 3473,
+        "bpb": 2.7784,
+        "time_s": 0.009243200001947116
+      },
+      "zstd19": {
+        "size": 4438,
+        "bpb": 3.5504,
+        "time_s": 0.0019878000020980835
+      },
+      "redukt": {
+        "size": 2246,
+        "bpb": 1.7968,
+        "time_s": 36.67248449999897,
+        "roundtrip": true,
+        "restored_sha256": "321a58f334032b67304b20d57c9a5c1f5ced91fc90a63a3c14e26d76f7a7d4a6"
+      }
+    },
+    {
+      "file": "mozilla",
+      "domain": "binary/executable",
+      "bytes": 10000,
+      "sha256": "80cffb93806af903aec6ed1b0f7268cb811ee0e69144ed22ffd49575628400ce",
+      "gzip9": {
+        "size": 2966,
+        "bpb": 2.3728,
+        "time_s": 0.002305900001374539
+      },
+      "brotli11": {
+        "size": 2526,
+        "bpb": 2.0208,
+        "time_s": 0.019297399994684383
+      },
+      "zstd19": {
+        "size": 2764,
+        "bpb": 2.2112,
+        "time_s": 0.003500500002701301
+      },
+      "redukt": {
+        "size": 2565,
+        "bpb": 2.052,
+        "time_s": 135.28237900000386,
+        "roundtrip": true,
+        "restored_sha256": "80cffb93806af903aec6ed1b0f7268cb811ee0e69144ed22ffd49575628400ce"
+      }
+    },
+    {
+      "file": "mr",
+      "domain": "medical/mri",
+      "bytes": 10000,
+      "sha256": "2fcad7ac25997253ed1e1baea1992b5e8576d6d34a660cf216d0af6b4d856790",
+      "gzip9": {
+        "size": 3475,
+        "bpb": 2.78,
+        "time_s": 0.0011399000068195164
+      },
+      "brotli11": {
+        "size": 2966,
+        "bpb": 2.3728,
+        "time_s": 0.02475159999448806
+      },
+      "zstd19": {
+        "size": 3245,
+        "bpb": 2.596,
+        "time_s": 0.0038344999993569218
+      },
+      "redukt": {
+        "size": 2986,
+        "bpb": 2.3888,
+        "time_s": 179.61596570000256,
+        "roundtrip": true,
+        "restored_sha256": "2fcad7ac25997253ed1e1baea1992b5e8576d6d34a660cf216d0af6b4d856790"
+      }
+    },
+    {
+      "file": "nci",
+      "domain": "scientific/chemistry",
+      "bytes": 10000,
+      "sha256": "da00ca979a3980ffa4af018fdda95e9221cf086016c231f1550b313bd6f0fec1",
+      "gzip9": {
+        "size": 1168,
+        "bpb": 0.9344,
+        "time_s": 0.00036499999987427145
+      },
+      "brotli11": {
+        "size": 918,
+        "bpb": 0.7344,
+        "time_s": 0.018655799998668954
+      },
+      "zstd19": {
+        "size": 977,
+        "bpb": 0.7816,
+        "time_s": 0.005948799996986054
+      },
+      "redukt": {
+        "size": 836,
+        "bpb": 0.6688,
+        "time_s": 107.27150190000248,
+        "roundtrip": true,
+        "restored_sha256": "da00ca979a3980ffa4af018fdda95e9221cf086016c231f1550b313bd6f0fec1"
+      }
+    },
+    {
+      "file": "ooffice",
+      "domain": "binary/office",
+      "bytes": 10000,
+      "sha256": "0c5f5c7bd38539d13da191a97c0f7ff2650fa244114bea7e411fd2f6863b5156",
+      "gzip9": {
+        "size": 3638,
+        "bpb": 2.9104,
+        "time_s": 0.0011699000024236739
+      },
+      "brotli11": {
+        "size": 3428,
+        "bpb": 2.7424,
+        "time_s": 0.015889900001639035
+      },
+      "zstd19": {
+        "size": 3458,
+        "bpb": 2.7664,
+        "time_s": 0.001450999996450264
+      },
+      "redukt": {
+        "size": 4709,
+        "bpb": 3.7672,
+        "time_s": 136.16698850000103,
+        "roundtrip": true,
+        "restored_sha256": "0c5f5c7bd38539d13da191a97c0f7ff2650fa244114bea7e411fd2f6863b5156"
+      }
+    },
+    {
+      "file": "osdb",
+      "domain": "database/mysql",
+      "bytes": 10000,
+      "sha256": "5f7b8f7b27486e2d53a81252a5471caef8e4a3aceca98cc24f2b604d99e5aa27",
+      "gzip9": {
+        "size": 6209,
+        "bpb": 4.9672,
+        "time_s": 0.00034190000587841496
+      },
+      "brotli11": {
+        "size": 5845,
+        "bpb": 4.676,
+        "time_s": 0.016110299999127164
+      },
+      "zstd19": {
+        "size": 6105,
+        "bpb": 4.884,
+        "time_s": 0.0018063000024994835
+      },
+      "redukt": {
+        "size": 7133,
+        "bpb": 5.7064,
+        "time_s": 146.30257449999772,
+        "roundtrip": true,
+        "restored_sha256": "5f7b8f7b27486e2d53a81252a5471caef8e4a3aceca98cc24f2b604d99e5aa27"
+      }
+    },
+    {
+      "file": "reymont",
+      "domain": "text/polish",
+      "bytes": 10000,
+      "sha256": "11b7f163287cb93035fbbd56ae1576c73334a243c7248fff160d02faec504472",
+      "gzip9": {
+        "size": 2984,
+        "bpb": 2.3872,
+        "time_s": 0.000589299997955095
+      },
+      "brotli11": {
+        "size": 2670,
+        "bpb": 2.136,
+        "time_s": 0.02745899999717949
+      },
+      "zstd19": {
+        "size": 2859,
+        "bpb": 2.2872,
+        "time_s": 0.004931299998133909
+      },
+      "redukt": {
+        "size": 2374,
+        "bpb": 1.8992,
+        "time_s": 117.49785719999636,
+        "roundtrip": true,
+        "restored_sha256": "11b7f163287cb93035fbbd56ae1576c73334a243c7248fff160d02faec504472"
+      }
+    },
+    {
+      "file": "samba",
+      "domain": "code/c-source",
+      "bytes": 10000,
+      "sha256": "84e39dc025c628afb72b4dfdf4f049a4b3230d5c535162b48f8f89acff8f4ef7",
+      "gzip9": {
+        "size": 3605,
+        "bpb": 2.884,
+        "time_s": 0.0010620999964885414
+      },
+      "brotli11": {
+        "size": 2775,
+        "bpb": 2.22,
+        "time_s": 0.02937000000383705
+      },
+      "zstd19": {
+        "size": 3493,
+        "bpb": 2.7944,
+        "time_s": 0.005259699995804112
+      },
+      "redukt": {
+        "size": 1622,
+        "bpb": 1.2976,
+        "time_s": 52.14490459999797,
+        "roundtrip": true,
+        "restored_sha256": "84e39dc025c628afb72b4dfdf4f049a4b3230d5c535162b48f8f89acff8f4ef7"
+      }
+    },
+    {
+      "file": "sao",
+      "domain": "scientific/astronomy",
+      "bytes": 10000,
+      "sha256": "c0ac4057e8a9e8cb1ce4b22d673f75be76b5bfa9a507d39dc6a7eac4159388b9",
+      "gzip9": {
+        "size": 7986,
+        "bpb": 6.3888,
+        "time_s": 0.0007809000017005019
+      },
+      "brotli11": {
+        "size": 7485,
+        "bpb": 5.988,
+        "time_s": 0.029160400001273956
+      },
+      "zstd19": {
+        "size": 7780,
+        "bpb": 6.224,
+        "time_s": 0.001467899994167965
+      },
+      "redukt": {
+        "size": 11554,
+        "bpb": 9.2432,
+        "time_s": 164.7359196000034,
+        "roundtrip": true,
+        "restored_sha256": "c0ac4057e8a9e8cb1ce4b22d673f75be76b5bfa9a507d39dc6a7eac4159388b9"
+      }
+    },
+    {
+      "file": "webster",
+      "domain": "text/dictionary",
+      "bytes": 10000,
+      "sha256": "e98c8fd45ea3de36da8003ec2f90e1ca06f8fc2c8cd1fabd58599581f7c7151c",
+      "gzip9": {
+        "size": 4576,
+        "bpb": 3.6608,
+        "time_s": 0.0004152000037720427
+      },
+      "brotli11": {
+        "size": 3511,
+        "bpb": 2.8088,
+        "time_s": 0.015862400003243238
+      },
+      "zstd19": {
+        "size": 4479,
+        "bpb": 3.5832,
+        "time_s": 0.002331799994863104
+      },
+      "redukt": {
+        "size": 2256,
+        "bpb": 1.8048,
+        "time_s": 44.670653799999855,
+        "roundtrip": true,
+        "restored_sha256": "e98c8fd45ea3de36da8003ec2f90e1ca06f8fc2c8cd1fabd58599581f7c7151c"
+      }
+    },
+    {
+      "file": "x-ray",
+      "domain": "medical/xray",
+      "bytes": 10000,
+      "sha256": "9e5cb872391fb3fd09ab0de7fcd06ed46492b7a608c1e75b8f49cbeb9a61ba89",
+      "gzip9": {
+        "size": 7341,
+        "bpb": 5.8728,
+        "time_s": 0.0002567000046838075
+      },
+      "brotli11": {
+        "size": 5740,
+        "bpb": 4.592,
+        "time_s": 0.014605099997424986
+      },
+      "zstd19": {
+        "size": 7027,
+        "bpb": 5.6216,
+        "time_s": 0.0008057000013650395
+      },
+      "redukt": {
+        "size": 7302,
+        "bpb": 5.8416,
+        "time_s": 101.74819370000478,
+        "roundtrip": true,
+        "restored_sha256": "9e5cb872391fb3fd09ab0de7fcd06ed46492b7a608c1e75b8f49cbeb9a61ba89"
+      }
+    },
+    {
+      "file": "xml",
+      "domain": "markup/xml",
+      "bytes": 10000,
+      "sha256": "f495b724478a5f5b00ae76fc41d39534abd0dfd179e2752cd6f35a7c05b3035c",
+      "gzip9": {
+        "size": 1344,
+        "bpb": 1.0752,
+        "time_s": 0.00019329999486217275
+      },
+      "brotli11": {
+        "size": 1126,
+        "bpb": 0.9008,
+        "time_s": 0.009661800002504606
+      },
+      "zstd19": {
+        "size": 1286,
+        "bpb": 1.0288,
+        "time_s": 0.004051200005051214
+      },
+      "redukt": {
+        "size": 861,
+        "bpb": 0.6888,
+        "time_s": 48.072757800000545,
+        "roundtrip": true,
+        "restored_sha256": "f495b724478a5f5b00ae76fc41d39534abd0dfd179e2752cd6f35a7c05b3035c"
+      }
+    },
+    {
+      "file": "apache-access.log",
+      "domain": "logs/apache",
+      "bytes": 10000,
+      "sha256": "de85295e086390d9e995f541a627864ac74df6ed007c073c944bebb451bd9240",
+      "gzip9": {
+        "size": 683,
+        "bpb": 0.5464,
+        "time_s": 0.00015580000035697594
+      },
+      "brotli11": {
+        "size": 583,
+        "bpb": 0.4664,
+        "time_s": 0.011333900001773145
+      },
+      "zstd19": {
+        "size": 616,
+        "bpb": 0.4928,
+        "time_s": 0.004303099995013326
+      },
+      "redukt": {
+        "size": 370,
+        "bpb": 0.296,
+        "time_s": 38.306163000001106,
+        "roundtrip": true,
+        "restored_sha256": "de85295e086390d9e995f541a627864ac74df6ed007c073c944bebb451bd9240"
+      }
+    },
+    {
+      "file": "facturae-batch.xml",
+      "domain": "e-invoicing/facturae",
+      "bytes": 10000,
+      "sha256": "002c9afdd1fadb64c5b2e61bfe9934481af0502209ee40c56c3f93afb8dcbb5c",
+      "gzip9": {
+        "size": 1338,
+        "bpb": 1.0704,
+        "time_s": 0.0001857999959611334
+      },
+      "brotli11": {
+        "size": 1113,
+        "bpb": 0.8904,
+        "time_s": 0.014065899995330255
+      },
+      "zstd19": {
+        "size": 1251,
+        "bpb": 1.0008,
+        "time_s": 0.004581199995300267
+      },
+      "redukt": {
+        "size": 566,
+        "bpb": 0.4528,
+        "time_s": 31.11643059999915,
+        "roundtrip": true,
+        "restored_sha256": "002c9afdd1fadb64c5b2e61bfe9934481af0502209ee40c56c3f93afb8dcbb5c"
+      }
+    },
+    {
+      "file": "linux-syslog.log",
+      "domain": "logs/syslog",
+      "bytes": 10000,
+      "sha256": "54954adf3798c2d25e89b2662aba7b5d3a1d4422edf49bd355cd934aa39bb33e",
+      "gzip9": {
+        "size": 892,
+        "bpb": 0.7136,
+        "time_s": 0.000189200000022538
+      },
+      "brotli11": {
+        "size": 727,
+        "bpb": 0.5816,
+        "time_s": 0.015722299998742528
+      },
+      "zstd19": {
+        "size": 794,
+        "bpb": 0.6352,
+        "time_s": 0.005253999996057246
+      },
+      "redukt": {
+        "size": 515,
+        "bpb": 0.412,
+        "time_s": 42.85062150000158,
+        "roundtrip": true,
+        "restored_sha256": "54954adf3798c2d25e89b2662aba7b5d3a1d4422edf49bd355cd934aa39bb33e"
+      }
+    },
+    {
+      "file": "openssh-auth.log",
+      "domain": "logs/ssh",
+      "bytes": 10000,
+      "sha256": "30d9712a716deb6dc8179f08da81a3280711279cf5f7290d5463b31ebc0f0b58",
+      "gzip9": {
+        "size": 1238,
+        "bpb": 0.9904,
+        "time_s": 0.0001629999969736673
+      },
+      "brotli11": {
+        "size": 979,
+        "bpb": 0.7832,
+        "time_s": 0.00954959999944549
+      },
+      "zstd19": {
+        "size": 1124,
+        "bpb": 0.8992,
+        "time_s": 0.003952300001401454
+      },
+      "redukt": {
+        "size": 659,
+        "bpb": 0.5272,
+        "time_s": 42.55803319999541,
+        "roundtrip": true,
+        "restored_sha256": "30d9712a716deb6dc8179f08da81a3280711279cf5f7290d5463b31ebc0f0b58"
+      }
+    },
+    {
+      "file": "sample-invoice.pdf",
+      "domain": "unknown",
+      "bytes": 10000,
+      "sha256": "d3726e0748666a2bffb0a978bb4be9bd08dfb2ff686bbbf9b64245b4e3ba36d2",
+      "gzip9": {
+        "size": 9922,
+        "bpb": 7.9376,
+        "time_s": 0.00021269999706419185
+      },
+      "brotli11": {
+        "size": 9871,
+        "bpb": 7.8968,
+        "time_s": 0.015466099997865967
+      },
+      "zstd19": {
+        "size": 9866,
+        "bpb": 7.8928,
+        "time_s": 0.00048750000132713467
+      },
+      "redukt": {
+        "size": 13903,
+        "bpb": 11.1224,
+        "time_s": 95.74675840000418,
+        "roundtrip": true,
+        "restored_sha256": "d3726e0748666a2bffb0a978bb4be9bd08dfb2ff686bbbf9b64245b4e3ba36d2"
+      }
+    },
+    {
+      "file": "ubl-invoice-batch.xml",
+      "domain": "e-invoicing/ubl",
+      "bytes": 10000,
+      "sha256": "a8b283dcd393cb6ce0d3568054581180e87b1eedd9785beb14413a70b4c74c8a",
+      "gzip9": {
+        "size": 1366,
+        "bpb": 1.0928,
+        "time_s": 0.0002223999981652014
+      },
+      "brotli11": {
+        "size": 1110,
+        "bpb": 0.888,
+        "time_s": 0.010860399997909553
+      },
+      "zstd19": {
+        "size": 1287,
+        "bpb": 1.0296,
+        "time_s": 0.0039806999993743375
+      },
+      "redukt": {
+        "size": 677,
+        "bpb": 0.5416,
+        "time_s": 38.64462269999785,
+        "roundtrip": true,
+        "restored_sha256": "a8b283dcd393cb6ce0d3568054581180e87b1eedd9785beb14413a70b4c74c8a"
+      }
+    }
+  ]
+}
