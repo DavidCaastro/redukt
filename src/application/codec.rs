@@ -20,6 +20,7 @@ pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
 pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3+ only)
 pub const V4_FLAG_CUSTOM_HP: u8 = 0x01;
 pub const V4_FLAG_EMB_SURGERY: u8 = 0x02;
+pub const V4_FLAG_E8E9: u8 = 0x04;
 pub const DEFAULT_BIAS_LR: f32 = 0.30;
 pub const DEFAULT_NGRAM_SCALE: f32 = 0.50;
 pub const DEFAULT_MIX_ETA: f32 = 0.01;
@@ -75,6 +76,7 @@ pub struct HeaderInfo {
     pub ngram_scale: f32,
     pub mix_eta: f32,
     pub emb_surgery: String, // empty = none, "center0.3", "norm", "spread"
+    pub e8e9: bool,          // true = E8E9 preprocessing was applied (R-027)
     pub header_size: usize,
 }
 
@@ -130,6 +132,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 token_count: Some(token_count),
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery: String::new(),
+                e8e9: false,
                 header_size: HEADER_SIZE,
             })
         }
@@ -138,7 +141,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 [data[8], data[9], data[10], data[11]]
             ) as usize;
             let flags = data[12];
-            let known = V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY;
+            let known = V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY | V4_FLAG_E8E9;
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
@@ -199,10 +202,12 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 String::new()
             };
 
+            let e8e9 = flags & V4_FLAG_E8E9 != 0;
+
             Ok(HeaderInfo {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
-                emb_surgery,
+                emb_surgery, e8e9,
                 header_size: offset,
             })
         }
@@ -233,7 +238,7 @@ pub fn extract_stream_and_crc_v(
 /// Build AZTH v4 header bytes.
 pub fn build_v4_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
-    emb_surgery: &str,
+    emb_surgery: &str, e8e9: bool,
 ) -> Vec<u8> {
     let custom_hp = !uses_default_hp(bias_lr, ngram_scale, mix_eta);
     let (emb_method, emb_alpha) = parse_emb_surgery_str(emb_surgery);
@@ -242,6 +247,7 @@ pub fn build_v4_header(
     let mut flags: u8 = 0;
     if custom_hp { flags |= V4_FLAG_CUSTOM_HP; }
     if has_emb { flags |= V4_FLAG_EMB_SURGERY; }
+    if e8e9 { flags |= V4_FLAG_E8E9; }
 
     let mut cap = V4_HEADER_BASE;
     if custom_hp { cap += 12; }
@@ -371,6 +377,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
     let mut no_governor = false;
+    let mut e8e9_mode = String::new();
     let mut verbose = false;
 
     let mut i = 0;
@@ -389,6 +396,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--no-governor" => { no_governor = true; }
+            "--e8e9" => { e8e9_mode = next_arg(args, &mut i, "--e8e9")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -429,6 +437,34 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
 
+    // E8E9 preprocessing (R-027): detect and transform x86 executables
+    let (e8e9_applied, e8e9_data) = match e8e9_mode.as_str() {
+        "on" => {
+            let (transformed, stats) =
+                crate::domain::preprocess::e8e9_encode_with_stats(input_slice);
+            eprintln!("[compress] E8E9: forced ON — {} E8 + {} E9, {} transformed, {} skipped",
+                      stats.e8_count, stats.e9_count, stats.transformed, stats.skipped);
+            (true, Some(transformed))
+        }
+        "off" => {
+            eprintln!("[compress] E8E9: disabled");
+            (false, None)
+        }
+        _ => {
+            // auto-detect (default)
+            if crate::domain::preprocess::detect_e8e9(input_slice) {
+                let (transformed, stats) =
+                    crate::domain::preprocess::e8e9_encode_with_stats(input_slice);
+                eprintln!("[compress] E8E9: auto-detected — {} E8 + {} E9, {} transformed",
+                          stats.e8_count, stats.e9_count, stats.transformed);
+                (true, Some(transformed))
+            } else {
+                (false, None)
+            }
+        }
+    };
+    let compress_slice: &[u8] = e8e9_data.as_deref().unwrap_or(input_slice);
+
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
@@ -439,7 +475,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     }
 
     timer.start("tokenize");
-    let tokens = tokenizer.encode(input_slice);
+    let tokens = tokenizer.encode(compress_slice);
     eprintln!("[compress] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
 
@@ -527,10 +563,12 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     }
 
     timer.start("write");
-    let input_crc = crc32::crc32(input_slice);
+    // CRC covers the bytes that enter the coder (post-E8E9 if applied).
+    // Decompress verifies CRC on decoded bytes, then applies inverse E8E9.
+    let input_crc = crc32::crc32(compress_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery);
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery, e8e9_applied);
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
@@ -796,7 +834,7 @@ fn compress_single_file(
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery);
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery, false);
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
@@ -871,6 +909,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
               hdr.bias_lr, hdr.ngram_scale, hdr.mix_eta);
     if !hdr.emb_surgery.is_empty() {
         eprintln!("[decompress] emb-surgery: {} (from header)", hdr.emb_surgery);
+    }
+    if hdr.e8e9 {
+        eprintln!("[decompress] E8E9: will apply inverse transform after decode");
     }
     if let Some(crc) = stored_crc {
         eprintln!("[decompress] CRC-32: {:08X} (will verify)", crc);
@@ -1062,6 +1103,20 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             )));
         }
         eprintln!("[decompress] CRC-32: {:08X} (verified OK)", actual_crc);
+    }
+
+    // E8E9 inverse transform (R-027): restore original bytes if E8E9 was applied
+    if hdr.e8e9 {
+        if is_streaming {
+            // Streaming mode: read back, inverse, rewrite
+            let streamed = crate::domain::error::read_file(&output_path)?;
+            let restored = crate::domain::preprocess::e8e9_decode(&streamed);
+            crate::domain::error::write_file(&output_path, &restored)?;
+            eprintln!("[decompress] E8E9: inverse transform applied (streaming rewrite)");
+        } else {
+            output_bytes = crate::domain::preprocess::e8e9_decode(&output_bytes);
+            eprintln!("[decompress] E8E9: inverse transform applied");
+        }
     }
 
     if !is_streaming {
@@ -1558,7 +1613,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_default() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "");
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false);
         assert_eq!(hdr.len(), V4_HEADER_BASE);
         assert_eq!(&hdr[..8], MAGIC_V4);
         assert_eq!(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 1000);
@@ -1567,7 +1622,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom() {
-        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "");
+        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false);
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP);
         let lr = f32::from_le_bytes([hdr[13], hdr[14], hdr[15], hdr[16]]);
@@ -1793,7 +1848,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_with_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3");
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false);
         // 13 base + 5 emb-surgery = 18 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_EMB_SURGERY);
@@ -1804,7 +1859,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm");
+        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false);
         // 13 base + 12 custom HP + 5 emb-surgery = 30 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12 + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY);
@@ -1817,7 +1872,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_emb_surgery() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3");
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]); // stream
@@ -1831,7 +1886,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread");
+        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 4]); // stream
@@ -1853,7 +1908,7 @@ mod tests {
     #[test]
     fn v4_emb_surgery_flag_rejected_by_old_reserved_check() {
         // Verify that 0x02 flag alone is accepted (not rejected as "unknown")
-        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm");
+        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
@@ -1864,7 +1919,7 @@ mod tests {
     #[test]
     fn parse_header_v4_rejects_unknown_flags_with_emb() {
         // Bit 7 (0x80) should still be rejected even when 0x02 is set
-        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3");
+        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false);
         hdr[12] |= 0x80; // add unknown flag
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);

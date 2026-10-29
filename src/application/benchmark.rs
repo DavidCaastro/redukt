@@ -373,7 +373,7 @@ fn compress_and_measure(
 
     // Build AZTH v4 (identical to cmd_compress output)
     let input_crc = crc32::crc32(data);
-    let hdr = build_v4_header(total_bytes as u32, 0.30, 0.50, 0.01, &emb_surgery);
+    let hdr = build_v4_header(total_bytes as u32, 0.30, 0.50, 0.01, &emb_surgery, false);
     let mut azth = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     azth.extend_from_slice(&hdr);
     azth.extend_from_slice(&compressed);

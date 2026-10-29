@@ -36,7 +36,8 @@ CRC-32 trailer: 4 bytes. Total fixed overhead: **17 to 34 bytes**.
 |-----|--------|-----------------|--------------------------------------------|
 | 0   | `0x01` | CUSTOM_HP       | Hyperparameters follow FLAGS (12 bytes)    |
 | 1   | `0x02` | EMB_SURGERY     | Embedding surgery method follows FLAGS (5 bytes) |
-| 2-7 | `0xFC` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 2   | `0x04` | E8E9            | E8/E9 x86 preprocessing was applied (R-027) |
+| 3-7 | `0xF8` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -59,6 +60,28 @@ is overridden by the header value when present.
 If the flag is absent (files without emb-surgery), the decoder uses embeddings as-is
 unless the user explicitly passes `--emb-surgery` on the CLI (backward compatibility).
 
+### E8E9 Preprocessing (E8E9 flag, R-027)
+
+When FLAGS bit 2 (0x04) is set, the compressor applied E8/E9 x86 preprocessing
+before encoding. No additional data is stored in the header — the flag merely
+signals the decompressor to apply the inverse transform after decoding.
+
+**Compression**: x86 CALL (0xE8) and JMP (0xE9) relative addresses are converted
+to absolute addresses, clustering targets to common offsets and improving
+compression of executable binaries.
+
+**Decompression**: After CRC-32 verification (on the transformed data), the
+inverse transform converts absolute addresses back to relative. The final output
+is byte-identical to the original input.
+
+**Auto-detection** (`--e8e9 auto`, default): The compressor scans the first 8KB
+for E8/E9 density ≥0.5%, ≥3 occurrences, and >50% in-range targets. Override
+with `--e8e9 on` (force) or `--e8e9 off` (disable).
+
+**CRC note**: CRC-32 covers the post-E8E9-transformed bytes (what enters the
+arithmetic coder), NOT the original input. The decompressor verifies CRC before
+applying the inverse transform.
+
 ### Key change from v3: TOKEN_COUNT removed
 
 v4 eliminates TOKEN_COUNT from the header. The decoder terminates by byte count:
@@ -73,7 +96,7 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13–30       | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes), emb-surgery (R-010) |
+| v4      | `\x04`      | 13–30       | Removed TOKEN_COUNT, added FLAGS, conditional HP (-15 bytes), emb-surgery (R-010), E8E9 flag (R-027) |
 
 The decoder accepts v2, v3, and v4 files:
 - **v2**: no CRC check (backward compatible)
@@ -149,11 +172,12 @@ This detects:
 
 ```
 1. Read input file (raw bytes)
-2. Compute CRC-32 of input
-3. Tokenize with World tokenizer (65K vocab)
-4. For token t = 0:
+2. E8E9 preprocessing (if auto-detected or --e8e9 on): relative→absolute addresses
+3. Compute CRC-32 of (possibly transformed) bytes
+4. Tokenize with World tokenizer (65K vocab)
+5. For token t = 0:
      Encode with uniform CDF
-5. For token t > 0:
+6. For token t > 0:
      a. RWKV-7 forward pass -> logits[vocab_size]
      b. TokenNgram -> n-gram bias[vocab_size]
      c. BiasHead -> adaptive bias[vocab_size]
@@ -161,9 +185,9 @@ This detects:
      e. softmax(ensemble_logits) -> probabilities
      f. CDF from probabilities (min freq 1 per symbol)
      g. RangeEncoder.encode_symbol(token, CDF)
-6. Update all models with observed token
-7. RangeEncoder.finish() -> compressed bytes
-8. Write: MAGIC + TOTAL_BYTES + FLAGS [+ HP] [+ EMB_SURGERY] + STREAM + CRC32
+7. Update all models with observed token
+8. RangeEncoder.finish() -> compressed bytes
+9. Write: MAGIC + TOTAL_BYTES + FLAGS [+ HP] [+ EMB_SURGERY] + STREAM + CRC32
 ```
 
 ## Decompression Pipeline
@@ -185,7 +209,8 @@ This detects:
      e. Update all models with decoded token
 7. Verify output length == TOTAL_BYTES (error on mismatch)
 8. Verify CRC-32 of output == stored CRC (error on mismatch)
-9. Write output file
+9. If E8E9 flag set: apply inverse transform (absolute→relative addresses)
+10. Write output file
 ```
 
 ### Streaming Mode (R-014)

@@ -432,24 +432,27 @@
 > Todas las técnicas son zero-dep, reversibles, sin riesgo BPB en texto.
 
 #### R-027: Integración E8E9 en pipeline de compresión
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO (2026-10-29)
 - **Riesgo BPB**: NINGUNO en texto — solo se activa en ejecutables detectados
-- **Impacto**: mozilla (-5-10% BPB), ooffice (parcial, tiene código x86 embebido)
-- **Archivos**: `src/domain/preprocess.rs` (YA IMPLEMENTADO), `src/application/codec.rs`
+- **Impacto**: mozilla 10KB: 2.0536 BPB (E8E9 ON) vs 2.0520 BPB (OFF) — neutral en 10KB (solo 3 E8, 1 transformed). Beneficio esperado en archivos ejecutables puros (PE/ELF) a mayor escala.
+- **Archivos**: `src/domain/preprocess.rs`, `src/application/codec.rs`, `docs/api/FORMAT-SPEC.md`
 - **Diseño**:
-  - `e8e9_encode_with_stats()` ya existe con 5 tests passing
-  - `e8e9_decode()` ya existe (inverse transform)
-  - Necesita: FLAG 0x04 en AZTH v4 header, detección automática (heurística E8/E9 density)
-  - compress: detect → transform → encode → store FLAG
-  - decompress: read FLAG → decode → inverse transform
+  - `e8e9_encode_with_stats()` + `e8e9_decode()` + `detect_e8e9()` en preprocess.rs
+  - FLAG 0x04 en AZTH v4 header, detección automática (E8/E9 density ≥0.5%, ≥3 count, >50% in-range)
+  - compress: detect → transform → CRC(transformed) → encode → store FLAG
+  - decompress: decode → verify CRC → inverse transform → write
+  - `--e8e9 auto|on|off` CLI flag (default: auto)
 - **Subtareas**:
-  - [ ] Añadir FLAG `V4_FLAG_E8E9 = 0x04` en header
-  - [ ] Implementar detección automática de ejecutables (E8/E9 density threshold)
-  - [ ] Integrar encode en cmd_compress antes de tokenización
-  - [ ] Integrar decode en cmd_decompress después de detokenización
-  - [ ] `--e8e9` flag para forzar/deshabilitar
-  - [ ] Roundtrip: mozilla compress→decompress byte-identical
-  - [ ] Benchmark: mozilla BPB antes/después
+  - [x] Añadir FLAG `V4_FLAG_E8E9 = 0x04` en header
+  - [x] Implementar detección automática de ejecutables (`detect_e8e9()`)
+  - [x] Integrar encode en cmd_compress antes de tokenización
+  - [x] Integrar decode en cmd_decompress después de detokenización
+  - [x] `--e8e9` flag para forzar/deshabilitar
+  - [x] Roundtrip: mozilla compress→decompress byte-identical (PASS)
+  - [x] Benchmark: mozilla BPB antes/después (neutral en 10KB, 3 E8 only)
+  - [x] Auto-detect: texto NO transformado (PASS), mozilla auto-skip (correcto — tar header)
+  - [x] FORMAT-SPEC.md actualizado con FLAG 0x04 documentación
+- **Resultado**: Infraestructura E8E9 completa y funcional. Auto-detect conservador — solo activa para ejecutables puros con alta densidad E8/E9. Mozilla (tar) no se activa automáticamente (correcto).
 
 #### R-028: Data-type detector (content classification)
 - **Estado**: PENDIENTE
@@ -991,3 +994,5 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | Fase 3 definida: R-027 (E8E9) → R-028 (detector) → R-029 (shuffle) → R-030 (delta) → R-031 (records) → R-032 (CM-only) |
 | 2026-10-29 | R-027: E8E9 ya codificado en preprocess.rs (5 tests), solo falta integración en pipeline |
 | 2026-10-29 | docs: binary-compression-research.md — investigación completa con 15 referencias |
+| 2026-10-29 | R-027 COMPLETADO: E8E9 integrado en pipeline — FLAG 0x04, auto-detect, --e8e9 CLI, roundtrip PASS |
+| 2026-10-29 | R-027: mozilla 10KB neutral (2.0536 vs 2.0520 BPB, solo 3 E8 en header) — beneficio en EXE puros |
