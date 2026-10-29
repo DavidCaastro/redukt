@@ -455,22 +455,29 @@
 - **Resultado**: Infraestructura E8E9 completa y funcional. Auto-detect conservador — solo activa para ejecutables puros con alta densidad E8/E9. Mozilla (tar) no se activa automáticamente (correcto).
 
 #### R-028: Data-type detector (content classification)
-- **Estado**: PENDIENTE
+- **Estado**: COMPLETADO (2026-10-29)
 - **Riesgo BPB**: NINGUNO — solo clasificación, no modifica datos
 - **Impacto**: Habilita R-029, R-030, R-031 — es el dispatcher central
-- **Archivos**: nuevo `src/domain/content_detect.rs`
-- **Diseño** (basado en G2-V3 AIT Challenge 2026):
-  - Analizar primeros 4-64KB del archivo
-  - Features: Shannon entropy, alphabet size, printable ASCII ratio,
-    even/odd byte imbalance, float32 exponent-byte patterns, magic numbers
-  - Clasificar en: text, structured-text, executable, float-array,
-    fixed-records, generic-binary, random/incompressible
-  - Decision tree, ~200-300 líneas de Rust
+- **Archivos**: `src/domain/content_detect.rs` (nuevo), `src/application/codec.rs`
+- **Diseño**:
+  - Analiza primeros 8KB: Shannon entropy, alphabet size, printable ASCII ratio,
+    XML tag density, float32 exponent-byte patterns, magic numbers (MZ/ELF/XML)
+  - 6 categorías: Text, StructuredText, Executable, FloatArray, HighEntropy, GenericBinary
+  - Decision tree: magic → printable ratio → entropy → exponent features
+  - Logging integrado en cmd_compress (features + tipo detectado)
 - **Subtareas**:
-  - [ ] Implementar feature extraction (entropy, ASCII ratio, etc.)
-  - [ ] Implementar clasificación por decision tree
-  - [ ] Tests con archivos conocidos (cada tipo representado en benchmark)
-  - [ ] Logging: reportar tipo detectado en stderr
+  - [x] Implementar feature extraction (entropy, ASCII ratio, XML density, float exponent)
+  - [x] Implementar clasificación por decision tree (~180 líneas)
+  - [x] 11 unit tests (cada tipo + edge cases + Display)
+  - [x] Validación con 17 archivos de benchmark (14/17 ideal, 3 aceptable)
+  - [x] Logging: `[compress] content: <type> (<features>)` en stderr
+- **Resultados validación** (8KB scan, archivos reales):
+  - Executable: ooffice (MZ) ✓
+  - FloatArray: x-ray ✓ (exp_entropy=3.46, exp_alpha=27)
+  - HighEntropy: sao ✓ (entropy=7.33)
+  - StructuredText: xml, facturae, ubl, apache-access ✓
+  - Text: dickens, webster, reymont, nci ✓
+  - GenericBinary: mozilla, mr, osdb, samba ✓ (mr podría ser FloatArray — refinable en R-029)
 
 #### R-029: Byte shuffle para datos float
 - **Estado**: PENDIENTE
@@ -996,3 +1003,4 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | docs: binary-compression-research.md — investigación completa con 15 referencias |
 | 2026-10-29 | R-027 COMPLETADO: E8E9 integrado en pipeline — FLAG 0x04, auto-detect, --e8e9 CLI, roundtrip PASS |
 | 2026-10-29 | R-027: mozilla 10KB neutral (2.0536 vs 2.0520 BPB, solo 3 E8 en header) — beneficio en EXE puros |
+| 2026-10-29 | R-028 COMPLETADO: content_detect.rs — 6 tipos, decision tree, 11 tests, 14/17 benchmark validados |

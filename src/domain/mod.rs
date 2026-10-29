@@ -10,3 +10,4 @@ pub mod ram_monitor;
 pub mod spectral;
 pub mod intrinsic;
 pub mod preprocess;
+pub mod content_detect;

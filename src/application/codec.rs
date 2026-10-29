@@ -437,6 +437,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
 
+    // Content-type detection (R-028): classify input for preprocessing dispatch
+    let (content_type, content_features) =
+        crate::domain::content_detect::detect_content_type(input_slice);
+    eprintln!("[compress] content: {} ({})", content_type, content_features);
+
     // E8E9 preprocessing (R-027): detect and transform x86 executables
     let (e8e9_applied, e8e9_data) = match e8e9_mode.as_str() {
         "on" => {
