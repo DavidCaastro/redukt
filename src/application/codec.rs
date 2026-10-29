@@ -23,6 +23,7 @@ pub const V4_FLAG_EMB_SURGERY: u8 = 0x02;
 pub const V4_FLAG_E8E9: u8 = 0x04;
 pub const V4_FLAG_SHUFFLE: u8 = 0x08;
 pub const V4_FLAG_DELTA: u8 = 0x10;
+pub const V4_FLAG_ADAPTIVE_SKIP: u8 = 0x20;
 pub const DEFAULT_BIAS_LR: f32 = 0.30;
 pub const DEFAULT_NGRAM_SCALE: f32 = 0.50;
 pub const DEFAULT_MIX_ETA: f32 = 0.01;
@@ -81,6 +82,7 @@ pub struct HeaderInfo {
     pub e8e9: bool,              // true = E8E9 preprocessing was applied (R-027)
     pub shuffle_stride: u8,      // 0 = no shuffle, 2/4/8 = byte-plane shuffle stride (R-029)
     pub delta_stride: u8,        // 0 = no delta, 1+ = delta coding stride (R-030)
+    pub skip_threshold: u8,      // 0 = disabled, 1-99 = adaptive RWKV skip threshold % (R-033)
     pub header_size: usize,
 }
 
@@ -137,6 +139,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery: String::new(),
                 e8e9: false, shuffle_stride: 0, delta_stride: 0,
+                skip_threshold: 0,
                 header_size: HEADER_SIZE,
             })
         }
@@ -146,7 +149,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             ) as usize;
             let flags = data[12];
             let known = V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY | V4_FLAG_E8E9
-                | V4_FLAG_SHUFFLE | V4_FLAG_DELTA;
+                | V4_FLAG_SHUFFLE | V4_FLAG_DELTA | V4_FLAG_ADAPTIVE_SKIP;
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
@@ -237,10 +240,25 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 0
             };
 
+            // Parse adaptive-skip threshold (flag 0x20, R-033)
+            let skip_threshold = if flags & V4_FLAG_ADAPTIVE_SKIP != 0 {
+                if data.len() < offset + 1 {
+                    return Err(AzError::Format(format!(
+                        "AZTH v4 adaptive-skip truncated: {} < {}", data.len(), offset + 1
+                    )));
+                }
+                let s = data[offset];
+                offset += 1;
+                s
+            } else {
+                0
+            };
+
             Ok(HeaderInfo {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
+                skip_threshold,
                 header_size: offset,
             })
         }
@@ -272,12 +290,14 @@ pub fn extract_stream_and_crc_v(
 pub fn build_v4_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
+    skip_threshold: u8,
 ) -> Vec<u8> {
     let custom_hp = !uses_default_hp(bias_lr, ngram_scale, mix_eta);
     let (emb_method, emb_alpha) = parse_emb_surgery_str(emb_surgery);
     let has_emb = emb_method != EMB_METHOD_NONE;
     let has_shuffle = shuffle_stride > 1;
     let has_delta = delta_stride > 0;
+    let has_skip = skip_threshold > 0;
 
     let mut flags: u8 = 0;
     if custom_hp { flags |= V4_FLAG_CUSTOM_HP; }
@@ -285,12 +305,14 @@ pub fn build_v4_header(
     if e8e9 { flags |= V4_FLAG_E8E9; }
     if has_shuffle { flags |= V4_FLAG_SHUFFLE; }
     if has_delta { flags |= V4_FLAG_DELTA; }
+    if has_skip { flags |= V4_FLAG_ADAPTIVE_SKIP; }
 
     let mut cap = V4_HEADER_BASE;
     if custom_hp { cap += 12; }
     if has_emb { cap += EMB_SURGERY_BYTES; }
     if has_shuffle { cap += 1; }
     if has_delta { cap += 1; }
+    if has_skip { cap += 1; }
 
     let mut hdr = Vec::with_capacity(cap);
     hdr.extend_from_slice(MAGIC_V4);
@@ -310,6 +332,9 @@ pub fn build_v4_header(
     }
     if has_delta {
         hdr.push(delta_stride);
+    }
+    if has_skip {
+        hdr.push(skip_threshold);
     }
     hdr
 }
@@ -426,6 +451,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut shuffle_mode = String::new();
     let mut delta_mode = String::new();
     let mut verbose = false;
+    let mut adaptive_skip: u8 = 0; // 0=off, 1-99=threshold%
+    let mut gpu_requested = false;
+    let mut tokenizer_mode = String::new();
+    let mut model_size = String::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -447,9 +476,34 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--shuffle" => { shuffle_mode = next_arg(args, &mut i, "--shuffle")?.to_string(); }
             "--delta" => { delta_mode = next_arg(args, &mut i, "--delta")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
+            "--adaptive-skip" => { adaptive_skip = 95; }
+            "--skip-threshold" => {
+                let val: u8 = parse_arg(next_arg(args, &mut i, "--skip-threshold")?, "--skip-threshold")?;
+                adaptive_skip = val.clamp(1, 99);
+            }
+            "--gpu" => { gpu_requested = true; }
+            "--tokenizer" => { tokenizer_mode = next_arg(args, &mut i, "--tokenizer")?.to_string(); }
+            "--model-size" => { model_size = next_arg(args, &mut i, "--model-size")?.to_string(); }
             _ => {}
         }
         i += 1;
+    }
+
+    // Infrastructure gates: GPU, BPE tokenizer, model-size (R-033 framework)
+    if gpu_requested {
+        return Err(AzError::Format(
+            "GPU acceleration not available (requires CUDA runtime and discrete GPU)".into()
+        ));
+    }
+    if tokenizer_mode == "bpe" {
+        return Err(AzError::Format(
+            "BPE tokenizer not available (requires trained vocabulary at weights/bpe-vocab.json)".into()
+        ));
+    }
+    if model_size == "tiny" {
+        return Err(AzError::Format(
+            "Tiny model not available (requires distilled weights at weights/rwkv7-tiny/)".into()
+        ));
     }
 
     // Hardware governor (R-HW1)
@@ -620,6 +674,14 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
+    let skip_thr_f = adaptive_skip as f32 / 100.0;
+    let mut skip_count: usize = 0;
+    let mut consec_skips: usize = 0;
+    const MAX_CONSEC_SKIP: usize = 3;
+    if adaptive_skip > 0 {
+        eprintln!("[compress] adaptive-skip: enabled (threshold={}%)", adaptive_skip);
+    }
+
     eprintln!("[compress] encoding ...");
     let t_start = std::time::Instant::now();
 
@@ -648,7 +710,20 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         }
 
         ngram.observe(tok as u32);
-        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+
+        // Adaptive RWKV skip (R-033): skip forward when model was confident,
+        // but limit consecutive skips to prevent state staleness cascade.
+        let do_skip = adaptive_skip > 0 && t > 0
+            && consec_skips < MAX_CONSEC_SKIP
+            && probs_buf[tok] > skip_thr_f;
+
+        if do_skip {
+            skip_count += 1;
+            consec_skips += 1;
+        } else {
+            model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+            consec_skips = 0;
+        }
 
         if t > 0 && t % 100 == 0 {
             governor.apply()
@@ -661,6 +736,12 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             eprint!("\r[compress] {:.1}% | {} tokens | ~{} bytes | {:.1} tok/s   ",
                     pct, t, enc_size, t as f64 / elapsed);
         }
+    }
+
+    if adaptive_skip > 0 {
+        let skip_pct = 100.0 * skip_count as f64 / tokens.len().max(1) as f64;
+        eprintln!("\n[compress] skipped {} / {} forward passes ({:.1}%)",
+                  skip_count, tokens.len(), skip_pct);
     }
 
     let compressed = enc.finish();
@@ -695,7 +776,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     let hdr = build_v4_header(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
-        e8e9_applied, shuffle_applied, delta_applied,
+        e8e9_applied, shuffle_applied, delta_applied, adaptive_skip,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -962,7 +1043,7 @@ fn compress_single_file(
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery, false, 0, 0);
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery, false, 0, 0, 0);
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
@@ -1046,6 +1127,14 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     }
     if hdr.e8e9 {
         eprintln!("[decompress] E8E9: will apply inverse transform after decode");
+    }
+    let skip_threshold = hdr.skip_threshold;
+    let skip_thr_f = skip_threshold as f32 / 100.0;
+    let mut skip_count: usize = 0;
+    let mut consec_skips: usize = 0;
+    const MAX_CONSEC_SKIP: usize = 3;
+    if skip_threshold > 0 {
+        eprintln!("[decompress] adaptive-skip: enabled (threshold={}%)", skip_threshold);
     }
     if let Some(crc) = stored_crc {
         eprintln!("[decompress] CRC-32: {:08X} (will verify)", crc);
@@ -1195,7 +1284,20 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             }
 
             ngram.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+
+            // Adaptive RWKV skip (R-033): identical decision to compress path.
+            // probs_buf[sym] is the combined model's confidence for this token.
+            let do_skip = skip_threshold > 0 && t > 0
+                && consec_skips < MAX_CONSEC_SKIP
+                && probs_buf[tok as usize] > skip_thr_f;
+
+            if do_skip {
+                skip_count += 1;
+                consec_skips += 1;
+            } else {
+                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+                consec_skips = 0;
+            }
             t += 1;
 
             if t % 100 == 0 {
@@ -1210,6 +1312,12 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             }
         }
         eprintln!();
+    }
+
+    if skip_threshold > 0 && t > 0 {
+        let skip_pct = 100.0 * skip_count as f64 / t.max(1) as f64;
+        eprintln!("[decompress] skipped {} / {} forward passes ({:.1}%)",
+                  skip_count, t, skip_pct);
     }
 
     // Flush streaming writer before verification
@@ -1775,7 +1883,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_default() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0);
         assert_eq!(hdr.len(), V4_HEADER_BASE);
         assert_eq!(&hdr[..8], MAGIC_V4);
         assert_eq!(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 1000);
@@ -1784,7 +1892,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom() {
-        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0);
+        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0, 0);
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP);
         let lr = f32::from_le_bytes([hdr[13], hdr[14], hdr[15], hdr[16]]);
@@ -2010,7 +2118,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_with_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0);
         // 13 base + 5 emb-surgery = 18 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_EMB_SURGERY);
@@ -2021,7 +2129,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0, 0);
         // 13 base + 12 custom HP + 5 emb-surgery = 30 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12 + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY);
@@ -2034,7 +2142,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_emb_surgery() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]); // stream
@@ -2048,7 +2156,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0);
+        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0, 0);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 4]); // stream
@@ -2070,7 +2178,7 @@ mod tests {
     #[test]
     fn v4_emb_surgery_flag_rejected_by_old_reserved_check() {
         // Verify that 0x02 flag alone is accepted (not rejected as "unknown")
-        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0);
+        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0, 0);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
@@ -2081,7 +2189,7 @@ mod tests {
     #[test]
     fn parse_header_v4_rejects_unknown_flags_with_emb() {
         // Bit 7 (0x80) should still be rejected even when 0x02 is set
-        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0);
         hdr[12] |= 0x80; // add unknown flag
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
