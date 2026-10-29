@@ -370,6 +370,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut mix_eta: f32 = 0.01;
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
+    let mut no_governor = false;
     let mut verbose = false;
 
     let mut i = 0;
@@ -387,11 +388,17 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--mix-eta" => { mix_eta = parse_arg(next_arg(args, &mut i, "--mix-eta")?, "--mix-eta")?; }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
+            "--no-governor" => { no_governor = true; }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
         i += 1;
     }
+
+    // Hardware governor (R-HW1)
+    let governor = crate::infrastructure::governor::HardwareGovernor::new(!no_governor);
+    governor.preflight().map_err(|e| AzError::Format(format!("governor: {}", e)))?;
+    governor.start_watchdog();
 
     // Batch mode: --input-dir + --output-dir
     if !input_dir.is_empty() {
@@ -482,6 +489,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         ngram.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
+        if t > 0 && t % 100 == 0 {
+            governor.apply()
+                .map_err(|e| AzError::Format(e))?;
+        }
         if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
             let elapsed = t_start.elapsed().as_secs_f64();
             let pct = 100.0 * t as f64 / tokens.len() as f64;
@@ -809,6 +820,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
     let mut streaming = false;
+    let mut no_governor = false;
     let mut verbose = false;
 
     let mut i = 0;
@@ -820,6 +832,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
             "--streaming" => { streaming = true; }
+            "--no-governor" => { no_governor = true; }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -831,6 +844,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             context: "--input/--output".to_string(), value: "(missing)".to_string(),
         });
     }
+
+    // Hardware governor (R-HW1)
+    let governor = crate::infrastructure::governor::HardwareGovernor::new(!no_governor);
+    governor.preflight().map_err(|e| AzError::Format(format!("governor: {}", e)))?;
+    governor.start_watchdog();
 
     let mut timer = PhaseTimer::new();
 
@@ -949,6 +967,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             ngram.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
 
+            if t > 0 && t % 100 == 0 {
+                governor.apply()
+                    .map_err(|e| AzError::Format(e))?;
+            }
             if t > 0 && (t % 1000 == 0 || t == token_count - 1) {
                 let elapsed = t_start.elapsed().as_secs_f64();
                 eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
@@ -1001,6 +1023,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
             t += 1;
 
+            if t % 100 == 0 {
+                governor.apply()
+                    .map_err(|e| AzError::Format(e))?;
+            }
             if t % 1000 == 0 {
                 let elapsed = t_start.elapsed().as_secs_f64();
                 let pct = 100.0 * bytes_written as f64 / total_bytes as f64;

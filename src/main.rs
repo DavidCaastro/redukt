@@ -68,6 +68,7 @@ fn print_usage() {
     eprintln!("  --log <FILE>         Structured .jsonl log output");
     eprintln!("  --quant <LEVEL>      Force quantization: f32, q8, q4, auto (default: auto)");
     eprintln!("  --streaming          Decompress: write output progressively (lower memory)");
+    eprintln!("  --no-governor        Disable hardware governor (battery/RAM monitoring)");
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");

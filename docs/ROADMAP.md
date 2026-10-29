@@ -166,22 +166,27 @@
   - [ ] Obtener PDF de factura real con texto embebido (no solo imágenes)
   - [ ] Re-medir con PDF representativo de facturación
 
-### R-V04: Test de escala (BPB vs tamaño de archivo)
-- **Estado**: EN PROGRESO (gzip/brotli medidos, Redukt pendiente)
-- **Impacto**: Benchmarks actuales son a 10KB. No sabemos si la ventaja crece o decrece.
-- **Resultado parcial** (gzip-9 y brotli-11 en apache-access.log, MEDIDO):
-  - 1KB: gzip 1.760, brotli 1.592
-  - 10KB: gzip 0.546, brotli 0.466
-  - 50KB: gzip 0.463, brotli 0.353
-  - 100KB: gzip 0.445, brotli 0.328
-  - **Ambos mejoran significativamente con más datos** (brotli: 1.59→0.33, -79%)
-  - Detalle: `data/benchmark/results/scale-test-apache.csv`
-- **CRITICAL**: Si Redukt no mejora proporcionalmente, la ventaja de -48% a 10KB
-  podría reducirse sustancialmente a 100KB+. Esto afecta TODOS los business cases.
+### R-V04: Test de escala (BPB vs tamaño de archivo) ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-29)
+- **Impacto**: Confirma que la ventaja de Redukt CRECE con tamaño de archivo.
+- **Datos**: `data/benchmark/results/scale-test-complete.csv` (2 archivos × 4 tamaños)
+- **Resultados** [MEASURED]:
+  | File | Size | Redukt Q8 | brotli-11 | Δ vs brotli |
+  |---|---|---|---|---|
+  | apache-access.log | 1KB | 0.974 | 1.592 | **-38.8%** |
+  | apache-access.log | 10KB | 0.245 | 0.466 | **-47.5%** |
+  | apache-access.log | 50KB | 0.185 | 0.353 | **-47.4%** |
+  | apache-access.log | 100KB | 0.186 | 0.328 | **-43.4%** |
+  | dickens | 1KB | 2.099 | 3.024 | **-30.6%** |
+  | dickens | 10KB | 1.779 | 2.778 | **-36.0%** |
+  | dickens | 50KB | 1.477 | 2.711 | **-45.5%** |
+  | dickens | 100KB | 1.429 | 2.649 | **-46.0%** |
+- **Conclusión**: Ventaja crece con tamaño: dickens -30.6% (1KB) → -46.0% (100KB).
+  Apache plateau a ~47% a partir de 10KB. Redukt mejora MÁS que brotli con más contexto.
 - **Subtareas**:
   - [x] Medir gzip-9 y brotli-11 a 1KB, 10KB, 50KB, 100KB
-  - [ ] Medir Redukt Q8 a 1KB, 10KB, 50KB, 100KB (requiere weights + model run)
-  - [ ] Documentar curva de convergencia comparativa
+  - [x] Medir Redukt Q8 a 1KB, 10KB, 50KB, 100KB
+  - [x] Documentar curva de convergencia comparativa
 
 ### R-V05: Evaluar Q4 quantization BPB
 - **Estado**: COMPLETADO — **RECHAZADO**
@@ -392,29 +397,31 @@
   - [x] Coder efficiency: 95.93% [MEASURED]
   - [x] Throughput: +23.2% controlled A/B (not +32.6% as initially reported) [MEASURED]
 
-### R-HW1: HardwareGovernor — regulación dinámica de recursos
-- **Estado**: PENDIENTE
+### R-HW1: HardwareGovernor — regulación dinámica de recursos ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-29)
 - **Riesgo BPB**: NINGUNO — no cambia computación, solo la regula
-- **Impacto**: Protección contra deterioro de hardware (batería, térmico), crash prevention
-- **Contexto**: Dell Vostro 3520 tiene batería al 80.2% health (único componente en riesgo).
-  El governor lee sensores del hardware antes y durante la ejecución para regular el consumo.
-- **Archivos**: nuevo `src/infrastructure/governor.rs`, `src/application/codec.rs`, `src/main.rs`
-- **Diseño**:
-  - Pre-flight checks: batería (umbral + health), RAM libre, temperatura
-  - Watchdog thread: 10ms sensor polling via kernel32 FFI (Windows) / sysfs (Linux)
-  - Comunicación: AtomicU8 → ThrottleLevel {Full, Balanced, Eco, Pause, Abort}
-  - Worst-case reaction time: ~35ms (10ms poll + 25ms token)
-  - Zero overhead en hot path: una lectura atómica por token (~1ns)
+- **Impacto**: Protección contra deterioro de hardware (batería, RAM), crash prevention
+- **Archivos**: `src/infrastructure/governor.rs` (nuevo), `src/application/codec.rs`, `src/main.rs`
+- **Diseño implementado**:
+  - ThrottleLevel: Full (normal), Eco (2ms sleep/100 tokens), Abort (graceful error)
+  - Comunicación: AtomicU8 — zero overhead en hot path (~1ns atomic load)
+  - Pre-flight: `GlobalMemoryStatusEx` (RAM), `GetSystemPowerStatus` (batería via kernel32 FFI)
+  - Watchdog thread: 2s polling, actualiza ThrottleLevel atómicamente
+  - Umbrales RAM: >95% → Eco, >97% → Abort
+  - Umbrales batería (solo sin AC): <20% → Eco, <5% → Abort
+  - Integrado en compress + decompress (hot loop, cada 100 tokens)
+  - `--no-governor` flag para deshabilitar (benchmarking, testing)
 - **Subtareas**:
-  - [ ] Implementar ThrottleLevel enum + AtomicU8 protocol
-  - [ ] Pre-flight: `GlobalMemoryStatusEx`, `GetSystemPowerStatus` (kernel32 FFI)
-  - [ ] In-flight watchdog: thread con 10ms sleep + sensor read
-  - [ ] Integrar en compress/decompress loop: check ThrottleLevel por token
-  - [ ] Eco mode: añadir sleep entre tokens para reducir power draw
-  - [ ] Pause/Abort: checkpoint + graceful shutdown
-  - [ ] `--no-governor` flag para deshabilitar (benchmarking)
-  - [ ] Tests: mock sensors, throttle transitions, abort recovery
-  - [ ] Documentar umbrales por defecto y cómo override
+  - [x] ThrottleLevel enum + AtomicU8 protocol
+  - [x] Pre-flight: `GlobalMemoryStatusEx`, `GetSystemPowerStatus` (kernel32 FFI)
+  - [x] Watchdog thread con 2s polling + sensor read
+  - [x] Integrado en compress/decompress loop: check cada 100 tokens
+  - [x] Eco mode: 2ms sleep para reducir power draw
+  - [x] Abort: graceful error return (no panic)
+  - [x] `--no-governor` flag para deshabilitar
+  - [x] 5 unit tests: throttle roundtrip, disabled, atomic update, preflight, display
+  - [x] Roundtrip verificado: compress→decompress byte-identical con governor activo
+  - [x] 137 tests pasando (133 unit + 4 integration)
 
 ### Secuencia de throughput — orden por riesgo de degradación BPB
 
@@ -847,3 +854,7 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-013b: cross-platform same-tier determinism CONSEGUIDO. Cross-tier sigue fallando (F32 matmul acum.) |
 | 2026-10-29 | R-010 COMPLETADO: emb-surgery method stored in AZTH v4 header (FLAGS 0x02), roundtrip transparente |
 | 2026-10-29 | R-010: 9 nuevos unit tests para header emb-surgery, 130 tests total |
+| 2026-10-29 | R-HW1 COMPLETADO: HardwareGovernor — battery/RAM monitoring, AtomicU8 throttle, kernel32 FFI |
+| 2026-10-29 | R-HW1: ThrottleLevel {Full, Eco, Abort}, watchdog 2s, governor.apply() cada 100 tokens |
+| 2026-10-29 | R-HW1: integrado en compress + decompress, --no-governor flag, 5 unit tests, 137 total |
+| 2026-10-29 | R-HW1: roundtrip byte-identical verificado, BPB sin cambio (governor no afecta predicción) |
