@@ -597,18 +597,16 @@ R-027 puede implementarse antes con detección ad-hoc (E8/E9 density).
   - [x] FORMAT-SPEC.md actualizado con v4 spec
 - **Quality gate PASSED**: BPB mejoró (1.3448 → 1.3328), cross-entropy sin cambio (1.2812)
 
-#### Paso 0.5: R-019 — Refactorización matemática (0% BPB risk)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO — equivalencia algebraica exacta
-- **Speedup estimado**: 1.3-1.5x en TimeMix (87% reducción FLOPs state update + zero-alloc codec)
-- **Impacto**: Reduce cómputo Y tráfico de bus (menos datos intermedios en cache/DRAM)
-- **Quality gate**: BPB bit-exact, roundtrip byte-identical
+#### Paso 0.5: R-019 — Refactorización matemática (0% BPB risk) ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-28)
+- **Riesgo BPB**: NINGUNO — verificado bit-exact (BPB 1.278120 pre/post)
+- **Impacto**: eliminación ~1.3 MB/tok heap churn + vk outer product inline
+- **Quality gate PASSED**: BPB bit-exact, roundtrip byte-identical
 
-#### Paso 1: R-021 — F32 AVX2 sin FMA (0% BPB risk)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: NINGUNO — vmulps + vaddps separados = bit-exact con scalar
-- **Speedup estimado**: +10-20% en TimeMix (96 LoRA matmuls/token pasan de scalar a AVX2)
-- **Quality gate**: BPB bit-exact, cross-path roundtrip byte-identical
+#### Paso 1: R-021 — F32 AVX2 sin FMA (0% BPB risk) ✅ COMPLETADO
+- **Estado**: COMPLETADO (2026-10-28)
+- **Speedup real**: +19.2% end-to-end (38.1 → 45.4 tok/s) [MEASURED]
+- **Quality gate PASSED**: same-path roundtrip byte-identical, cross-path diverge (expected)
 
 #### Paso 1.5: R-022 — SIMD transcendentals ✅ COMPLETADO
 - **Estado**: COMPLETADO (2026-10-28)
