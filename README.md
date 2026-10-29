@@ -96,7 +96,7 @@ cargo test --release --test roundtrip -- --ignored
 
 ## Format
 
-Output format: AZTH v3 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
+Output format: AZTH v4 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
 Includes CRC-32 integrity verification, hyperparameter validation, and u32 overflow protection.
 
 ## License
