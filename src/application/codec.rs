@@ -23,6 +23,7 @@ pub const V4_FLAG_EMB_SURGERY: u8 = 0x02;
 pub const V4_FLAG_E8E9: u8 = 0x04;
 pub const V4_FLAG_SHUFFLE: u8 = 0x08;
 pub const V4_FLAG_DELTA: u8 = 0x10;
+pub const V4_FLAG_CM_ONLY: u8 = 0x20;
 pub const DEFAULT_BIAS_LR: f32 = 0.30;
 pub const DEFAULT_NGRAM_SCALE: f32 = 0.50;
 pub const DEFAULT_MIX_ETA: f32 = 0.01;
@@ -81,6 +82,7 @@ pub struct HeaderInfo {
     pub e8e9: bool,              // true = E8E9 preprocessing was applied (R-027)
     pub shuffle_stride: u8,      // 0 = no shuffle, 2/4/8 = byte-plane shuffle stride (R-029)
     pub delta_stride: u8,        // 0 = no delta, 1+ = delta coding stride (R-030)
+    pub cm_only: bool,           // true = CM-only mode, skip RWKV forward pass (R-032)
     pub header_size: usize,
 }
 
@@ -136,7 +138,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 token_count: Some(token_count),
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery: String::new(),
-                e8e9: false, shuffle_stride: 0, delta_stride: 0,
+                e8e9: false, shuffle_stride: 0, delta_stride: 0, cm_only: false,
                 header_size: HEADER_SIZE,
             })
         }
@@ -146,7 +148,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             ) as usize;
             let flags = data[12];
             let known = V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY | V4_FLAG_E8E9
-                | V4_FLAG_SHUFFLE | V4_FLAG_DELTA;
+                | V4_FLAG_SHUFFLE | V4_FLAG_DELTA | V4_FLAG_CM_ONLY;
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
@@ -237,11 +239,13 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 0
             };
 
+            let cm_only = flags & V4_FLAG_CM_ONLY != 0;
+
             Ok(HeaderInfo {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
-                header_size: offset,
+                cm_only, header_size: offset,
             })
         }
         _ => Err(AzError::Format(format!(
@@ -272,6 +276,7 @@ pub fn extract_stream_and_crc_v(
 pub fn build_v4_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
+    cm_only: bool,
 ) -> Vec<u8> {
     let custom_hp = !uses_default_hp(bias_lr, ngram_scale, mix_eta);
     let (emb_method, emb_alpha) = parse_emb_surgery_str(emb_surgery);
@@ -285,6 +290,7 @@ pub fn build_v4_header(
     if e8e9 { flags |= V4_FLAG_E8E9; }
     if has_shuffle { flags |= V4_FLAG_SHUFFLE; }
     if has_delta { flags |= V4_FLAG_DELTA; }
+    if cm_only { flags |= V4_FLAG_CM_ONLY; }
 
     let mut cap = V4_HEADER_BASE;
     if custom_hp { cap += 12; }
@@ -425,6 +431,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut e8e9_mode = String::new();
     let mut shuffle_mode = String::new();
     let mut delta_mode = String::new();
+    let mut cm_only_mode = String::new();
     let mut verbose = false;
 
     let mut i = 0;
@@ -446,6 +453,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--e8e9" => { e8e9_mode = next_arg(args, &mut i, "--e8e9")?.to_string(); }
             "--shuffle" => { shuffle_mode = next_arg(args, &mut i, "--shuffle")?.to_string(); }
             "--delta" => { delta_mode = next_arg(args, &mut i, "--delta")?.to_string(); }
+            "--cm-only" => { cm_only_mode = next_arg(args, &mut i, "--cm-only")?.to_string(); }
             "--verbose" | "-v" => { verbose = true; }
             _ => {}
         }
@@ -590,13 +598,35 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     };
     let compress_slice: &[u8] = delta_data.as_deref().unwrap_or(post_shuffle);
 
-    timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
-    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    // CM-only mode (R-032): skip RWKV forward pass, use only N-gram + BiasHead.
+    // Auto = off: benchmarking showed RWKV helps even on high-entropy data
+    // (+19% BPB on sao, +14% on osdb). Manual --cm-only on available for speed.
+    let cm_only = cm_only_mode == "on";
+    if cm_only {
+        eprintln!("[compress] cm-only: active (skip RWKV forward pass)");
+    }
 
-    if !emb_surgery.is_empty() {
-        model.embedding_surgery(&emb_surgery);
+    timer.start("model_load");
+    let quant_override = if quant_str.is_empty() { None }
+        else { model_loader::parse_quant_flag(&quant_str) };
+
+    // Conditional model loading: skip heavy model if cm_only
+    let tokenizer;
+    let v: usize;
+    let mut model_opt: Option<crate::infrastructure::rwkv7::model::Rwkv7Model> = None;
+    if cm_only {
+        tokenizer = model_loader::load_tokenizer_only(&weights_dir);
+        v = tokenizer.vocab_size();
+    } else {
+        let (mut m, tok) = model_loader::load_model_and_tokenizer_with_quant(
+            &weights_dir, quant_override,
+        );
+        if !emb_surgery.is_empty() {
+            m.embedding_surgery(&emb_surgery);
+        }
+        v = m.config.vocab_size;
+        tokenizer = tok;
+        model_opt = Some(m);
     }
 
     timer.start("tokenize");
@@ -610,8 +640,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
 
-    let mut state = Rwkv7State::new(&model.config);
-    let mut scratch = model.create_scratch();
+    // State/scratch only needed when model is loaded
+    let mut state_opt = model_opt.as_ref()
+        .map(|m| Rwkv7State::new(&m.config));
+    let mut scratch_opt = model_opt.as_ref()
+        .map(|m| m.create_scratch());
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
 
@@ -648,7 +681,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         }
 
         ngram.observe(tok as u32);
-        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+        if let (Some(ref model), Some(ref mut state), Some(ref mut scratch)) =
+            (&model_opt, &mut state_opt, &mut scratch_opt)
+        {
+            model.forward_into(tok, state, scratch, &mut logits);
+        }
 
         if t > 0 && t % 100 == 0 {
             governor.apply()
@@ -667,10 +704,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!();
 
     if verbose {
-        let layers_ms = scratch.perf_layers_us as f64 / 1000.0;
-        let head_ms = scratch.perf_head_us as f64 / 1000.0;
-        let tmix_ms = scratch.perf_tmix_us as f64 / 1000.0;
-        let cmix_ms = scratch.perf_cmix_us as f64 / 1000.0;
+        let layers_ms = scratch_opt.as_ref().map_or(0.0, |s| s.perf_layers_us as f64 / 1000.0);
+        let head_ms = scratch_opt.as_ref().map_or(0.0, |s| s.perf_head_us as f64 / 1000.0);
+        let tmix_ms = scratch_opt.as_ref().map_or(0.0, |s| s.perf_tmix_us as f64 / 1000.0);
+        let cmix_ms = scratch_opt.as_ref().map_or(0.0, |s| s.perf_cmix_us as f64 / 1000.0);
         let total_fwd = layers_ms + head_ms;
         let layers_pct = if total_fwd > 0.0 { 100.0 * layers_ms / total_fwd } else { 0.0 };
         let head_pct = if total_fwd > 0.0 { 100.0 * head_ms / total_fwd } else { 0.0 };
@@ -695,7 +732,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     let hdr = build_v4_header(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
-        e8e9_applied, shuffle_applied, delta_applied,
+        e8e9_applied, shuffle_applied, delta_applied, cm_only,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -962,7 +999,7 @@ fn compress_single_file(
     let input_crc = crc32::crc32(input_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery, false, 0, 0);
+    let hdr = build_v4_header(total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery, false, 0, 0, false);
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
@@ -1044,6 +1081,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     if hdr.shuffle_stride > 1 {
         eprintln!("[decompress] shuffle: will unshuffle stride={} after decode", hdr.shuffle_stride);
     }
+    if hdr.cm_only {
+        eprintln!("[decompress] cm-only: active (skip RWKV forward pass)");
+    }
     if hdr.e8e9 {
         eprintln!("[decompress] E8E9: will apply inverse transform after decode");
     }
@@ -1065,12 +1105,25 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     };
 
     timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
-    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    let quant_override = if quant_str.is_empty() { None }
+        else { model_loader::parse_quant_flag(&quant_str) };
 
-    if !effective_surgery.is_empty() {
-        model.embedding_surgery(&effective_surgery);
+    let tokenizer;
+    let v: usize;
+    let mut model_opt: Option<crate::infrastructure::rwkv7::model::Rwkv7Model> = None;
+    if hdr.cm_only {
+        tokenizer = model_loader::load_tokenizer_only(&weights_dir);
+        v = tokenizer.vocab_size();
+    } else {
+        let (mut m, tok) = model_loader::load_model_and_tokenizer_with_quant(
+            &weights_dir, quant_override,
+        );
+        if !effective_surgery.is_empty() {
+            m.embedding_surgery(&effective_surgery);
+        }
+        v = m.config.vocab_size;
+        tokenizer = tok;
+        model_opt = Some(m);
     }
 
     timer.start("decode");
@@ -1079,8 +1132,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
 
-    let mut state = Rwkv7State::new(&model.config);
-    let mut scratch = model.create_scratch();
+    let mut state_opt = model_opt.as_ref()
+        .map(|m| Rwkv7State::new(&m.config));
+    let mut scratch_opt = model_opt.as_ref()
+        .map(|m| m.create_scratch());
     let mut logits = vec![0.0f32; v];
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
@@ -1140,7 +1195,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             };
             decoded_tokens.push(tok);
             ngram.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            if let (Some(ref model), Some(ref mut state), Some(ref mut scratch)) =
+                (&model_opt, &mut state_opt, &mut scratch_opt)
+            {
+                model.forward_into(tok as usize, state, scratch, &mut logits);
+            }
 
             if t > 0 && t % 100 == 0 {
                 governor.apply()
@@ -1195,7 +1254,11 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             }
 
             ngram.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            if let (Some(ref model), Some(ref mut state), Some(ref mut scratch)) =
+                (&model_opt, &mut state_opt, &mut scratch_opt)
+            {
+                model.forward_into(tok as usize, state, scratch, &mut logits);
+            }
             t += 1;
 
             if t % 100 == 0 {
@@ -1775,7 +1838,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_default() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE);
         assert_eq!(&hdr[..8], MAGIC_V4);
         assert_eq!(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 1000);
@@ -1784,7 +1847,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom() {
-        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0);
+        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP);
         let lr = f32::from_le_bytes([hdr[13], hdr[14], hdr[15], hdr[16]]);
@@ -2010,7 +2073,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_with_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, false);
         // 13 base + 5 emb-surgery = 18 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_EMB_SURGERY);
@@ -2021,7 +2084,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0);
+        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0, false);
         // 13 base + 12 custom HP + 5 emb-surgery = 30 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12 + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY);
@@ -2034,7 +2097,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_emb_surgery() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]); // stream
@@ -2048,7 +2111,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0);
+        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 4]); // stream
@@ -2070,7 +2133,7 @@ mod tests {
     #[test]
     fn v4_emb_surgery_flag_rejected_by_old_reserved_check() {
         // Verify that 0x02 flag alone is accepted (not rejected as "unknown")
-        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0);
+        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
@@ -2081,12 +2144,43 @@ mod tests {
     #[test]
     fn parse_header_v4_rejects_unknown_flags_with_emb() {
         // Bit 7 (0x80) should still be rejected even when 0x02 is set
-        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0);
+        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, false);
         hdr[12] |= 0x80; // add unknown flag
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
         file.extend_from_slice(&0u32.to_le_bytes());
         assert!(parse_header(&file).is_err());
+    }
+
+    #[test]
+    fn build_v4_header_cm_only() {
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, true);
+        assert_eq!(hdr.len(), V4_HEADER_BASE); // no extra bytes
+        assert_eq!(hdr[12], V4_FLAG_CM_ONLY);
+    }
+
+    #[test]
+    fn parse_header_v4_cm_only() {
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 0, 0, true);
+        let mut file = Vec::new();
+        file.extend_from_slice(&hdr);
+        file.extend_from_slice(&[0u8; 8]);
+        file.extend_from_slice(&0u32.to_le_bytes());
+        let info = parse_header(&file).unwrap();
+        assert!(info.cm_only);
+        assert_eq!(info.header_size, V4_HEADER_BASE);
+    }
+
+    #[test]
+    fn parse_header_v4_cm_only_with_shuffle() {
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 4, 0, true);
+        let mut file = Vec::new();
+        file.extend_from_slice(&hdr);
+        file.extend_from_slice(&[0u8; 8]);
+        file.extend_from_slice(&0u32.to_le_bytes());
+        let info = parse_header(&file).unwrap();
+        assert!(info.cm_only);
+        assert_eq!(info.shuffle_stride, 4);
     }
 }

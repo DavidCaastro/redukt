@@ -46,6 +46,13 @@ pub fn load_model_and_tokenizer_with_quant(
     (model, tokenizer)
 }
 
+/// Load only the tokenizer (skip model weights). Used in CM-only mode (R-032).
+pub fn load_tokenizer_only(weights_dir: &str) -> WorldTokenizer {
+    let weights_path = Path::new(weights_dir);
+    let vocab_path = resolve_vocab_path(weights_path);
+    WorldTokenizer::load(&vocab_path)
+}
+
 /// Parse a quantization level string ("f32", "q8", "q4", "auto") into a policy.
 /// Returns None for "auto" (let the system decide).
 pub fn parse_quant_flag(s: &str) -> Option<QuantPolicy> {
