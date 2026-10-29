@@ -596,11 +596,11 @@ Todas las optimizaciones 0% BPB risk completadas. R-016 (SVD) evaluado y abortad
 R-017 (parallel segments) bloqueado — requiere evaluación independiente.
 R-HW1 puede implementarse en cualquier momento (independiente de la secuencia de throughput).
 
-**Fase 2 (2026-10-29)**: R-023 N/A → R-025 ✅ → R-024 ❌ → R-026 pendiente.
+**Fase 2 (2026-10-29)**: R-023 N/A → R-025 ✅ → R-024 ❌ → R-026 ❌.
 R-023 (CDF 24-bit): N/A — ya implementado desde el diseño original.
 R-025 (prefetch): ✅ +3.2% throughput, 0% BPB risk.
 R-024 (Q4 storage): ❌ ABORTADO — +12.7% BPB, 15.3x slower. Q4 no viable para RWKV-7.
-R-026 (iGPU) pendiente: mayor complejidad (Vulkan FFI), módulo opcional.
+R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del forward; dispatch overhead domina.
 
 ### Fase 2: Técnicas identificadas por auditoría de exhaustividad (2026-10-29)
 
@@ -672,36 +672,22 @@ R-026 (iGPU) pendiente: mayor complejidad (Vulkan FFI), módulo opcional.
   - [x] End-to-end benchmark: +3.2% confirmed (4 rounds, order-controlled)
   - [x] **Quality gate PASSED**: BPB identical, 111 tests pass, zero warnings
 
-#### R-026: iGPU Offload (Intel Iris Xe) — Módulo opcional ✅ COMPLETADO
-- **Estado**: COMPLETADO (2026-10-29)
-- **Riesgo BPB**: CONFIRMADO BAJO — BPB -0.20% vs CPU (GPU usa F32 dequantized, más preciso que Q8)
-- **Activación**: `redukt compress --gpu` (opt-in, desactivado por defecto)
+#### R-026: iGPU Offload (Intel Iris Xe) — ❌ ABORTADO
+- **Estado**: ABORTADO (2026-10-29) — código revertido
+- **Razón**: 2.68x slower que CPU. Per-token Vulkan dispatch overhead domina;
+  head matmul es solo ~12% del forward pass; DRAM compartida elimina ventaja de bandwidth.
 - **Hardware target**: Intel Iris Xe (80 EUs @ 1.2 GHz, ~1.5 TFLOPS FP32)
-- **Limitación clave**: DRAM compartida — per-token Vulkan dispatch overhead domina.
-  GPU 37.5 tok/s vs CPU 100.5 tok/s (2.68x slower) — head matmul es solo ~12% del forward.
-  Beneficio requeriría: shader optimizado (tiled/shared memory), batch dispatch, pipeline overlap.
-- **Enfoque**: Vulkan compute shaders via FFI (zero compile-time dependencies).
-  Head matmul offloaded (65536×768 F32), state update y layer matmuls quedan en CPU.
-- **Archivos**: `src/infrastructure/gpu/mod.rs`, `src/infrastructure/gpu/vulkan.rs`
-- **Subtareas**:
-  - [x] Vulkan device enumeration + compute queue setup (FFI, zero-dep)
-  - [x] SPIR-V compute shader para mat_vec_mul (generado programáticamente, sin toolchain)
-  - [x] CPU↔GPU transfer pipeline (HOST_VISIBLE+HOST_COHERENT, persistent mapping)
-  - [x] `--gpu` flag en compress/decompress/hybrid-eval/baseline
-  - [x] Fallback automático a CPU si no hay Vulkan disponible
-  - [x] Benchmark: iGPU vs CPU-only throughput (controlled A/B)
-  - [x] **Quality gate**: BPB -0.20% vs CPU-only — PASS (threshold was +0.5%)
-  - [x] Same-path roundtrip: compress GPU → decompress GPU → BYTE-IDENTICAL
-  - [x] Cross-path: compress GPU → decompress CPU → CRC mismatch detected correctly
-        (expected: GPU=F32, CPU=Q8, different logits → different coded stream)
-  - [x] Documentar: Vulkan 1.1+ runtime requerido, `--gpu` must match compress/decompress
+- **Enfoque evaluado**: Vulkan compute shaders via FFI (zero compile-time dependencies).
+  Head matmul offloaded (65536×768 F32), state update y layer matmuls en CPU.
 - **Resultados medidos** [MEASURED 2026-10-29]:
   - Device: Intel(R) Iris(R) Xe Graphics
-  - BPB GPU: 1.2789 vs CPU: 1.2815 (enwik8 10KB Q8) → Δ = -0.20%
-  - Throughput: GPU 37.5 tok/s vs CPU 100.5 tok/s → 2.68x slower
+  - BPB GPU: 1.2789 vs CPU: 1.2815 (enwik8 10KB Q8) → Δ = -0.20% (calidad OK)
+  - Throughput: GPU 37.5 tok/s vs CPU 100.5 tok/s → **2.68x slower**
   - Head matrix: 65536×768 F32 = 192 MB on GPU (host-visible shared memory)
-  - GPU roundtrip: BYTE-IDENTICAL (CRC verified)
   - Cross-path GPU→CPU: CRC mismatch (expected, model precision differs)
+- **Conclusión**: iGPU offload NO viable para operaciones per-token con dispatch overhead.
+  Solo tendría sentido con batch dispatch o si head matmul fuera >50% del forward.
+  State update (62% del forward) sigue siendo el hard ceiling real.
 
 ### R-013: Determinismo cross-platform
 - **Estado**: PENDIENTE
@@ -810,4 +796,6 @@ R-026 (iGPU) pendiente: mayor complejidad (Vulkan FFI), módulo opcional.
 | 2026-10-29 | R-024 ABORTADO: Q4 SIMD implementado, pero +12.7% BPB y 15.3x slower que Q8 |
 | 2026-10-29 | R-024: confirma R-V05 — Q4 precision insuficiente para RWKV-7 0.1B (4 bits < 8 bits) |
 | 2026-10-29 | R-024: Q4 SIMD kernel retenido como mejora al path Q4 (non-allocating + SIMD) |
+| 2026-10-29 | R-026 ABORTADO: iGPU Vulkan 2.68x slower que CPU — dispatch overhead, head matmul solo 12% |
+| 2026-10-29 | R-026: código revertido, resultado negativo documentado. Fase 2 completa (1/3 exitoso) |
 | 2026-10-29 | R-024: 2 tests añadidos (q4_simd_matches_scalar, q4_simd_matches_allocating), 113 total |

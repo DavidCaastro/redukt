@@ -70,6 +70,5 @@ fn print_usage() {
     eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");
-    eprintln!("  --gpu                Offload head matmul to iGPU via Vulkan (opt-in)");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
 }

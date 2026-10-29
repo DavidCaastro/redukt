@@ -353,48 +353,6 @@ impl QuantMatrix {
         }
     }
 
-    /// Dequantize to f32 for GPU upload. Returns flat f32 data.
-    pub fn dequantize_f32_flat(&self) -> Vec<f32> {
-        let (rows, cols) = self.shape();
-        match self {
-            QuantMatrix::F32(t) => t.data.clone(),
-            QuantMatrix::Q8(q) => {
-                let mut data = vec![0.0f32; rows * cols];
-                for r in 0..rows {
-                    let s = q.scales[r];
-                    let base = r * cols;
-                    for c in 0..cols {
-                        data[base + c] = q.q_data[base + c] as f32 * s;
-                    }
-                }
-                data
-            }
-            QuantMatrix::Q4(q) => {
-                let mut data = vec![0.0f32; rows * cols];
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let idx = r * cols + c;
-                        let byte = q.packed[idx / 2];
-                        let nibble = if idx % 2 == 0 { byte & 0x0F } else { byte >> 4 };
-                        let val = if nibble & 0x08 != 0 {
-                            (nibble | 0xF0) as i8
-                        } else {
-                            nibble as i8
-                        };
-                        let group = idx / q.group_size;
-                        let scale = if group < q.scales.len() { q.scales[group] } else { 1.0 };
-                        data[idx] = val as f32 * scale;
-                    }
-                }
-                data
-            }
-            QuantMatrix::Gguf(_) => {
-                let (d64, _, _) = self.dequantize_f64();
-                d64.iter().map(|&x| x as f32).collect()
-            }
-        }
-    }
-
     /// Dequantize to f64 for spectral analysis. Returns (data, rows, cols).
     pub fn dequantize_f64(&self) -> (Vec<f64>, usize, usize) {
         match self {
