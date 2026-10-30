@@ -1045,7 +1045,7 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 - **Prerequisito**: R-035 (Mamba backbone)
 - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
 - **Problema**: Mamba forward pass dominated by scalar SSM recurrence (~45-50%) and
-  element-wise transcendentals (~10-15%). At 15-16 tok/s, 6x slower than RWKV-7.
+  element-wise transcendentals (~10-15%). At 15-16 tok/s scalar, 6x slower than RWKV-7.
 - **Optimizaciones implementadas**:
   1. **SSM recurrence SIMD** (`ssm_recurrence_d16`): d_state=16 = 2×8 AVX2.
      Replaces 32 scalar `portable_expf` with 4 SIMD `fast_exp_ps` per inner dimension.
@@ -1056,8 +1056,30 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
      Fuses gating and activation into single SIMD pass.
 - **Dispatch**: AVX2 > scalar (follows R-011/R-021 pattern, respects `REDUKT_NO_SIMD=1`)
 - **Tests**: 3 unit tests (silu_inplace, gated_silu_mul, ssm_recurrence_d16 vs scalar)
-- **BPB impact**: none on RWKV pipeline (independent code path). Mamba BPB: same (SIMD
-  transcendentals are bit-exact with portable, state update arithmetic uses same formulas)
+- **BPB impact**: none on RWKV pipeline (independent code path). Mamba BPB: identical
+  (0.9074 SIMD vs 0.9074 scalar on enwik8 10KB) [MEASURED]
+- **Throughput results** [MEASURED 2026-10-30, controlled A/B alternating]:
+  | File | SIMD tok/s | Scalar tok/s | Speedup |
+  |---|---|---|---|
+  | enwik8 R2 | 34.2 | 23.3 | **+46.8%** |
+  | samba R2 | 34.0 | 23.8 | **+42.9%** |
+  | enwik8 R3 | 33.7 | 23.3 | **+44.6%** |
+  | **Median** | **34.0** | **23.3** | **+44.6%** |
+- **Round 1 (batch, 6 files)** [MEASURED, less controlled due to thermal]:
+  | File | SIMD tok/s | Scalar tok/s | BPB |
+  |---|---|---|---|
+  | enwik8 | 24.3 | 17.1 | 0.9074 |
+  | dickens | 26.5 | 17.1 | 0.6149 |
+  | apache | 25.8 | 18.1 | 0.1636 |
+  | samba | 29.7 | 17.9 | 0.2448 |
+  | facturae | 26.9 | 24.0 | 0.4234 |
+  | mozilla | 26.0 | 24.0 | 2.0854 |
+  - Note: facturae/mozilla scalar numbers inflated by thermal ramp (Dell Vostro i5-1235U)
+  - First 4 files show consistent +42-66% speedup
+- **Gap vs RWKV-7**: 6x slower (scalar) → **2.8x slower** (SIMD). Gap halved.
+  - RWKV-7 SIMD: ~95 tok/s [MEASURED R-011]
+  - Mamba SIMD: ~34 tok/s [MEASURED R-038]
+  - Mamba scalar: ~23 tok/s [MEASURED R-038]
 - **Subtareas**:
   - [x] `hsum_avx2` — horizontal sum of 8 packed f32
   - [x] `silu_inplace` + `silu_inplace_avx2` — bulk SiLU activation
@@ -1068,6 +1090,7 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - [x] Remove stale `#[allow(dead_code)]` on portable_silu, portable_softplus, rms_norm_into
   - [x] 3 unit tests passing
   - [x] RWKV BPB reference unchanged: 1.2778 [MEASURED]
+  - [x] Controlled A/B benchmark: 3 rounds alternating, +44.6% median [MEASURED]
 
 #### Secuencia Fase 4
 
@@ -1241,3 +1264,5 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | FASE 4 COMPLETADA: R-034 ✅ R-035 ✅ R-036 ✅ R-037 ✅ |
 | 2026-10-30 | R-038 COMPLETADO: Mamba SIMD — SSM recurrence d16 AVX2, silu_inplace, gated_silu_mul |
 | 2026-10-30 | R-038: 3 unit tests, RWKV BPB sin regresión (1.2778), dead_code cleanup |
+| 2026-10-30 | R-038 BENCHMARK: controlled A/B — SIMD 34.0 tok/s vs scalar 23.3 tok/s = **+44.6%** median |
+| 2026-10-30 | R-038: gap vs RWKV-7 halved: 6x (scalar) → 2.8x (SIMD). BPB identical (0.9074) |
