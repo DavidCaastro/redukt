@@ -1020,14 +1020,21 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   2. **Run-Length Model**: Detecta repeticiones consecutivas, ln(run) bias, 4 tests
   3. **Word Model**: Contexto por "palabra" (secuencias entre separadores), bigram learning, 3 tests
 - **AdaptiveMixer**: 5 pesos SGD (w_ngram, w_bias, w_match, w_run, w_word)
-- **Resultados completos** [MEASURED 2026-10-30]:
-  | Archivo | Antes (R-033) | Después (R-037) | Δ |
+- **Resultados cross-entropy** [MEASURED 2026-10-30]:
+  | Archivo | Antes (ce_bpb) | Después | Δ |
   |---|---|---|---|
   | enwik8 10KB | 1.2813 | 1.2778 | -0.27% |
-  | apache-access.log | 0.2930 | 0.2452 | **-16.3%** |
-  | facturae-batch.xml | 0.4430 | 0.3991 | **-9.9%** |
-  | samba | 1.2980 | 1.2614 | **-2.8%** |
-- **Roundtrip**: PASS (enwik8 10KB compress→decompress byte-identical, CRC OK)
+  | apache-access.log | 0.2488 | 0.2452 | **-1.4%** |
+  | facturae-batch.xml | 0.4084 | 0.3991 | **-2.3%** |
+  | samba | 1.2574 | 1.2614 | +0.3% |
+  | mozilla | 1.9641 | 1.9431 | **-1.1%** |
+- **Resultados compresión real AZTH** [MEASURED 2026-10-30, 19 archivos]:
+  - 19/19 roundtrip PASS, CRC OK
+  - 16/19 archivos mejoran, 3 empatan/empeoran marginalmente (<0.6%)
+  - Mejores gains: ubl -2.4%, xml -2.2%, mozilla -1.5%, facturae -1.2%
+  - mozilla pasa de +1.5% a 0.0% vs brotli (empate exacto)
+  - Wins vs brotli-11: **13/18** (antes 12/18)
+  - CSV: `data/benchmark/results/actual-compression-benchmark.csv`
 - **Predictores pendientes** (posible trabajo futuro):
   - [ ] Indirect Context Model (skip-grams)
   - [ ] Record Model (columnar context para binarios)
