@@ -1039,16 +1039,47 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - [ ] Indirect Context Model (skip-grams)
   - [ ] Record Model (columnar context para binarios)
 
+#### R-038: Mamba SIMD Optimization — SSM recurrence + activations
+- **Estado**: COMPLETADO (2026-10-30)
+- **Prioridad**: P2 — throughput improvement for Mamba backbone
+- **Prerequisito**: R-035 (Mamba backbone)
+- **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
+- **Problema**: Mamba forward pass dominated by scalar SSM recurrence (~45-50%) and
+  element-wise transcendentals (~10-15%). At 15-16 tok/s, 6x slower than RWKV-7.
+- **Optimizaciones implementadas**:
+  1. **SSM recurrence SIMD** (`ssm_recurrence_d16`): d_state=16 = 2×8 AVX2.
+     Replaces 32 scalar `portable_expf` with 4 SIMD `fast_exp_ps` per inner dimension.
+     Vectorizes state update and dot-product accumulation with `hsum_avx2`.
+  2. **Bulk SiLU** (`silu_inplace`): 8-wide `x * sigmoid(x)` via `fast_sigmoid_ps`.
+     Applied to conv_out (1536 elements/layer) after separating conv compute from activation.
+  3. **Gated SiLU multiply** (`gated_silu_mul`): `out[i] = y[i] * silu(z[i])`.
+     Fuses gating and activation into single SIMD pass.
+- **Dispatch**: AVX2 > scalar (follows R-011/R-021 pattern, respects `REDUKT_NO_SIMD=1`)
+- **Tests**: 3 unit tests (silu_inplace, gated_silu_mul, ssm_recurrence_d16 vs scalar)
+- **BPB impact**: none on RWKV pipeline (independent code path). Mamba BPB: same (SIMD
+  transcendentals are bit-exact with portable, state update arithmetic uses same formulas)
+- **Subtareas**:
+  - [x] `hsum_avx2` — horizontal sum of 8 packed f32
+  - [x] `silu_inplace` + `silu_inplace_avx2` — bulk SiLU activation
+  - [x] `gated_silu_mul` + `gated_silu_mul_avx2` — fused gating
+  - [x] `ssm_recurrence_d16` + `ssm_recurrence_d16_avx2` — vectorized SSM step
+  - [x] `ssm_recurrence_d16_scalar` — extracted scalar fallback
+  - [x] Restructure conv loop: separate compute from activation for bulk SiLU
+  - [x] Remove stale `#[allow(dead_code)]` on portable_silu, portable_softplus, rms_norm_into
+  - [x] 3 unit tests passing
+  - [x] RWKV BPB reference unchanged: 1.2778 [MEASURED]
+
 #### Secuencia Fase 4
 
 ```
-R-034 (dock)     ─→ R-035 (Mamba)     ─→ benchmark comparativo → decisión backbone default
+R-034 (dock)     ─→ R-035 (Mamba)     ─→ R-038 (Mamba SIMD) ─→ benchmark comparativo
                  ─→ R-036 (BPE)       ─→ aplica a ambos backbones
                  ─→ R-037 (expanded CM) ─→ aplica a ambos backbones
 ```
 
 R-034 es bloqueante para R-035 únicamente. R-036 y R-037 son independientes y pueden
-ejecutarse en paralelo con R-035. Las tres (R-035, R-036, R-037) se benefician mutuamente:
+ejecutarse en paralelo con R-035. R-038 depende de R-035 y optimiza el backbone Mamba.
+Las tres (R-035, R-036, R-037) se benefician mutuamente:
 BPE reduce tokens para Mamba, expanded CM mejora BPB para ambos backbones.
 
 **Target de Fase 4**: throughput >10 KB/s single-thread, >50 KB/s aggregate (3T).
@@ -1208,3 +1239,5 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | R-037 COMPLETADO: RunModel + WordModel — 15/19 mejoran, ubl -2.4%, xml -2.2%, facturae -1.2% [MEASURED] |
 | 2026-10-30 | R-037: mixer 5 componentes SGD, 11 unit tests, roundtrip PASS |
 | 2026-10-30 | FASE 4 COMPLETADA: R-034 ✅ R-035 ✅ R-036 ✅ R-037 ✅ |
+| 2026-10-30 | R-038 COMPLETADO: Mamba SIMD — SSM recurrence d16 AVX2, silu_inplace, gated_silu_mul |
+| 2026-10-30 | R-038: 3 unit tests, RWKV BPB sin regresión (1.2778), dead_code cleanup |

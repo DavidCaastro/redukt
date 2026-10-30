@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use crate::domain::tensor::{
-    Tensor, mat_vec_mul_into, portable_expf, portable_silu, portable_softplus,
-    rms_norm_into,
+    Tensor, mat_vec_mul_into, portable_softplus, rms_norm_into,
+    silu_inplace, gated_silu_mul, ssm_recurrence_d16,
 };
 use crate::domain::ram_monitor::check_ram_or_abort;
 use crate::infrastructure::rwkv7::safetensors::SafeTensorsFile;
@@ -244,7 +244,7 @@ impl MambaModel {
             // Split into x_branch and z_branch
             let (x_branch, z_branch) = scratch.xz.split_at(di);
 
-            // Conv1d as shift register
+            // Conv1d as shift register (compute + shift, activation deferred)
             let cs = &mut state.conv_states[layer_idx];
             for j in 0..di {
                 let mut val = 0.0f32;
@@ -260,9 +260,10 @@ impl MambaModel {
                 }
                 cs[j * (dc - 1) + (dc - 2)] = x_branch[j];
 
-                // SiLU activation
-                scratch.conv_out[j] = portable_silu(val);
+                scratch.conv_out[j] = val;
             }
+            // Bulk SiLU via SIMD
+            silu_inplace(&mut scratch.conv_out[..di]);
 
             // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj
             mat_vec_mul_into(
@@ -282,28 +283,18 @@ impl MambaModel {
                 scratch.dt[j] = portable_softplus(scratch.dt[j] + lw.dt_proj_b[j]);
             }
 
-            // SSM recurrence
+            // SSM recurrence (SIMD-accelerated for d_state=16)
             let ss = &mut state.ssm_states[layer_idx];
-            for j in 0..di {
-                let dt_j = scratch.dt[j];
-                let x_j = scratch.conv_out[j];
-                let mut y_val = 0.0f32;
+            ssm_recurrence_d16(
+                &mut scratch.y[..di], ss, &scratch.dt[..di],
+                &scratch.conv_out[..di], &lw.a_log, b_slice, c_slice,
+                &lw.d_vec, di,
+            );
 
-                for n in 0..ds {
-                    let a_val = -portable_expf(lw.a_log[j * ds + n]);
-                    let da = portable_expf(dt_j * a_val);
-                    let idx = j * ds + n;
-                    ss[idx] = da * ss[idx] + dt_j * x_j * b_slice[n];
-                    y_val += ss[idx] * c_slice[n];
-                }
-
-                scratch.y[j] = y_val + lw.d_vec[j] * x_j;
-            }
-
-            // Gate: y * silu(z_branch)
-            for j in 0..di {
-                scratch.gated[j] = scratch.y[j] * portable_silu(z_branch[j]);
-            }
+            // Gate: gated[j] = y[j] * silu(z_branch[j])
+            gated_silu_mul(
+                &mut scratch.gated[..di], &scratch.y[..di], z_branch,
+            );
 
             // out_proj: (d_model, d_inner) @ gated → result
             mat_vec_mul_into(

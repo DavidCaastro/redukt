@@ -850,20 +850,17 @@ pub fn portable_tanhf(x: f32) -> f32 {
 
 /// SiLU (Swish) activation: x * sigmoid(x). Used by Mamba SSM.
 #[inline]
-#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
 pub fn portable_silu(x: f32) -> f32 {
     x * portable_sigmoidf(x)
 }
 
 /// Softplus: ln(1 + exp(x)). Used by Mamba dt discretization.
 #[inline]
-#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
 pub fn portable_softplus(x: f32) -> f32 {
     if x > 20.0 { x } else { portable_lnf(1.0 + portable_expf(x)) }
 }
 
 /// RMSNorm in-place: x[i] = x[i] / sqrt(mean(x²) + eps) * weight[i].
-#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
 pub fn rms_norm_into(x: &mut [f32], weight: &[f32], eps: f32) {
     let n = x.len();
     debug_assert_eq!(n, weight.len());
@@ -1100,6 +1097,159 @@ unsafe fn sigmoid_mix_inplace_avx2(
     for i in (chunks * 8)..n {
         let mix = portable_sigmoidf(base[i] + offset[i]);
         *v_out.get_unchecked_mut(i) += (v_first[i] - v_out[i]) * mix;
+    }
+}
+
+// ---- Mamba SIMD kernels (R-038) ----
+
+/// Horizontal sum of 8 packed f32 lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn hsum_avx2(v: __m256) -> f32 {
+    let hi = _mm256_extractf128_ps(v, 1);
+    let lo = _mm256_castps256_ps128(v);
+    let sum4 = _mm_add_ps(lo, hi);
+    let shuf = _mm_movehdup_ps(sum4);
+    let sums = _mm_add_ps(sum4, shuf);
+    let hi2 = _mm_movehl_ps(sums, sums);
+    _mm_cvtss_f32(_mm_add_ss(sums, hi2))
+}
+
+/// In-place SiLU (Swish): buf[i] = buf[i] * sigmoid(buf[i]).
+pub fn silu_inplace(buf: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { silu_inplace_avx2(buf) };
+        return;
+    }
+    for v in buf.iter_mut() { *v = portable_silu(*v); }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn silu_inplace_avx2(buf: &mut [f32]) {
+    let chunks = buf.len() / 8;
+    let p = buf.as_mut_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let x = _mm256_loadu_ps(p.add(off));
+        _mm256_storeu_ps(p.add(off), _mm256_mul_ps(x, fast_sigmoid_ps(x)));
+    }
+    for i in (chunks * 8)..buf.len() {
+        *buf.get_unchecked_mut(i) = portable_silu(*buf.get_unchecked(i));
+    }
+}
+
+/// Gated SiLU multiply: out[i] = y[i] * silu(z[i]).
+pub fn gated_silu_mul(out: &mut [f32], y_buf: &[f32], z: &[f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe { gated_silu_mul_avx2(out, y_buf, z) };
+        return;
+    }
+    for i in 0..out.len() { out[i] = y_buf[i] * portable_silu(z[i]); }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn gated_silu_mul_avx2(out: &mut [f32], y_buf: &[f32], z: &[f32]) {
+    let chunks = out.len() / 8;
+    let op = out.as_mut_ptr();
+    let yp = y_buf.as_ptr();
+    let zp = z.as_ptr();
+    for i in 0..chunks {
+        let off = i * 8;
+        let yv = _mm256_loadu_ps(yp.add(off));
+        let zv = _mm256_loadu_ps(zp.add(off));
+        _mm256_storeu_ps(op.add(off), _mm256_mul_ps(yv, _mm256_mul_ps(zv, fast_sigmoid_ps(zv))));
+    }
+    for i in (chunks * 8)..out.len() {
+        *out.get_unchecked_mut(i) = y_buf[i] * portable_silu(z[i]);
+    }
+}
+
+/// SSM recurrence step for d_state=16, vectorized over state dimension.
+/// 16 = 2×8 AVX2 lanes. Replaces 32 scalar expf with 4 SIMD fast_exp_ps per j.
+pub fn ssm_recurrence_d16(
+    y_out: &mut [f32], ss: &mut [f32], dt: &[f32], conv_out: &[f32],
+    a_log: &[f32], b: &[f32], c: &[f32], d_vec: &[f32], d_inner: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if !no_simd_override() && is_x86_feature_detected!("avx2") {
+        unsafe {
+            ssm_recurrence_d16_avx2(
+                y_out, ss, dt, conv_out, a_log, b, c, d_vec, d_inner,
+            )
+        };
+        return;
+    }
+    ssm_recurrence_d16_scalar(y_out, ss, dt, conv_out, a_log, b, c, d_vec, d_inner);
+}
+
+fn ssm_recurrence_d16_scalar(
+    y_out: &mut [f32], ss: &mut [f32], dt: &[f32], conv_out: &[f32],
+    a_log: &[f32], b: &[f32], c: &[f32], d_vec: &[f32], d_inner: usize,
+) {
+    for j in 0..d_inner {
+        let dt_j = dt[j];
+        let x_j = conv_out[j];
+        let mut y_val = 0.0f32;
+        for n in 0..16 {
+            let a_val = -portable_expf(a_log[j * 16 + n]);
+            let da = portable_expf(dt_j * a_val);
+            let idx = j * 16 + n;
+            ss[idx] = da * ss[idx] + dt_j * x_j * b[n];
+            y_val += ss[idx] * c[n];
+        }
+        y_out[j] = y_val + d_vec[j] * x_j;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn ssm_recurrence_d16_avx2(
+    y_out: &mut [f32], ss: &mut [f32], dt: &[f32], conv_out: &[f32],
+    a_log: &[f32], b: &[f32], c: &[f32], d_vec: &[f32], d_inner: usize,
+) {
+    let b_lo = _mm256_loadu_ps(b.as_ptr());
+    let b_hi = _mm256_loadu_ps(b.as_ptr().add(8));
+    let c_lo = _mm256_loadu_ps(c.as_ptr());
+    let c_hi = _mm256_loadu_ps(c.as_ptr().add(8));
+    let zero = _mm256_setzero_ps();
+    let ss_ptr = ss.as_mut_ptr();
+    let alog_ptr = a_log.as_ptr();
+
+    for j in 0..d_inner {
+        let base = j * 16;
+        let dt_v = _mm256_set1_ps(dt[j]);
+        let dtx_v = _mm256_set1_ps(dt[j] * conv_out[j]);
+
+        // exp(a_log) — positive decay constants
+        let a_lo = fast_exp_ps(_mm256_loadu_ps(alog_ptr.add(base)));
+        let a_hi = fast_exp_ps(_mm256_loadu_ps(alog_ptr.add(base + 8)));
+
+        // da = exp(-dt * exp(a_log))
+        let da_lo = fast_exp_ps(_mm256_sub_ps(zero, _mm256_mul_ps(dt_v, a_lo)));
+        let da_hi = fast_exp_ps(_mm256_sub_ps(zero, _mm256_mul_ps(dt_v, a_hi)));
+
+        // ss = da * ss + dt*x * b
+        let ns_lo = _mm256_add_ps(
+            _mm256_mul_ps(da_lo, _mm256_loadu_ps(ss_ptr.add(base))),
+            _mm256_mul_ps(dtx_v, b_lo),
+        );
+        let ns_hi = _mm256_add_ps(
+            _mm256_mul_ps(da_hi, _mm256_loadu_ps(ss_ptr.add(base + 8))),
+            _mm256_mul_ps(dtx_v, b_hi),
+        );
+        _mm256_storeu_ps(ss_ptr.add(base), ns_lo);
+        _mm256_storeu_ps(ss_ptr.add(base + 8), ns_hi);
+
+        // y[j] = dot(new_ss, c) + d_vec[j] * conv_out[j]
+        let sum = _mm256_add_ps(
+            _mm256_mul_ps(ns_lo, c_lo), _mm256_mul_ps(ns_hi, c_hi),
+        );
+        y_out[j] = hsum_avx2(sum) + d_vec[j] * conv_out[j];
     }
 }
 
@@ -2362,6 +2512,81 @@ mod tests {
         eprintln!("portable_sigmoidf vs fast_sigmoid_ps: {} mismatches out of {}",
             mismatches, test_vals.len());
         assert_eq!(mismatches, 0, "portable_sigmoidf must be bit-exact with fast_sigmoid_ps");
+    }
+
+    // ---- R-038: Mamba SIMD kernel tests ----
+
+    #[test]
+    fn silu_inplace_matches_scalar() {
+        let input: Vec<f32> = (-20..=20).map(|i| i as f32 * 0.5).collect();
+        let mut simd_buf = input.clone();
+        let mut scalar_buf = input.clone();
+        silu_inplace(&mut simd_buf);
+        for v in scalar_buf.iter_mut() { *v = portable_silu(*v); }
+        for i in 0..input.len() {
+            let diff = (simd_buf[i] - scalar_buf[i]).abs();
+            assert!(diff < 1e-5, "silu_inplace mismatch at {}: {} vs {}",
+                i, simd_buf[i], scalar_buf[i]);
+        }
+    }
+
+    #[test]
+    fn gated_silu_mul_matches_scalar() {
+        let y_buf: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.3).collect();
+        let z: Vec<f32> = (0..32).map(|i| (i as f32 - 8.0) * 0.2).collect();
+        let mut out_simd = vec![0.0f32; 32];
+        let mut out_scalar = vec![0.0f32; 32];
+        gated_silu_mul(&mut out_simd, &y_buf, &z);
+        for i in 0..32 { out_scalar[i] = y_buf[i] * portable_silu(z[i]); }
+        for i in 0..32 {
+            let diff = (out_simd[i] - out_scalar[i]).abs();
+            assert!(diff < 1e-5, "gated_silu_mul mismatch at {}: {} vs {}",
+                i, out_simd[i], out_scalar[i]);
+        }
+    }
+
+    #[test]
+    fn ssm_recurrence_d16_matches_scalar() {
+        let d_inner = 4;
+        let ds = 16;
+        let n = d_inner * ds;
+        // Deterministic test data
+        let dt: Vec<f32> = (0..d_inner).map(|i| 0.5 + i as f32 * 0.1).collect();
+        let conv_out: Vec<f32> = (0..d_inner).map(|i| 1.0 - i as f32 * 0.3).collect();
+        let a_log: Vec<f32> = (0..n).map(|i| -1.0 - (i as f32) * 0.01).collect();
+        let b: Vec<f32> = (0..ds).map(|i| 0.1 * (i as f32 + 1.0)).collect();
+        let c: Vec<f32> = (0..ds).map(|i| 0.05 * (ds as f32 - i as f32)).collect();
+        let d_vec: Vec<f32> = (0..d_inner).map(|i| 0.2 + i as f32 * 0.05).collect();
+        let ss_init: Vec<f32> = (0..n).map(|i| 0.01 * i as f32).collect();
+
+        // Scalar reference
+        let mut y_scalar = vec![0.0f32; d_inner];
+        let mut ss_scalar = ss_init.clone();
+        ssm_recurrence_d16_scalar(
+            &mut y_scalar, &mut ss_scalar, &dt, &conv_out,
+            &a_log, &b, &c, &d_vec, d_inner,
+        );
+
+        // SIMD path
+        let mut y_simd = vec![0.0f32; d_inner];
+        let mut ss_simd = ss_init.clone();
+        ssm_recurrence_d16(
+            &mut y_simd, &mut ss_simd, &dt, &conv_out,
+            &a_log, &b, &c, &d_vec, d_inner,
+        );
+
+        for j in 0..d_inner {
+            let diff = (y_simd[j] - y_scalar[j]).abs();
+            let tol = y_scalar[j].abs().max(1e-6) * 1e-4;
+            assert!(diff < tol, "ssm y[{}]: simd={} scalar={} diff={}",
+                j, y_simd[j], y_scalar[j], diff);
+        }
+        for i in 0..n {
+            let diff = (ss_simd[i] - ss_scalar[i]).abs();
+            let tol = ss_scalar[i].abs().max(1e-6) * 1e-4;
+            assert!(diff < tol, "ssm ss[{}]: simd={} scalar={} diff={}",
+                i, ss_simd[i], ss_scalar[i], diff);
+        }
     }
 
     #[test]
