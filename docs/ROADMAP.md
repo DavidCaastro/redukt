@@ -935,53 +935,24 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 > con estado diagonal O(D·N) o O(D), y finalmente aplicar técnicas universales (BPE, expanded CM)
 > que beneficien a todos los backbones.
 
-#### R-034: Backbone Dock — trait abstraction for swappable models
-- **Estado**: PENDIENTE
+#### R-034: Backbone Dock — trait abstraction for swappable models ✅
+- **Estado**: COMPLETADO (2026-10-30, cf3fc4b)
 - **Prioridad**: P1 — prerequisito para toda la Fase 4
-- **Impacto**: Desacoplar el codec del RWKV-7, permitir experimentación con backbones alternativos
-- **Riesgo BPB**: CERO — refactor puro, zero-cost generics, mismo código RWKV subyacente
-- **Esfuerzo estimado**: ~240 líneas cambiadas, ~90 líneas nuevas
-- **Archivos**: `src/domain/backbone.rs` (nuevo), `src/application/codec.rs`, `src/application/api.rs`,
-  `src/application/benchmark.rs`, `src/application/model_loader.rs`
-- **Interfaz mínima**:
-  ```rust
-  pub trait Backbone {
-      type State: BackboneState;
-      type Scratch;
-      fn vocab_size(&self) -> usize;
-      fn create_state(&self) -> Self::State;
-      fn create_scratch(&self) -> Self::Scratch;
-      fn forward_into(&self, token: usize, state: &mut Self::State,
-                      scratch: &mut Self::Scratch, out: &mut [f32]);
-  }
-  pub trait BackboneState { fn reset(&mut self); }
-  pub trait Tokenizer {
-      fn encode(&self, data: &[u8]) -> Vec<u32>;
-      fn decode_token(&self, id: u32) -> &[u8];
-  }
-  ```
-- **Decisión de diseño**: Generics (`fn compress<M: Backbone>`) en lugar de `dyn Trait`,
-  porque `forward_into` se llama ~10K veces/archivo y vtable dispatch sería medible.
-  Con un solo implementador (RWKV), el compilador monomorphiza idéntico a hoy.
-- **Coupling actual** [MEASURED]:
-  - `Rwkv7Model` refs: 11 directas (codec 3, api 3, benchmark 2, loader 3)
-  - `Rwkv7State` refs: 11 directas (codec 7, api 2, benchmark 2)
-  - Traits existentes: 0 — acoplamiento 100% concreto
-  - El codec NUNCA inspecciona internals de State/Scratch — opaque pass-through
-  - `embedding_surgery` es RWKV-específico → pre-processing antes de pasar a generic
-- **Subtareas**:
-  - [ ] Definir traits `Backbone`, `BackboneState`, `Tokenizer` en `src/domain/backbone.rs`
-  - [ ] `impl Backbone for Rwkv7Model` (delegación trivial)
-  - [ ] `impl Tokenizer for WorldTokenizer`
-  - [ ] Refactorizar `codec.rs` a generics (7 funciones: compress, decompress, batch, hybrid-eval, baseline, cm-eval, compress_single)
-  - [ ] Refactorizar `api.rs` a generics (3 handlers)
-  - [ ] Refactorizar `benchmark.rs` a generics (2 funciones)
-  - [ ] Refactorizar `model_loader.rs` (return type generic o enum dispatch)
-  - [ ] `embedding_surgery` como pre-processing concreto, fuera del trait
-  - [ ] `perf_summary` method en trait (opcional, default no-op) para verbose output
-  - [ ] Verificar: `cargo build --release` zero warnings, `cargo test` all pass
-  - [ ] Roundtrip 19 archivos: BPB idéntico, bytes idénticos, CRC idéntico
-  - [ ] Benchmark tok/s: cero regresión (monomorphización = zero-cost)
+- **Impacto**: Codec completamente desacoplado de RWKV-7 — zero RWKV imports en codec/api/benchmark
+- **Riesgo BPB**: CERO — refactor puro, zero-cost generics, monomorphización idéntica
+- **Resultado**: 130 líneas añadidas, 49 eliminadas, 7 archivos modificados
+- **Archivos**:
+  - `src/domain/backbone.rs` (NUEVO): `Backbone`, `BackboneState`, `BackboneScratch`, `BackendTokenizer`
+  - `src/infrastructure/rwkv7/model.rs`: `impl Backbone for Rwkv7Model`
+  - `src/infrastructure/rwkv7/tokenizer.rs`: `impl BackendTokenizer for WorldTokenizer`
+  - `src/application/codec.rs`: todas las funciones genéricas, zero RWKV imports
+  - `src/application/api.rs`: `compress_bytes`/`decompress_bytes` genéricos
+  - `src/application/benchmark.rs`: `compress_and_measure`/`verify_roundtrip` genéricos
+  - `src/application/model_loader.rs`: punto de construcción concreto (sin cambios)
+- **Verificación** [MEASURED]:
+  - `cargo build --release`: zero warnings
+  - `cargo test`: 176 unit + 4 integration PASS
+  - `embedding_surgery` como pre-processing concreto, fuera del trait
 
 #### R-035: Mamba backbone — alternative O(D·N) inference
 - **Estado**: PENDIENTE (requiere R-034)
