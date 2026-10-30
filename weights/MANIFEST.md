@@ -52,6 +52,31 @@ cargo run --release -- hybrid-eval --hierarchical --match --emb-surgery center0.
 # Expected: 1.1680 BPB
 ```
 
+### mamba-130m (GPT-NeoX BPE) — R-035 EXPERIMENTAL
+
+- **Status**: ACTIVE (experimental, `--weights weights/mamba-130m`)
+- **Source**: state-spaces/mamba-130m-hf on HuggingFace
+- **Files**: `model.safetensors` (493 MB), `tokenizer.json` (2.1 MB)
+- **License**: Apache 2.0
+- **Architecture**: Mamba SSM, d_model=768, d_inner=1536, d_state=16, d_conv=4, n_layer=24, vocab=50280
+- **Tokenizer**: GPT-NeoX BPE (tokenizer.json, 50,254 entries, 50,009 merges)
+- **Key format**: HuggingFace (`backbone.layers.N.mixer.xxx`, `backbone.embeddings.weight`)
+- **Baseline BPB**: 0.9074 (enwik8 10KB, `mamba-eval`)
+- **Throughput**: ~15.5 tok/s (scalar, no SIMD optimization)
+
+#### Restoration procedure
+
+```bash
+python -c "
+from huggingface_hub import hf_hub_download
+import shutil
+path = hf_hub_download(repo_id='state-spaces/mamba-130m-hf', filename='model.safetensors')
+shutil.copy(path, 'weights/mamba-130m/model.safetensors')
+path = hf_hub_download(repo_id='state-spaces/mamba-130m-hf', filename='tokenizer.json')
+shutil.copy(path, 'weights/mamba-130m/tokenizer.json')
+"
+```
+
 ---
 
 ## Rules

@@ -848,6 +848,32 @@ pub fn portable_tanhf(x: f32) -> f32 {
     2.0 * portable_sigmoidf(2.0 * x) - 1.0
 }
 
+/// SiLU (Swish) activation: x * sigmoid(x). Used by Mamba SSM.
+#[inline]
+#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
+pub fn portable_silu(x: f32) -> f32 {
+    x * portable_sigmoidf(x)
+}
+
+/// Softplus: ln(1 + exp(x)). Used by Mamba dt discretization.
+#[inline]
+#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
+pub fn portable_softplus(x: f32) -> f32 {
+    if x > 20.0 { x } else { portable_lnf(1.0 + portable_expf(x)) }
+}
+
+/// RMSNorm in-place: x[i] = x[i] / sqrt(mean(x²) + eps) * weight[i].
+#[allow(dead_code)] // R-035: used by Mamba backend, not yet wired to CLI
+pub fn rms_norm_into(x: &mut [f32], weight: &[f32], eps: f32) {
+    let n = x.len();
+    debug_assert_eq!(n, weight.len());
+    let mut sum_sq = 0.0f32;
+    for &v in x.iter() { sum_sq += v * v; }
+    let rms = (sum_sq / n as f32 + eps).sqrt();
+    let inv_rms = 1.0 / rms;
+    for i in 0..n { x[i] = x[i] * inv_rms * weight[i]; }
+}
+
 /// Round-to-nearest-even for f32 (matches IEEE 754 default / _mm256_cvtps_epi32).
 #[inline]
 fn portable_roundeven(x: f32) -> f32 {

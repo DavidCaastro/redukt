@@ -3,6 +3,8 @@
 weights/**/*.safetensors
 weights/**/*.gguf
 weights/**/*.bin
+weights/**/*.json
+weights/**/*.txt
 !weights/MANIFEST.md
 *.log
 *.jsonl

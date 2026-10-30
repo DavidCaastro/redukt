@@ -1736,6 +1736,95 @@ pub fn cmd_cm_eval(args: &[String]) -> AzResult<()> {
     Ok(())
 }
 
+pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
+    use crate::infrastructure::mamba::model::MambaModel;
+    use crate::infrastructure::mamba::tokenizer::BpeTokenizer;
+
+    let mut input_path = "data/enwik8".to_string();
+    let mut weights_dir = "weights/mamba-130m".to_string();
+    let mut max_bytes: usize = 0;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
+            "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--bytes" => {
+                max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let raw_bytes = crate::domain::error::read_file(&input_path)?;
+    let total_bytes = if max_bytes > 0 {
+        max_bytes.min(raw_bytes.len())
+    } else {
+        raw_bytes.len()
+    };
+    let input_slice = &raw_bytes[..total_bytes];
+    eprintln!("[mamba-eval] input: {} ({} bytes)", input_path, total_bytes);
+
+    let weights_path = std::path::Path::new(&weights_dir);
+    let model = MambaModel::load(weights_path);
+    let tokenizer = BpeTokenizer::load(weights_path);
+    let v = model.config.vocab_size;
+
+    let tokens = tokenizer.encode(input_slice);
+    eprintln!(
+        "[mamba-eval] tokenized: {} tokens ({:.2} bytes/token)",
+        tokens.len(), total_bytes as f64 / tokens.len() as f64
+    );
+
+    let mut state = model.create_state();
+    let mut scratch = model.create_scratch();
+    let mut logits = vec![0.0f32; v];
+    let mut probs_buf = vec![0.0f32; v];
+    let mut ce_bits = 0.0f64;
+
+    eprintln!("[mamba-eval] evaluating (Mamba-only, no ensemble) ...");
+    let t_start = std::time::Instant::now();
+
+    for t in 0..tokens.len() {
+        let tok = tokens[t] as usize;
+
+        if t == 0 {
+            ce_bits += -(1.0f64 / v as f64).log2();
+        } else {
+            softmax_into(&logits, &mut probs_buf);
+            let prob = probs_buf[tok] as f64;
+            ce_bits += -prob.max(1e-30).log2();
+        }
+
+        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+
+        if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {
+            let elapsed = t_start.elapsed().as_secs_f64();
+            let bpb = ce_bits / total_bytes as f64;
+            eprint!(
+                "\r[mamba-eval] {:.1}% | {} tokens | BPB {:.4} | {:.1} tok/s   ",
+                100.0 * t as f64 / tokens.len() as f64, t, bpb,
+                t as f64 / elapsed
+            );
+        }
+    }
+
+    let total_time = t_start.elapsed().as_secs_f64();
+    let bpb = ce_bits / total_bytes as f64;
+
+    eprintln!();
+    eprintln!();
+    eprintln!("[mamba-eval] results:");
+    eprintln!("  input: {} ({} bytes, {} tokens)", input_path, total_bytes, tokens.len());
+    eprintln!("  BPB:   {:.6} (Mamba-only, no ensemble)", bpb);
+    eprintln!(
+        "  time:  {:.1}s ({:.1} tok/s)",
+        total_time, tokens.len() as f64 / total_time
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

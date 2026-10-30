@@ -17,6 +17,7 @@ fn main() {
         "baseline" => application::codec::cmd_baseline(&args[2..]),
         "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
         "benchmark" => application::benchmark::cmd_benchmark(&args[2..]),
+        "mamba-eval" => application::codec::cmd_mamba_eval(&args[2..]),
         "api" => { application::api::cmd_api(&args[2..]); Ok(()) }
         "--help" | "-h" | "help" => { print_usage(); Ok(()) }
         other => {
@@ -43,6 +44,7 @@ fn print_usage() {
     eprintln!("  baseline    Evaluate BPB with RWKV-only (no ensemble)");
     eprintln!("  benchmark   Evaluate compression vs gzip/brotli/zstd (JSON report)");
     eprintln!("  cm-eval     Spectral analysis of weight matrices");
+    eprintln!("  mamba-eval  Evaluate BPB with Mamba SSM backbone (no ensemble)");
     eprintln!("  api         Start HTTP API server");
     eprintln!();
     eprintln!("Usage:");
