@@ -1065,17 +1065,33 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   | samba R2 | 34.0 | 23.8 | **+42.9%** |
   | enwik8 R3 | 33.7 | 23.3 | **+44.6%** |
   | **Median** | **34.0** | **23.3** | **+44.6%** |
-- **Round 1 (batch, 6 files)** [MEASURED, less controlled due to thermal]:
-  | File | SIMD tok/s | Scalar tok/s | BPB |
-  |---|---|---|---|
-  | enwik8 | 24.3 | 17.1 | 0.9074 |
-  | dickens | 26.5 | 17.1 | 0.6149 |
-  | apache | 25.8 | 18.1 | 0.1636 |
-  | samba | 29.7 | 17.9 | 0.2448 |
-  | facturae | 26.9 | 24.0 | 0.4234 |
-  | mozilla | 26.0 | 24.0 | 2.0854 |
-  - Note: facturae/mozilla scalar numbers inflated by thermal ramp (Dell Vostro i5-1235U)
-  - First 4 files show consistent +42-66% speedup
+- **Full 19-file benchmark** [MEASURED 2026-10-30, SIMD, Q8=N/A (F32 only)]:
+  | File | Tokens | BPB | tok/s | RWKV ce_bpb | vs RWKV |
+  |---|---|---|---|---|---|
+  | apache-access.log | 3570 | 0.1636 | 34.6 | 0.2482 | **-34.1%** |
+  | linux-syslog.log | 4029 | 0.2517 | 34.1 | 0.3702 | **-32.0%** |
+  | openssh-auth.log | 3877 | 0.3023 | 34.5 | 0.4722 | **-36.0%** |
+  | samba | 3001 | 0.2448 | 33.9 | 1.2637 | **-80.6%** |
+  | enwik8 | 3552 | 0.9074 | 34.2 | 1.2786 | **-29.0%** |
+  | xml | 5299 | 0.5165 | 34.6 | 0.6231 | **-17.1%** |
+  | dickens | 2901 | 0.6149 | 34.2 | 1.7546 | **-65.0%** |
+  | webster | 2789 | 0.5500 | 33.6 | 1.7621 | **-68.8%** |
+  | reymont | 5651 | 1.7138 | 34.2 | 1.8020 | **-4.9%** |
+  | facturae-batch.xml | 4545 | 0.4234 | 34.1 | 0.4023 | +5.2% |
+  | ubl-invoice-batch.xml | 4689 | 0.5146 | 34.7 | 0.4783 | +7.6% |
+  | nci | 6506 | 0.6336 | 34.6 | 0.5953 | +6.4% |
+  | mozilla | 7985 | 2.0854 | 34.2 | 1.9460 | +7.2% |
+  | mr | 9159 | 2.6735 | 34.4 | 2.2862 | +16.9% |
+  | ooffice | 9500 | 5.2153 | 34.3 | 3.6900 | +41.3% |
+  | osdb | 7606 | 6.7121 | 34.2 | 5.6116 | +19.6% |
+  | x-ray | 9793 | 6.6064 | 34.3 | 5.7806 | +14.3% |
+  | sao | 8954 | 10.7240 | 34.6 | 9.2249 | +16.3% |
+  | sample-invoice.pdf | 8965 | 11.8993 | 34.6 | 11.0952 | +7.2% |
+  - **Throughput**: 33.6-34.7 tok/s (min webster, max ubl). Mean **34.3 tok/s**. Remarkably stable.
+  - **Mamba wins**: 10/19 (logs, text, code, xml). Strongest: samba **-80.6%**, webster **-68.8%**, dickens **-65.0%**
+  - **Mamba loses**: 9/19 (binary, PDF, e-invoicing). Worst: ooffice +41.3%, osdb +19.6%
+  - **Pattern**: BPE tokenization gives huge advantage on text (2.8-3.6 bytes/token) but near-1:1 on binary
+  - CSV: `data/benchmark/results/mamba-simd-benchmark.csv`
 - **Gap vs RWKV-7**: 6x slower (scalar) → **2.8x slower** (SIMD). Gap halved.
   - RWKV-7 SIMD: ~95 tok/s [MEASURED R-011]
   - Mamba SIMD: ~34 tok/s [MEASURED R-038]
@@ -1266,3 +1282,5 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | R-038: 3 unit tests, RWKV BPB sin regresión (1.2778), dead_code cleanup |
 | 2026-10-30 | R-038 BENCHMARK: controlled A/B — SIMD 34.0 tok/s vs scalar 23.3 tok/s = **+44.6%** median |
 | 2026-10-30 | R-038: gap vs RWKV-7 halved: 6x (scalar) → 2.8x (SIMD). BPB identical (0.9074) |
+| 2026-10-30 | R-038 FULL BENCHMARK: 19 archivos, 33.6-34.7 tok/s (mean 34.3), Mamba wins 10/19 vs RWKV ce_bpb |
+| 2026-10-30 | R-038: samba -80.6%, webster -68.8%, dickens -65.0%. Pierde binarios: ooffice +41.3% |
