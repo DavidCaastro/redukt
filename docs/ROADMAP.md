@@ -923,6 +923,160 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 
 ---
 
+### Fase 4: Backbone Abstraction & Scalability (2026-10-30)
+
+> Ref: `docs/internal/research/backbone-scalability-analysis.md`
+> Diagnóstico: la recurrencia matricial O(D²) de RWKV-7 (62% del forward pass) es un
+> muro secuencial inherente. No es NP — es P con constante ~3000x vs brotli y
+> recurrencia no lineal probablemente P-completa (no paralelizable dentro de un archivo).
+> A ~1.1 KB/s, comprimir 1 TB requiere ~10,800 cores/día. Inviable para producción a escala.
+>
+> Estrategia: construir primero la abstracción (dock), luego evaluar backbones alternativos
+> con estado diagonal O(D·N) o O(D), y finalmente aplicar técnicas universales (BPE, expanded CM)
+> que beneficien a todos los backbones.
+
+#### R-034: Backbone Dock — trait abstraction for swappable models
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — prerequisito para toda la Fase 4
+- **Impacto**: Desacoplar el codec del RWKV-7, permitir experimentación con backbones alternativos
+- **Riesgo BPB**: CERO — refactor puro, zero-cost generics, mismo código RWKV subyacente
+- **Esfuerzo estimado**: ~240 líneas cambiadas, ~90 líneas nuevas
+- **Archivos**: `src/domain/backbone.rs` (nuevo), `src/application/codec.rs`, `src/application/api.rs`,
+  `src/application/benchmark.rs`, `src/application/model_loader.rs`
+- **Interfaz mínima**:
+  ```rust
+  pub trait Backbone {
+      type State: BackboneState;
+      type Scratch;
+      fn vocab_size(&self) -> usize;
+      fn create_state(&self) -> Self::State;
+      fn create_scratch(&self) -> Self::Scratch;
+      fn forward_into(&self, token: usize, state: &mut Self::State,
+                      scratch: &mut Self::Scratch, out: &mut [f32]);
+  }
+  pub trait BackboneState { fn reset(&mut self); }
+  pub trait Tokenizer {
+      fn encode(&self, data: &[u8]) -> Vec<u32>;
+      fn decode_token(&self, id: u32) -> &[u8];
+  }
+  ```
+- **Decisión de diseño**: Generics (`fn compress<M: Backbone>`) en lugar de `dyn Trait`,
+  porque `forward_into` se llama ~10K veces/archivo y vtable dispatch sería medible.
+  Con un solo implementador (RWKV), el compilador monomorphiza idéntico a hoy.
+- **Coupling actual** [MEASURED]:
+  - `Rwkv7Model` refs: 11 directas (codec 3, api 3, benchmark 2, loader 3)
+  - `Rwkv7State` refs: 11 directas (codec 7, api 2, benchmark 2)
+  - Traits existentes: 0 — acoplamiento 100% concreto
+  - El codec NUNCA inspecciona internals de State/Scratch — opaque pass-through
+  - `embedding_surgery` es RWKV-específico → pre-processing antes de pasar a generic
+- **Subtareas**:
+  - [ ] Definir traits `Backbone`, `BackboneState`, `Tokenizer` en `src/domain/backbone.rs`
+  - [ ] `impl Backbone for Rwkv7Model` (delegación trivial)
+  - [ ] `impl Tokenizer for WorldTokenizer`
+  - [ ] Refactorizar `codec.rs` a generics (7 funciones: compress, decompress, batch, hybrid-eval, baseline, cm-eval, compress_single)
+  - [ ] Refactorizar `api.rs` a generics (3 handlers)
+  - [ ] Refactorizar `benchmark.rs` a generics (2 funciones)
+  - [ ] Refactorizar `model_loader.rs` (return type generic o enum dispatch)
+  - [ ] `embedding_surgery` como pre-processing concreto, fuera del trait
+  - [ ] `perf_summary` method en trait (opcional, default no-op) para verbose output
+  - [ ] Verificar: `cargo build --release` zero warnings, `cargo test` all pass
+  - [ ] Roundtrip 19 archivos: BPB idéntico, bytes idénticos, CRC idéntico
+  - [ ] Benchmark tok/s: cero regresión (monomorphización = zero-cost)
+
+#### R-035: Mamba backbone — alternative O(D·N) inference
+- **Estado**: PENDIENTE (requiere R-034)
+- **Prioridad**: P1 — resuelve el bottleneck O(D²) → O(D·N) con N=16
+- **Impacto**: Throughput estimado 3-10x sobre RWKV para mismo tamaño de modelo
+- **Riesgo BPB**: DESCONOCIDO — requiere benchmark comparativo
+- **Evidencia**:
+  - StateSMix (Mamba 120K, CPU, C+AVX2): 1,100 tok/s [SOURCED: arXiv:2605.02904]
+  - MambaByte (353M, byte-level): 0.93 BPB en PG19 [SOURCED: arXiv:2401.13660]
+  - `mamba-rs` (Rust, SafeTensors loader): inference zero-alloc [SOURCED: github.com/silvermpx/mamba-rs]
+  - Estado diagonal → parallel scan funcional, SIMD trivial (elementwise)
+  - Vs RWKV-7: estado vector O(D·N) vs matriz O(D²), composición O(D·N) vs O(N³)
+- **Seguridad**: SafeTensors format (sin pickle, sin ejecución de código).
+  Redukt ya tiene parser SafeTensors propio (zero-dep, zero-unsafe, bounds-checked).
+  Solo cambian los nombres de tensores (mixer.A_log, mixer.D, mixer.in_proj, etc.)
+- **Archivos**: `src/infrastructure/mamba/` (nuevo), `src/domain/backbone.rs`
+- **Subtareas**:
+  - [ ] Investigar pesos Mamba pretrained disponibles (130M, 370M, MambaByte 353M)
+  - [ ] Evaluar MambaByte vs Mamba genérico para byte-level compression
+  - [ ] Auditar dependencias de `mamba-rs` crate — portar lo necesario a zero-dep
+    - [ ] Identificar qué usa `mamba-rs` de crates externos (safetensors, serde, etc.)
+    - [ ] Portar lógica de inference Mamba a Rust zero-dep (NO usar mamba-rs como crate)
+    - [ ] Reusar parser SafeTensors propio de Redukt (ya zero-dep)
+    - [ ] Portar operaciones matemáticas específicas de Mamba (sin deps externas)
+  - [ ] Implementar inference Mamba zero-dep:
+    - [ ] Selective scan (S6): input-dependent A, B, C, D matrices
+    - [ ] Discretization: ZOH (zero-order hold) para A, B continuas → discretas
+    - [ ] State update: `h_t = Ā·h_{t-1} + B̄·x_t` (diagonal, O(D·N))
+    - [ ] Output: `y_t = C_t·h_t + D·x_t`
+    - [ ] SIMD kernels para selective scan (AVX2, reusar dispatch de tensor.rs)
+  - [ ] `impl Backbone for MambaModel` + `impl BackboneState for MambaState`
+  - [ ] Cargar pesos SafeTensors (reusar parser existente, nuevo mapping de nombres)
+  - [ ] SHA-256 checksums en `weights/MANIFEST.md`
+  - [ ] Benchmark comparativo 19 archivos: BPB + tok/s vs RWKV
+  - [ ] Quality gate: si BPB dentro de ±5% de RWKV → Mamba como default por throughput
+  - [ ] Si BPB peor >5%: flag `--backend rwkv|mamba` para selección por usuario
+  - [ ] Roundtrip: compress → decompress byte-identical, CRC verified
+  - [ ] Cross-backend: NO se espera compatibilidad (distinta distribución de probabilidades)
+  - [ ] Documentar resultados en `data/benchmark/results/rwkv-vs-mamba.csv`
+
+#### R-036: BPE tokenizer — reduce tokens per byte
+- **Estado**: PENDIENTE (independiente de R-034/R-035, beneficia ambos backbones)
+- **Prioridad**: P2 — multiplica throughput 3-5x para cualquier backbone
+- **Impacto**: Menos forward passes por byte → throughput proporcional
+- **Riesgo BPB**: DESCONOCIDO — BPE agrupa bytes, pierde granularidad byte-level
+- **Evidencia**:
+  - L3TC (AAAI 2026): outlier-aware tokenizer, 2.2x faster RWKV decode [SOURCED: AAAI]
+  - Gate ya reservado: `--tokenizer bpe` (R-033 infrastructure gate)
+  - Requiere vocabulario entrenado en `weights/bpe-vocab.json`
+- **Archivos**: `src/domain/tokenizer.rs` (nuevo o extensión), `weights/bpe-vocab.json` (nuevo)
+- **Subtareas**:
+  - [ ] Investigar vocabularios BPE existentes compatibles (SentencePiece, tiktoken)
+  - [ ] Evaluar entrenamiento de vocabulario propio vs reuso
+  - [ ] Implementar BPE encode/decode zero-dep en Rust
+  - [ ] `impl Tokenizer for BpeTokenizer`
+  - [ ] Adaptar arithmetic coder para vocabularios BPE (vocab_size variable)
+  - [ ] AZTH v4: almacenar tokenizer type en header (nuevo FLAG bit)
+  - [ ] Benchmark: BPB + tok/s con BPE vs byte-level en 19 archivos
+  - [ ] Quality gate: BPB BPE debe ser ≤ byte-level BPB (o justificar throughput tradeoff)
+
+#### R-037: Expanded Context Mixing — more predictors
+- **Estado**: PENDIENTE (independiente, beneficia todos los backbones)
+- **Prioridad**: P2 — mejora BPB sin afectar throughput significativamente
+- **Impacto**: Más modelos CM → mejor ensemble → menor BPB
+- **Evidencia**:
+  - Redukt actual: 19 hash-table models + LSTM mixer
+  - cmix: ~2,000 context models [SOURCED: mattmahoney.net/dc/text.html]
+  - Nacrith: 4 online context models alongside pretrained LM [SOURCED: arXiv:2602.19626]
+  - Espacio para 10-50 modelos adicionales sin impacto significativo en throughput
+    (CM forward es <5% del forward total)
+- **Archivos**: `src/domain/context_mixing.rs` (o equivalente), `src/domain/adaptive_mixer.rs`
+- **Subtareas**:
+  - [ ] Auditar modelos CM actuales (19 hash-tables: qué n-grams, qué contextos)
+  - [ ] Investigar modelos adicionales viables: match model, word model, sparse contexts
+  - [ ] Implementar 5-10 nuevos predictores
+  - [ ] Benchmark incremental: BPB por cada predictor añadido (diminishing returns)
+  - [ ] Quality gate: cada predictor debe mejorar BPB en ≥2 archivos sin empeorar ninguno
+
+#### Secuencia Fase 4
+
+```
+R-034 (dock)     ─→ R-035 (Mamba)     ─→ benchmark comparativo → decisión backbone default
+                 ─→ R-036 (BPE)       ─→ aplica a ambos backbones
+                 ─→ R-037 (expanded CM) ─→ aplica a ambos backbones
+```
+
+R-034 es bloqueante para R-035 únicamente. R-036 y R-037 son independientes y pueden
+ejecutarse en paralelo con R-035. Las tres (R-035, R-036, R-037) se benefician mutuamente:
+BPE reduce tokens para Mamba, expanded CM mejora BPB para ambos backbones.
+
+**Target de Fase 4**: throughput >10 KB/s single-thread, >50 KB/s aggregate (3T).
+Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para cold/archival.
+
+---
+
 ## Registro de cambios
 
 | Fecha | Cambio |
@@ -1054,3 +1208,13 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-30 | R-033 COMPLETADO (experimental): adaptive RWKV skip — FLAG 0x20, MAX_CONSEC_SKIP=3, roundtrip PASS |
 | 2026-10-30 | R-033: enwik8 +11.2% BPB (9.2% skip), apache +57.8% BPB (49.2% skip) — opt-in only |
 | 2026-10-30 | R-033: infrastructure gates para --gpu, --tokenizer bpe, --model-size (placeholders) |
+| 2026-10-30 | Análisis estratégico: RWKV O(D²) secuencial = muro para producción a escala (1 TB = 10,800 cores/día) |
+| 2026-10-30 | Investigación: 4 agentes paralelos — RWKV paralelización, backbones alternativos, dock patterns, SOTA 2025-2026 |
+| 2026-10-30 | Hallazgo: parallel scan teórico para RWKV-7 pero O(n³) composición → SLOWER en práctica |
+| 2026-10-30 | Hallazgo: Mamba O(D·N) diagonal state — StateSMix 1,100 tok/s CPU [SOURCED], MambaByte 0.93 BPB [SOURCED] |
+| 2026-10-30 | Hallazgo: Griffin/Hawk RG-LRU O(D) diagonal — ideal pero sin modelos small pretrained |
+| 2026-10-30 | Hallazgo: xLSTM mLSTM descartado — mismo O(D²) que RWKV, no resuelve bottleneck |
+| 2026-10-30 | Hallazgo: coupling actual Redukt→RWKV = 22 refs concretas, 0 traits, dock viable ~240 líneas |
+| 2026-10-30 | Seguridad: Mamba SafeTensors = mismo modelo seguridad que RWKV (zero pickle, zero unsafe) |
+| 2026-10-30 | Fase 4 definida: R-034 (dock) → R-035 (Mamba) + R-036 (BPE) + R-037 (expanded CM) |
+| 2026-10-30 | docs: backbone-scalability-analysis.md — investigación completa con 30+ fuentes |
