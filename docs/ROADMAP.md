@@ -567,6 +567,29 @@
   El modelo captura patrones de bytes que CM solo no detecta.
   Código revertido para no contaminar lecturas de benchmark.
 
+#### R-033: Adaptive RWKV skip (confidence-based)
+- **Estado**: COMPLETADO (experimental/opt-in) — 5b04f4a
+- **Riesgo BPB**: Alto (+11% a +58% según archivo)
+- **Hipótesis**: Si el modelo combinado (RWKV+CM) tiene confianza alta en un token,
+  se puede omitir el forward pass del siguiente y reusar logits anteriores.
+- **Implementación**:
+  - CLI: `--adaptive-skip` (threshold=95%) o `--skip-threshold N` (1-99)
+  - FLAG `0x20` en AZTH v4 header (1 byte: threshold_pct)
+  - `MAX_CONSEC_SKIP=3` previene cascada de staleness en RWKV state
+  - Compress y decompress toman decisiones idénticas → roundtrip garantizado
+- **Resultado empírico** [MEASURED, 10KB, Q8, threshold=99%]:
+  | Archivo | Baseline BPB | Skip BPB | Δ BPB | Skip % | Throughput |
+  |---------|-------------|----------|-------|--------|------------|
+  | enwik8 | 1.333 | 1.482 | +11.2% | 9.2% | ~102 tok/s |
+  | apache | 0.296 | 0.467 | +57.8% | 49.2% | ~163 tok/s |
+- **Roundtrip**: PASS (enwik8 + apache, CRC-32 verified, skip count idéntico)
+- **Conclusión**: Feature correcta pero degradación significativa.
+  Archivos altamente compresibles (logs) sufren más: los tokens "fáciles"
+  que se skipean son los que más contribuyen a la ratio.
+  Queda como **experimental/opt-in** — útil cuando velocidad > calidad.
+- **Infraestructura adicional**: CLI gates para `--gpu`, `--tokenizer bpe`,
+  `--model-size` (placeholders, retornan error claro si no disponible)
+
 #### Secuencia de implementación Fase 3
 
 ```
@@ -1028,3 +1051,6 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
 | 2026-10-29 | R-031: zero false positives on all 18 benchmark files (osdb 4.1x, apache 5.3x — both below 5.0x threshold) |
 | 2026-10-29 | R-032 ABORTADO + REVERTIDO: CM-only bypass — RWKV ayuda incluso en binarios (sao +19.4%, enwik8 +109.7%) |
 | 2026-10-29 | R-032: hipótesis "RWKV es ruido para binarios" REFUTADA empíricamente. Código revertido (2f34173) |
+| 2026-10-30 | R-033 COMPLETADO (experimental): adaptive RWKV skip — FLAG 0x20, MAX_CONSEC_SKIP=3, roundtrip PASS |
+| 2026-10-30 | R-033: enwik8 +11.2% BPB (9.2% skip), apache +57.8% BPB (49.2% skip) — opt-in only |
+| 2026-10-30 | R-033: infrastructure gates para --gpu, --tokenizer bpe, --model-size (placeholders) |
