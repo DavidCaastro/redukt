@@ -1013,23 +1013,28 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - [ ] Benchmark: BPB + tok/s con BPE vs byte-level en 19 archivos
   - [ ] Quality gate: BPB BPE debe ser ≤ byte-level BPB (o justificar throughput tradeoff)
 
-#### R-037: Expanded Context Mixing — more predictors
-- **Estado**: PENDIENTE (independiente, beneficia todos los backbones)
+#### R-037: Expanded Context Mixing — more predictors (Match Model ✅)
+- **Estado**: EN PROGRESO — Match Model completado (2026-10-30, 5a8d1ed)
 - **Prioridad**: P2 — mejora BPB sin afectar throughput significativamente
-- **Impacto**: Más modelos CM → mejor ensemble → menor BPB
-- **Evidencia**:
-  - Redukt actual: 19 hash-table models + LSTM mixer
-  - cmix: ~2,000 context models [SOURCED: mattmahoney.net/dc/text.html]
-  - Nacrith: 4 online context models alongside pretrained LM [SOURCED: arXiv:2602.19626]
-  - Espacio para 10-50 modelos adicionales sin impacto significativo en throughput
-    (CM forward es <5% del forward total)
-- **Archivos**: `src/domain/context_mixing.rs` (o equivalente), `src/domain/adaptive_mixer.rs`
-- **Subtareas**:
-  - [ ] Auditar modelos CM actuales (19 hash-tables: qué n-grams, qué contextos)
-  - [ ] Investigar modelos adicionales viables: match model, word model, sparse contexts
-  - [ ] Implementar 5-10 nuevos predictores
-  - [ ] Benchmark incremental: BPB por cada predictor añadido (diminishing returns)
-  - [ ] Quality gate: cada predictor debe mejorar BPB en ≥2 archivos sin empeorar ninguno
+- **Impacto**: Match Model: -0.41% enwik8, -1.0% apache, -2.2% facturae [MEASURED]
+- **Archivos**: `src/domain/match_model.rs` (NUEVO), `src/domain/mixer.rs` (actualizado)
+- **Match Model (completado)**:
+  - Hash-chain index sobre historial de tokens
+  - O(1) extensión de match activo, O(chain_len) búsqueda nuevo match
+  - Bias log-space: ln(1 + match_len) para token predicho
+  - AdaptiveMixer: 3 pesos SGD (w_ngram, w_bias, w_match)
+  - 4 unit tests, roundtrip verificado, CRC OK
+- **Resultados Match Model** [MEASURED]:
+  | Archivo | Antes | Después | Δ |
+  |---|---|---|---|
+  | enwik8 10KB | 1.3328 | 1.3273 | -0.41% |
+  | apache-access.log | 0.296 | 0.293 | -1.0% |
+  | facturae-batch.xml | 0.453 | 0.443 | -2.2% |
+- **Predictores pendientes** (por orden de impacto esperado):
+  - [ ] Indirect Context Model (skip-grams) — -2% a -4% estimado
+  - [ ] Run-Length Model — trivial, -0.5% a -2%
+  - [ ] Word Model (word-level n-grams) — -2% a -5%
+  - [ ] Record Model (columnar context) — -2% a -5% en binarios
 
 #### Secuencia Fase 4
 
@@ -1189,3 +1194,6 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | Seguridad: Mamba SafeTensors = mismo modelo seguridad que RWKV (zero pickle, zero unsafe) |
 | 2026-10-30 | Fase 4 definida: R-034 (dock) → R-035 (Mamba) + R-036 (BPE) + R-037 (expanded CM) |
 | 2026-10-30 | docs: backbone-scalability-analysis.md — investigación completa con 30+ fuentes |
+| 2026-10-30 | R-034 COMPLETADO: backbone dock — Backbone/BackendTokenizer traits, codec desacoplado (cf3fc4b) |
+| 2026-10-30 | R-037 PARCIAL: match model — hash-chain predictor, enwik8 -0.41%, facturae -2.2% [MEASURED] (5a8d1ed) |
+| 2026-10-30 | R-036 BLOQUEADO: BPE tokenizer requiere modelo entrenado con vocab BPE → depende de R-035 |
