@@ -14,6 +14,8 @@ use crate::domain::tensor::{softmax, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
 use crate::domain::match_model::MatchModel;
+use crate::domain::run_model::RunModel;
+use crate::domain::word_model::WordModel;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
@@ -315,6 +317,8 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let mut ngram = TokenNgram::new(4, v, 0.5);
     let mut bias = BiasHead::new(v, 0.30);
     let mut match_m = MatchModel::new(v);
+    let mut run_m = RunModel::new(v);
+    let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(0.01);
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
@@ -325,6 +329,8 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     // Pre-allocated buffers
     let mut ng_buf = vec![0.0f32; v];
     let mut match_buf = vec![0.0f32; v];
+    let mut run_buf = vec![0.0f32; v];
+    let mut word_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
 
     let t_start = Instant::now();
@@ -340,9 +346,12 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
         } else {
             ngram.compute_bias_into(&mut ng_buf, None);
             match_m.compute_bias_into(&mut match_buf);
+            run_m.compute_bias_into(&mut run_buf);
+            word_m.compute_bias_into(&mut word_buf);
             let b_vec = bias.bias_vector();
             mixer.combine_with_match(
                 &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+                &run_buf, &word_buf,
             );
 
             let cdf = cdf_from_logits(&ensemble_buf);
@@ -354,13 +363,16 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
             ce_bits += -prob.max(1e-30).log2();
 
             mixer.update_with_match(
-                &probs.data, &ng_buf, bias.bias_vector(), &match_buf, tok,
+                &probs.data, &ng_buf, bias.bias_vector(), &match_buf,
+                &run_buf, &word_buf, tok,
             );
             bias.update(&probs.data, tok);
         }
 
         ngram.observe(tok as u32);
         match_m.observe(tok as u32);
+        run_m.observe(tok as u32);
+        word_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {

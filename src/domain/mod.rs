@@ -1,6 +1,8 @@
 pub mod backbone;
 pub mod error;
 pub mod match_model;
+pub mod run_model;
+pub mod word_model;
 pub mod tensor;
 pub mod ngram;
 pub mod bias_head;

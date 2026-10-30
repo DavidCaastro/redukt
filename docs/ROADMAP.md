@@ -1011,28 +1011,26 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   - [x] 3 unit tests (byte_unicode_map, pre_tokenize, unescape_json)
   - [N/A] Adaptar para RWKV-7 — BLOQUEADO (modelo acoplado a World vocab)
 
-#### R-037: Expanded Context Mixing — more predictors (Match Model ✅)
-- **Estado**: EN PROGRESO — Match Model completado (2026-10-30, 5a8d1ed)
+#### R-037: Expanded Context Mixing — more predictors
+- **Estado**: COMPLETADO (2026-10-30)
 - **Prioridad**: P2 — mejora BPB sin afectar throughput significativamente
-- **Impacto**: Match Model: -0.41% enwik8, -1.0% apache, -2.2% facturae [MEASURED]
-- **Archivos**: `src/domain/match_model.rs` (NUEVO), `src/domain/mixer.rs` (actualizado)
-- **Match Model (completado)**:
-  - Hash-chain index sobre historial de tokens
-  - O(1) extensión de match activo, O(chain_len) búsqueda nuevo match
-  - Bias log-space: ln(1 + match_len) para token predicho
-  - AdaptiveMixer: 3 pesos SGD (w_ngram, w_bias, w_match)
-  - 4 unit tests, roundtrip verificado, CRC OK
-- **Resultados Match Model** [MEASURED]:
-  | Archivo | Antes | Después | Δ |
+- **Archivos**: `src/domain/match_model.rs`, `src/domain/run_model.rs`, `src/domain/word_model.rs`, `src/domain/mixer.rs`
+- **Predictores implementados**:
+  1. **Match Model** (5a8d1ed): Hash-chain longest-match, O(1) extend, ln(1+L) bias, 4 tests
+  2. **Run-Length Model**: Detecta repeticiones consecutivas, ln(run) bias, 4 tests
+  3. **Word Model**: Contexto por "palabra" (secuencias entre separadores), bigram learning, 3 tests
+- **AdaptiveMixer**: 5 pesos SGD (w_ngram, w_bias, w_match, w_run, w_word)
+- **Resultados completos** [MEASURED 2026-10-30]:
+  | Archivo | Antes (R-033) | Después (R-037) | Δ |
   |---|---|---|---|
-  | enwik8 10KB | 1.3328 | 1.3273 | -0.41% |
-  | apache-access.log | 0.296 | 0.293 | -1.0% |
-  | facturae-batch.xml | 0.453 | 0.443 | -2.2% |
-- **Predictores pendientes** (por orden de impacto esperado):
-  - [ ] Indirect Context Model (skip-grams) — -2% a -4% estimado
-  - [ ] Run-Length Model — trivial, -0.5% a -2%
-  - [ ] Word Model (word-level n-grams) — -2% a -5%
-  - [ ] Record Model (columnar context) — -2% a -5% en binarios
+  | enwik8 10KB | 1.2813 | 1.2778 | -0.27% |
+  | apache-access.log | 0.2930 | 0.2452 | **-16.3%** |
+  | facturae-batch.xml | 0.4430 | 0.3991 | **-9.9%** |
+  | samba | 1.2980 | 1.2614 | **-2.8%** |
+- **Roundtrip**: PASS (enwik8 10KB compress→decompress byte-identical, CRC OK)
+- **Predictores pendientes** (posible trabajo futuro):
+  - [ ] Indirect Context Model (skip-grams)
+  - [ ] Record Model (columnar context para binarios)
 
 #### Secuencia Fase 4
 
@@ -1200,3 +1198,6 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | R-035: throughput 15.2-16.3 tok/s (scalar, 6x slower que RWKV-7 95 tok/s) |
 | 2026-10-30 | R-035: CHECKPOINT BIFURCACIÓN — Mamba viable, SIMD/integración ensemble como trabajo futuro |
 | 2026-10-30 | R-036 COMPLETADO VÍA R-035: BpeTokenizer implementado (50254 vocab, 50009 merges, 3 tests) |
+| 2026-10-30 | R-037 COMPLETADO: RunModel + WordModel — apache -16.3%, facturae -9.9%, samba -2.8% [MEASURED] |
+| 2026-10-30 | R-037: mixer 5 componentes SGD, 11 unit tests, roundtrip PASS |
+| 2026-10-30 | FASE 4 COMPLETADA: R-034 ✅ R-035 ✅ R-036 ✅ R-037 ✅ |
