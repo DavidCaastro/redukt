@@ -1030,10 +1030,10 @@ R-026 (iGPU): ❌ ABORTADO — 2.68x slower que CPU. Head matmul es solo 12% del
   | mozilla | 1.9641 | 1.9431 | **-1.1%** |
 - **Resultados compresión real AZTH** [MEASURED 2026-10-30, 19 archivos]:
   - 19/19 roundtrip PASS, CRC OK
-  - 16/19 archivos mejoran, 3 empatan/empeoran marginalmente (<0.6%)
+  - 15/19 archivos mejoran, 3 empeoran marginalmente (<0.6%), 1 sin cambio
   - Mejores gains: ubl -2.4%, xml -2.2%, mozilla -1.5%, facturae -1.2%
   - mozilla pasa de +1.5% a 0.0% vs brotli (empate exacto)
-  - Wins vs brotli-11: **13/18** (antes 12/18)
+  - Wins vs brotli-11: **12/19** (empate mozilla no cuenta como win)
   - CSV: `data/benchmark/results/actual-compression-benchmark.csv`
 - **Predictores pendientes** (posible trabajo futuro):
   - [ ] Indirect Context Model (skip-grams)
@@ -1205,6 +1205,6 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | R-035: throughput 15.2-16.3 tok/s (scalar, 6x slower que RWKV-7 95 tok/s) |
 | 2026-10-30 | R-035: CHECKPOINT BIFURCACIÓN — Mamba viable, SIMD/integración ensemble como trabajo futuro |
 | 2026-10-30 | R-036 COMPLETADO VÍA R-035: BpeTokenizer implementado (50254 vocab, 50009 merges, 3 tests) |
-| 2026-10-30 | R-037 COMPLETADO: RunModel + WordModel — apache -16.3%, facturae -9.9%, samba -2.8% [MEASURED] |
+| 2026-10-30 | R-037 COMPLETADO: RunModel + WordModel — 15/19 mejoran, ubl -2.4%, xml -2.2%, facturae -1.2% [MEASURED] |
 | 2026-10-30 | R-037: mixer 5 componentes SGD, 11 unit tests, roundtrip PASS |
 | 2026-10-30 | FASE 4 COMPLETADA: R-034 ✅ R-035 ✅ R-036 ✅ R-037 ✅ |

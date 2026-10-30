@@ -156,7 +156,7 @@ Provenance documented in `weights/MANIFEST.md`.
 4. NOTICE file up to date
 5. README badges current
 
-## Benchmarks (Verified 2026-10-29, actual AZTH compression)
+## Benchmarks (Verified 2026-10-30, actual AZTH compression)
 
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
 All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
@@ -165,7 +165,7 @@ Q8 is 2.1x faster — correct production choice.
 Use `--quant f32|q8|q4|auto` to force quantization level.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (actual AZTH v4)**: 1.3328 BPB [MEASURED: 2026-10-29]
+- **compress (actual AZTH v4)**: 1.3312 BPB [MEASURED: 2026-10-30]
 - **cross-entropy (hybrid-eval)**: 1.2813 BPB (Q8)
 - **coder efficiency**: 96.1% on enwik8 (v4 header saves 15 bytes vs v3)
 - **baseline (RWKV-only)**: 1.4067 BPB
@@ -173,25 +173,25 @@ Use `--quant f32|q8|q4|auto` to force quantization level.
 ### Strongest Results (actual AZTH compression, 10KB)
 | File | Redukt BPB | brotli-11 | Δ | Coder eff. |
 |---|---|---|---|---|
-| apache-access.log | **0.296** | 0.466 | **-36%** | 84.0% |
-| facturae-batch.xml | **0.453** | 0.891 | **-49%** | 90.2% |
-| ubl-invoice-batch.xml | **0.542** | 0.889 | **-39%** | 90.3% |
-| samba | **1.298** | 2.221 | **-42%** | 96.9% |
-| enwik8 | **1.333** | — | — | 96.1% |
+| apache-access.log | **0.296** | 0.466 | **-37%** | 83.8% |
+| facturae-batch.xml | **0.447** | 0.890 | **-50%** | 90.0% |
+| ubl-invoice-batch.xml | **0.529** | 0.888 | **-40%** | 90.5% |
+| samba | **1.297** | 2.220 | **-42%** | 97.5% |
+| enwik8 | **1.331** | 2.352 | **-43%** | 96.0% |
 
-### Full Silesia + Industry (18 files, actual compression, 10KB Q8)
+### Full Silesia + Industry (19 files, actual compression, 10KB Q8)
 | File | BPB | vs brotli | File | BPB | vs brotli |
 |---|---|---|---|---|---|
-| apache-access.log | 0.296 | -37% | samba | 1.298 | -42% |
-| linux-syslog.log | 0.412 | -29% | enwik8 | 1.333 | — |
-| facturae-batch.xml | 0.453 | -49% | dickens | 1.797 | -35% |
-| openssh-auth.log | 0.527 | -33% | webster | 1.805 | -36% |
-| ubl-invoice-batch.xml | 0.542 | -39% | reymont | 1.899 | -11% |
-| nci | 0.669 | -9% | mozilla | 2.052 | +2% |
-| xml | 0.689 | -24% | mr | 2.389 | +1% |
+| apache-access.log | 0.296 | -37% | samba | 1.297 | -42% |
+| linux-syslog.log | 0.414 | -29% | enwik8 | 1.331 | -43% |
+| facturae-batch.xml | 0.447 | -50% | dickens | 1.795 | -35% |
+| openssh-auth.log | 0.521 | -34% | webster | 1.801 | -36% |
+| ubl-invoice-batch.xml | 0.529 | -40% | reymont | 1.896 | -11% |
+| nci | 0.666 | -9% | mozilla | 2.021 | 0% |
+| xml | 0.674 | -25% | mr | 2.391 | +1% |
 
-Loses: ooffice +37%, osdb +22%, x-ray +44%, sao +54%.
-Wins 12/17 files (excl. enwik8 no brotli ref). Coder efficiency: 84-99%.
+Loses: ooffice +37%, osdb +21%, x-ray +27%, sao +54%, sample-invoice.pdf +41%.
+Wins 12/19 files. Coder efficiency: 84-99%.
 
 ### Scale Test (batch mode, model loaded once)
 | File | 10KB | 50KB | 100KB | brotli 100KB | Δ 100KB |
