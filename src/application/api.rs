@@ -23,8 +23,7 @@ use crate::application::codec::{
     CRC_SIZE, cdf_from_logits, build_v4_header,
     validate_magic, parse_header, extract_stream_and_crc_v,
 };
-use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
-use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
+use crate::domain::backbone::{Backbone, BackendTokenizer};
 
 const MAX_BODY: usize = 256 * 1024 * 1024; // 256 MB request limit
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,7 +52,7 @@ pub fn cmd_api(args: &[String]) {
 
     eprintln!("[api] loading model from {} ...", weights_dir);
     let (model, tokenizer) = model_loader::load_model_and_tokenizer(&weights_dir);
-    eprintln!("[api] model loaded (vocab={})", model.config.vocab_size);
+    eprintln!("[api] model loaded (vocab={})", model.vocab_size());
 
     let bind = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&bind).unwrap_or_else(|e| {
@@ -70,10 +69,10 @@ pub fn cmd_api(args: &[String]) {
     }
 }
 
-fn handle_connection(
+fn handle_connection<M: Backbone, T: BackendTokenizer>(
     mut stream: std::net::TcpStream,
-    model: &Rwkv7Model,
-    tokenizer: &WorldTokenizer,
+    model: &M,
+    tokenizer: &T,
 ) {
     let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -94,7 +93,7 @@ fn handle_connection(
         ("GET", "/v1/status") => {
             let body = format!(
                 "{{\"status\":\"ok\",\"version\":\"{}\",\"vocab_size\":{},\"max_body\":{}}}",
-                VERSION, model.config.vocab_size, MAX_BODY
+                VERSION, model.vocab_size(), MAX_BODY
             );
             let _ = send_response(&mut stream, 200, "application/json", body.as_bytes());
         }
@@ -203,10 +202,10 @@ fn send_response(
 
 // --- In-memory compress/decompress ---
 
-fn compress_bytes(
+fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     input: &[u8],
-    model: &Rwkv7Model,
-    tokenizer: &WorldTokenizer,
+    model: &M,
+    tokenizer: &T,
     bias_lr: f32,
     ngram_scale: f32,
     mix_eta: f32,
@@ -217,14 +216,14 @@ fn compress_bytes(
             "input too large: {} bytes exceeds ~4 GB AZTH limit", total_bytes
         ));
     }
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
     let tokens = tokenizer.encode(input);
 
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
@@ -272,22 +271,22 @@ fn decode_checked(
         .map_err(|e| format!("decoder error at token {}: {}", token_idx, e))
 }
 
-pub fn decompress_bytes(
+pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     data: &[u8],
-    model: &Rwkv7Model,
-    tokenizer: &WorldTokenizer,
+    model: &M,
+    tokenizer: &T,
 ) -> Result<Vec<u8>, String> {
     validate_magic(data).map_err(|e| e.to_string())?;
     let hdr = parse_header(data).map_err(|e| e.to_string())?;
     let (stream, stored_crc) = extract_stream_and_crc_v(data, hdr.header_size, hdr.version);
 
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
     let total_bytes = hdr.total_bytes;
     let mut ngram = TokenNgram::new(4, v, hdr.ngram_scale);
     let mut bias = BiasHead::new(v, hdr.bias_lr);
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 

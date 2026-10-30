@@ -84,6 +84,15 @@ impl WorldTokenizer {
     }
 }
 
+// --- BackendTokenizer trait implementation (R-034) ---
+
+use crate::domain::backbone::BackendTokenizer;
+
+impl BackendTokenizer for WorldTokenizer {
+    fn encode(&self, data: &[u8]) -> Vec<u32> { self.encode(data) }
+    fn decode_token(&self, id: u32) -> &[u8] { self.decode_token(id) }
+}
+
 fn parse_python_literal(s: &str) -> Vec<u8> {
     let s = s.trim();
     if s.starts_with("b'") || s.starts_with("b\"") {

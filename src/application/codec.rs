@@ -9,7 +9,7 @@ use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
-use crate::infrastructure::rwkv7::model::Rwkv7State;
+use crate::domain::backbone::{Backbone, BackboneState, BackboneScratch, BackendTokenizer};
 
 /// v3 magic — kept for backward-compat parsing and tests.
 #[cfg(test)]
@@ -647,7 +647,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
@@ -664,7 +664,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
 
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
@@ -853,7 +853,7 @@ fn batch_compress(
     if !emb_surgery.is_empty() {
         model.embedding_surgery(emb_surgery);
     }
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
     eprintln!("[batch] model loaded in {:.1}s (vocab={})", t_load.elapsed().as_secs_f64(), v);
 
     let model = Arc::new(model);
@@ -870,7 +870,7 @@ fn batch_compress(
     if n_jobs <= 1 {
         // Single-threaded: no thread spawn overhead
         compress_batch_worker(
-            &model, &tokenizer, &work, &results,
+            &*model, &*tokenizer, &work, &results,
             input_dir, output_dir, v, max_bytes, bias_lr, ngram_scale, mix_eta,
             emb_surgery,
         );
@@ -886,7 +886,7 @@ fn batch_compress(
             let es = emb_surgery.to_string();
             handles.push(std::thread::spawn(move || {
                 compress_batch_worker(
-                    &m, &tok, &w, &r,
+                    &*m, &*tok, &w, &r,
                     &in_d, &out_d, v, max_bytes, bias_lr, ngram_scale, mix_eta,
                     &es,
                 );
@@ -929,9 +929,9 @@ fn batch_compress(
 }
 
 /// Worker loop: pop files from shared queue, compress each one.
-fn compress_batch_worker(
-    model: &crate::infrastructure::rwkv7::model::Rwkv7Model,
-    tokenizer: &crate::infrastructure::rwkv7::tokenizer::WorldTokenizer,
+fn compress_batch_worker<M: Backbone, T: BackendTokenizer>(
+    model: &M,
+    tokenizer: &T,
     work: &std::sync::Mutex<Vec<std::path::PathBuf>>,
     results: &std::sync::Mutex<Vec<(String, usize, usize, f64, f64, bool)>>,
     _input_dir: &str, output_dir: &str,
@@ -940,7 +940,7 @@ fn compress_batch_worker(
     emb_surgery: &str,
 ) {
     // Per-thread allocations
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ng_buf = vec![0.0f32; v];
@@ -985,12 +985,12 @@ fn compress_batch_worker(
 }
 
 /// Compress a single file. Returns (input_bytes, compressed_bytes, bpb, tok_per_sec).
-fn compress_single_file(
-    model: &crate::infrastructure::rwkv7::model::Rwkv7Model,
-    tokenizer: &crate::infrastructure::rwkv7::tokenizer::WorldTokenizer,
+fn compress_single_file<M: Backbone, T: BackendTokenizer>(
+    model: &M,
+    tokenizer: &T,
     input_path: &std::path::Path, output_path: &std::path::Path,
-    state: &mut Rwkv7State,
-    scratch: &mut crate::infrastructure::rwkv7::model::Scratch,
+    state: &mut M::State,
+    scratch: &mut M::Scratch,
     logits: &mut [f32],
     ng_buf: &mut [f32], ensemble_buf: &mut [f32], probs_buf: &mut [f32],
     v: usize, max_bytes: usize,
@@ -1156,7 +1156,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
 
     if !effective_surgery.is_empty() {
         model.embedding_surgery(&effective_surgery);
@@ -1168,7 +1168,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
 
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
@@ -1452,7 +1452,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
@@ -1468,7 +1468,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     if tau > 0.0 { bias = bias.with_decay(tau); }
     let mut mixer = AdaptiveMixer::new(mix_eta);
 
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
@@ -1596,7 +1596,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
@@ -1607,7 +1607,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     eprintln!("[baseline] tokenized: {} tokens ({:.2} bytes/token)",
               tokens.len(), total_bytes as f64 / tokens.len() as f64);
 
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;

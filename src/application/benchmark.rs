@@ -18,8 +18,7 @@ use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
 use crate::application::codec::{cdf_from_logits, CRC_SIZE, build_v4_header};
 use crate::application::model_loader;
-use crate::infrastructure::rwkv7::model::{Rwkv7Model, Rwkv7State};
-use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
+use crate::domain::backbone::{Backbone, BackendTokenizer};
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -156,7 +155,7 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
 
     eprintln!(
         "[benchmark] model loaded (vocab={})",
-        model.config.vocab_size
+        model.vocab_size()
     );
 
     // Check competitor availability
@@ -302,13 +301,13 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
 
 // --- Actual compression + measurement ---
 
-fn compress_and_measure(
+fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     data: &[u8],
-    model: &Rwkv7Model,
-    tokenizer: &WorldTokenizer,
+    model: &M,
+    tokenizer: &T,
     emb_surgery: &str,
 ) -> (Vec<u8>, ReduktResult) {
-    let v = model.config.vocab_size;
+    let v = model.vocab_size();
     let tokens = tokenizer.encode(data);
     let total_bytes = data.len();
 
@@ -316,7 +315,7 @@ fn compress_and_measure(
     let mut bias = BiasHead::new(v, 0.30);
     let mut mixer = AdaptiveMixer::new(0.01);
     let mut enc = RangeEncoder::new();
-    let mut state = Rwkv7State::new(&model.config);
+    let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
@@ -407,11 +406,11 @@ fn compress_and_measure(
 }
 
 /// Decompress AZTH and verify byte-identical output.
-fn verify_roundtrip(
+fn verify_roundtrip<M: Backbone, T: BackendTokenizer>(
     azth: &[u8],
     original: &[u8],
-    model: &Rwkv7Model,
-    tokenizer: &WorldTokenizer,
+    model: &M,
+    tokenizer: &T,
 ) -> bool {
     match crate::application::api::decompress_bytes(azth, model, tokenizer) {
         Ok(restored) => restored == original,

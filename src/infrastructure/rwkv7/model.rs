@@ -1391,3 +1391,33 @@ fn squeeze(t: Tensor) -> Tensor {
         Tensor::from_data(t.data, new_shape)
     }
 }
+
+// --- Backbone trait implementations (R-034) ---
+
+use crate::domain::backbone::{Backbone, BackboneState, BackboneScratch};
+
+impl BackboneState for Rwkv7State {
+    fn reset(&mut self) { self.reset(); }
+}
+
+impl BackboneScratch for Scratch {
+    fn reset_perf(&mut self) { self.reset_perf(); }
+}
+
+impl Backbone for Rwkv7Model {
+    type State = Rwkv7State;
+    type Scratch = Scratch;
+
+    fn vocab_size(&self) -> usize { self.config.vocab_size }
+
+    fn create_state(&self) -> Rwkv7State { Rwkv7State::new(&self.config) }
+
+    fn create_scratch(&self) -> Scratch { self.create_scratch() }
+
+    fn forward_into(
+        &self, token: usize, state: &mut Rwkv7State,
+        scratch: &mut Scratch, out_logits: &mut [f32],
+    ) {
+        self.forward_into(token, state, scratch, out_logits);
+    }
+}
