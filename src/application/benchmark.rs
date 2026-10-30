@@ -13,6 +13,7 @@ use crate::domain::error::{AzError, AzResult, next_arg, parse_arg, read_file};
 use crate::domain::tensor::{softmax, Tensor};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
+use crate::domain::match_model::MatchModel;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
@@ -313,12 +314,18 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
 
     let mut ngram = TokenNgram::new(4, v, 0.5);
     let mut bias = BiasHead::new(v, 0.30);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(0.01);
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
+
+    // Pre-allocated buffers
+    let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
+    let mut ensemble_buf = vec![0.0f32; v];
 
     let t_start = Instant::now();
 
@@ -331,29 +338,29 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
             let prob = 1.0 / v as f64;
             ce_bits += -prob.log2();
         } else {
-            // Uses None for entropy gating — matches cmd_compress exactly
-            let ng_bias = ngram.compute_bias(None);
+            ngram.compute_bias_into(&mut ng_buf, None);
+            match_m.compute_bias_into(&mut match_buf);
             let b_vec = bias.bias_vector();
-            let ensemble = mixer.combine(&logits, &ng_bias, b_vec);
+            mixer.combine_with_match(
+                &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+            );
 
-            let cdf = cdf_from_logits(&ensemble);
+            let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
 
-            let tensor = Tensor::from_data(ensemble, vec![v]);
+            let tensor = Tensor::from_data(ensemble_buf.clone(), vec![v]);
             let probs = softmax(&tensor);
             let prob = probs.data[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
-            mixer.update(
-                &probs.data,
-                &ngram.compute_bias(None),
-                bias.bias_vector(),
-                tok,
+            mixer.update_with_match(
+                &probs.data, &ng_buf, bias.bias_vector(), &match_buf, tok,
             );
             bias.update(&probs.data, tok);
         }
 
         ngram.observe(tok as u32);
+        match_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {

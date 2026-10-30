@@ -14,6 +14,7 @@ use std::time::Instant;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
+use crate::domain::match_model::MatchModel;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::tensor::softmax_into;
 use crate::domain::error::next_arg;
@@ -221,6 +222,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
 
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
@@ -229,6 +231,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
     let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -238,15 +241,21 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
             enc.encode_symbol(tok, &Cdf::uniform(v));
         } else {
             ngram.compute_bias_into(&mut ng_buf, None);
+            match_m.compute_bias_into(&mut match_buf);
             let b_vec = bias.bias_vector();
-            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+            mixer.combine_with_match(
+                &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+            );
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
             softmax_into(&ensemble_buf, &mut probs_buf);
-            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            mixer.update_with_match(
+                &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, tok,
+            );
             bias.update(&probs_buf, tok);
         }
         ngram.observe(tok as u32);
+        match_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
     }
 
@@ -284,6 +293,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let total_bytes = hdr.total_bytes;
     let mut ngram = TokenNgram::new(4, v, hdr.ngram_scale);
     let mut bias = BiasHead::new(v, hdr.bias_lr);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
     let mut state = model.create_state();
@@ -292,6 +302,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
     let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -305,17 +316,23 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
             } else {
                 ngram.compute_bias_into(&mut ng_buf, None);
+                match_m.compute_bias_into(&mut match_buf);
                 let b_vec = bias.bias_vector();
-                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                mixer.combine_with_match(
+                    &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+                );
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
-                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                mixer.update_with_match(
+                    &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, sym as usize,
+                );
                 bias.update(&probs_buf, sym as usize);
                 sym
             };
             decoded_tokens.push(tok);
             ngram.observe(tok);
+            match_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
         }
         for &tok in &decoded_tokens {
@@ -329,12 +346,17 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
             } else {
                 ngram.compute_bias_into(&mut ng_buf, None);
+                match_m.compute_bias_into(&mut match_buf);
                 let b_vec = bias.bias_vector();
-                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                mixer.combine_with_match(
+                    &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+                );
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
-                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                mixer.update_with_match(
+                    &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, sym as usize,
+                );
                 bias.update(&probs_buf, sym as usize);
                 sym
             };
@@ -343,6 +365,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 break;
             }
             ngram.observe(tok);
+            match_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
             t += 1;
         }

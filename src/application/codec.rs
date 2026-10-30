@@ -4,6 +4,7 @@ use crate::domain::error::{AzError, AzResult, parse_arg, next_arg, validate_u32_
 use crate::domain::tensor::{softmax_into, entropy_from_logits};
 use crate::domain::ngram::TokenNgram;
 use crate::domain::bias_head::BiasHead;
+use crate::domain::match_model::MatchModel;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
@@ -661,6 +662,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     timer.start("encode");
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
 
@@ -671,6 +673,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
     let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -695,8 +698,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             ce_bits += -prob.log2();
         } else {
             ngram.compute_bias_into(&mut ng_buf, None);
+            match_m.compute_bias_into(&mut match_buf);
             let b_vec = bias.bias_vector();
-            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+            mixer.combine_with_match(
+                &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+            );
 
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
@@ -705,11 +711,14 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             let prob = probs_buf[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
-            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            mixer.update_with_match(
+                &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, tok,
+            );
             bias.update(&probs_buf, tok);
         }
 
         ngram.observe(tok as u32);
+        match_m.observe(tok as u32);
 
         // Adaptive RWKV skip (R-033): skip forward when model was confident,
         // but limit consecutive skips to prevent state staleness cascade.
@@ -1010,8 +1019,10 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
     scratch.reset_perf();
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
     let mut enc = RangeEncoder::new();
+    let mut match_buf = vec![0.0f32; v];
     let t_start = std::time::Instant::now();
 
     for t in 0..tokens.len() {
@@ -1022,18 +1033,20 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
             enc.encode_symbol(tok, &cdf);
         } else {
             ngram.compute_bias_into(ng_buf, None);
+            match_m.compute_bias_into(&mut match_buf);
             let b_vec = bias.bias_vector();
-            mixer.combine_into(ensemble_buf, logits, ng_buf, b_vec);
+            mixer.combine_with_match(ensemble_buf, logits, ng_buf, b_vec, &match_buf);
 
             let cdf = cdf_from_logits(ensemble_buf);
             enc.encode_symbol(tok, &cdf);
 
             softmax_into(ensemble_buf, probs_buf);
-            mixer.update(probs_buf, ng_buf, bias.bias_vector(), tok);
+            mixer.update_with_match(probs_buf, ng_buf, bias.bias_vector(), &match_buf, tok);
             bias.update(probs_buf, tok);
         }
 
         ngram.observe(tok as u32);
+        match_m.observe(tok as u32);
         model.forward_into(tok, state, scratch, logits);
     }
 
@@ -1165,6 +1178,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     timer.start("decode");
     let mut ngram = TokenNgram::new(4, v, hdr.ngram_scale);
     let mut bias = BiasHead::new(v, hdr.bias_lr);
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     let mut dec = RangeDecoder::new(stream);
 
@@ -1174,6 +1188,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
     let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -1218,17 +1233,23 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 decode_checked(&mut dec, &cdf, v, t)?
             } else {
                 ngram.compute_bias_into(&mut ng_buf, None);
+                match_m.compute_bias_into(&mut match_buf);
                 let b_vec = bias.bias_vector();
-                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                mixer.combine_with_match(
+                    &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+                );
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
-                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                mixer.update_with_match(
+                    &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, sym as usize,
+                );
                 bias.update(&probs_buf, sym as usize);
                 sym
             };
             decoded_tokens.push(tok);
             ngram.observe(tok);
+            match_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
 
             if t > 0 && t % 100 == 0 {
@@ -1257,12 +1278,17 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 decode_checked(&mut dec, &cdf, v, t)?
             } else {
                 ngram.compute_bias_into(&mut ng_buf, None);
+                match_m.compute_bias_into(&mut match_buf);
                 let b_vec = bias.bias_vector();
-                mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+                mixer.combine_with_match(
+                    &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+                );
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
-                mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), sym as usize);
+                mixer.update_with_match(
+                    &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, sym as usize,
+                );
                 bias.update(&probs_buf, sym as usize);
                 sym
             };
@@ -1284,6 +1310,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             }
 
             ngram.observe(tok);
+            match_m.observe(tok);
 
             // Adaptive RWKV skip (R-033): identical decision to compress path.
             // probs_buf[sym] is the combined model's confidence for this token.
@@ -1466,6 +1493,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut ngram = TokenNgram::new(4, v, ngram_scale);
     let mut bias = BiasHead::new(v, bias_lr);
     if tau > 0.0 { bias = bias.with_decay(tau); }
+    let mut match_m = MatchModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
 
     let mut state = model.create_state();
@@ -1475,6 +1503,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
 
     // Pre-allocated buffers for zero-alloc hot loop (R-019)
     let mut ng_buf = vec![0.0f32; v];
+    let mut match_buf = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -1496,8 +1525,11 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
         } else {
             let h = entropy_from_logits(&logits);
             ngram.compute_bias_into(&mut ng_buf, Some(h));
+            match_m.compute_bias_into(&mut match_buf);
             let b_vec = bias.bias_vector();
-            mixer.combine_into(&mut ensemble_buf, &logits, &ng_buf, b_vec);
+            mixer.combine_with_match(
+                &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
+            );
 
             softmax_into(&ensemble_buf, &mut probs_buf);
             let prob = probs_buf[tok] as f64;
@@ -1515,11 +1547,14 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
                 lg.record_token(token_bytes, prob, &snap);
             }
 
-            mixer.update(&probs_buf, &ng_buf, bias.bias_vector(), tok);
+            mixer.update_with_match(
+                &probs_buf, &ng_buf, bias.bias_vector(), &match_buf, tok,
+            );
             bias.update(&probs_buf, tok);
         }
 
         ngram.observe(tok as u32);
+        match_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
