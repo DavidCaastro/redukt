@@ -18,6 +18,8 @@ pub struct BpeTokenizer {
     /// Byte-to-unicode mapping (GPT-2 style)
     byte_encoder: [u8; 256],
     byte_decoder: HashMap<char, u8>,
+    /// Fallback: byte → token ID for bytes not in encoder (0xC0, 0xC1, 0xF5-0xFF)
+    byte_fallback: [u32; 256],
 }
 
 impl BpeTokenizer {
@@ -64,12 +66,42 @@ impl BpeTokenizer {
             (a_bytes, b_bytes)
         }).collect();
 
+        // Ensure all 256 single-byte tokens exist in encoder.
+        // GPT-NeoX mamba-130m is missing 13 bytes (0xC0, 0xC1, 0xF5-0xFF).
+        // Add synthetic tokens so binary data roundtrips losslessly.
+        let mut next_id = decoder.len() as u32;
+        let mut added = 0u32;
+        for b in 0u16..256 {
+            let key = vec![b as u8];
+            if !encoder.contains_key(&key) {
+                // Extend decoder if needed
+                while (next_id as usize) >= decoder.len() {
+                    decoder.push(Vec::new());
+                }
+                decoder[next_id as usize] = key.clone();
+                encoder.insert(key, next_id);
+                next_id += 1;
+                added += 1;
+            }
+        }
+        if added > 0 {
+            eprintln!("[mamba-bpe] added {} synthetic byte tokens (IDs {}..{})",
+                      added, next_id - added, next_id - 1);
+        }
+
+        // Build byte_fallback lookup: byte → token ID for fast single-byte encoding
+        let mut byte_fallback = [0u32; 256];
+        for b in 0u16..256 {
+            byte_fallback[b as usize] = *encoder.get(&vec![b as u8])
+                .expect("all 256 bytes must have tokens after synthetic addition");
+        }
+
         eprintln!(
             "[mamba-bpe] loaded: {} vocab entries, {} merges",
             encoder.len(), merges.len()
         );
 
-        Self { encoder, decoder, merges, byte_encoder: byte_enc, byte_decoder: byte_dec }
+        Self { encoder, decoder, merges, byte_encoder: byte_enc, byte_decoder: byte_dec, byte_fallback }
     }
 
     /// Encode bytes to token IDs using BPE.
@@ -94,11 +126,9 @@ impl BpeTokenizer {
                 if let Some(&id) = self.encoder.get(sym) {
                     all_tokens.push(id);
                 } else {
-                    // Fallback: encode individual bytes
+                    // Fallback: encode individual bytes via guaranteed byte_fallback
                     for &b in sym.iter() {
-                        if let Some(&id) = self.encoder.get(&vec![b]) {
-                            all_tokens.push(id);
-                        }
+                        all_tokens.push(self.byte_fallback[b as usize]);
                     }
                 }
             }
@@ -139,6 +169,26 @@ impl BpeTokenizer {
     #[allow(dead_code)]
     pub fn vocab_size(&self) -> usize {
         self.decoder.len()
+    }
+
+    /// Verify encode→decode roundtrip. Returns None if OK, or
+    /// Some((expected_len, actual_len, first_diff_pos)) on failure.
+    #[cfg(test)]
+    pub fn verify_roundtrip(&self, data: &[u8]) -> Option<(usize, usize, usize)> {
+        let tokens = self.encode(data);
+        let mut decoded = Vec::with_capacity(data.len());
+        for &tok in &tokens {
+            decoded.extend_from_slice(self.decode_token(tok));
+        }
+        if decoded.len() != data.len() {
+            return Some((data.len(), decoded.len(), 0));
+        }
+        for (i, (&a, &b)) in data.iter().zip(decoded.iter()).enumerate() {
+            if a != b {
+                return Some((data.len(), decoded.len(), i));
+            }
+        }
+        None
     }
 }
 

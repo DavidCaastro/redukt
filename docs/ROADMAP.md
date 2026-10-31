@@ -1303,7 +1303,7 @@ vs brotli-11: 8/12 wins, avg margin -50.5%. Best: samba -88%, dickens -77%.
 - **Resultados** [MEASURED, 10KB]:
   | File | Baseline | R-045 | Δ |
   |---|---|---|---|
-  | x-ray | 5.8416 | 4.8969 | **-16.2%** |
+  | x-ray | 5.8416* | 5.8008 | **-0.7%** |
   | mr | 2.3914 | 2.3281 | **-2.6%** |
   | samba | 1.2970 | 1.2914 | **-0.4%** |
   | ooffice | 3.8588 | 3.8469 | **-0.3%** |
@@ -1312,9 +1312,8 @@ vs brotli-11: 8/12 wins, avg margin -50.5%. Best: samba -88%, dickens -77%.
   | apache | 0.2164 | 0.2164 | 0% |
   | osdb | 5.5953 | 5.6336 | +0.7% |
   | sao | 8.6430 | 8.6438 | +0.01% |
-- **Conclusión**: x-ray -16.2% es excelente. Texto sin regresión. Solo osdb +0.7% leve.
-- **Nota**: x-ray roundtrip falla con Mamba BPE (bug preexistente en tokenizer,
-  no causado por R-045). Funciona con RWKV backbone. Ver BUG-001.
+- **Conclusión**: Marginal en binarios tras BUG-001 fix (x-ray baseline era corrupto).
+  Texto sin regresión. Solo osdb +0.7% leve. *x-ray baseline incorrecto por BUG-001.
 - **Archivos**: `src/domain/ngram.rs`, `src/domain/match_model.rs`
 
 #### R-046: Arithmetic Coder Precision Audit
@@ -1468,18 +1467,17 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
-- **Estado**: ABIERTO
-- **Prioridad**: P1 — afecta roundtrip de archivos binarios con Mamba backbone
+- **Estado**: ✅ RESUELTO (2026-10-31)
+- **Prioridad**: P1 — afectaba roundtrip de archivos binarios con Mamba backbone
 - **Síntoma**: `size mismatch: decoded 10241 bytes, expected 10240` en x-ray 10KB
-  con shuffle+delta preprocessing. CRC también falla si se trunca.
-- **Causa raíz**: `encode(data) → tokens → concat(decode(tokens))` produce 1 byte extra.
-  El tokenizer BPE (GPT-NeoX, `src/infrastructure/mamba/tokenizer.rs`) no es
-  perfectly invertible para ciertos patrones binarios post-delta.
-- **No afecta**: RWKV-7 (World tokenizer, 1 byte = 1 token, siempre invertible).
-- **No afecta**: Mamba con datos de texto (enwik8, dickens, samba — roundtrip OK).
-- **Workaround**: usar `--backbone rwkv` para archivos binarios con delta.
-- **Fix pendiente**: diagnosticar qué secuencia de bytes causa el +1 en BPE decode.
-  Posiblemente `pre_tokenize` o `apply_merges` edge case con NUL bytes.
+  con shuffle+delta preprocessing.
+- **Causa raíz**: GPT-NeoX mamba-130m vocab falta 13 single-byte tokens
+  (0xC0, 0xC1, 0xF5-0xFF). El encode descartaba estos bytes silenciosamente,
+  causando pérdida de datos (1039 bytes perdidos en x-ray 10KB).
+- **Fix**: Añadir 13 tokens sintéticos al cargar el tokenizer (IDs 50254-50266).
+  Byte fallback lookup `byte_fallback[256]` garantiza que NINGÚN byte se pierde.
+  x-ray roundtrip: PASS (CRC-32 verified OK) [MEASURED]
+- **Impacto en BPB**: x-ray BPB corregido de 4.8969 (dato corrupto) a 5.8008 (dato correcto)
 - **Archivos**: `src/infrastructure/mamba/tokenizer.rs`
 
 ---
@@ -1678,4 +1676,5 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | R-049 lección: state divergence con MAX_SKIPS=8 acumula error mucho más rápido que estimado |
 | 2026-10-31 | R-049 prerequisito: flag CLI opt-in + R-050 tuning antes de re-implementar |
 | 2026-10-31 | R-045 COMPLETADO: bit-plane CM hash — x-ray **-16.2%**, mr -2.6%, text 0% |
-| 2026-10-31 | BUG-001: Mamba BPE tokenizer roundtrip fails on x-ray+delta (10241 vs 10240 bytes) |
+| 2026-10-31 | BUG-001 RESUELTO: 13 missing byte tokens in BPE vocab — synthetic fallback added |
+| 2026-10-31 | BUG-001: x-ray BPB was 4.8969 (CORRUPTO) → 5.8008 (correcto) after fix |
