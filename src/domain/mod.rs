@@ -19,3 +19,4 @@ pub mod byte_shuffle;
 pub mod delta;
 pub mod record_detect;
 pub mod segment_model;
+pub mod pred_cache;

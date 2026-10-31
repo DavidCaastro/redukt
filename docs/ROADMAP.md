@@ -1370,21 +1370,22 @@ R-045: deferred (P2, uncertain impact). R-047: future.
 > más poderoso y subsume el adaptive skip.
 
 #### R-048: PredCache — Neural Prediction Cache (data structure)
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-10-31)
 - **Prioridad**: P1 — addresses fundamental throughput bottleneck
 - **Concepto**: Hash table mapping context fingerprints to top-K backbone
   logit distributions. Enables skipping the 29ms backbone forward pass
   for previously-seen contexts.
-- **Subtareas**:
-  - [ ] `src/domain/pred_cache.rs` — new module
-  - [ ] `CacheEntry`: top-32 tokens (u16) + logits (f32) + base_logit + hash + observations
-  - [ ] `context_hash()`: FNV-1a over last N tokens (configurable order, default 8)
-  - [ ] `lookup(hash) -> Option<&CacheEntry>` with full-hash collision check
-  - [ ] `insert(hash, logits)` — extract top-K, compute base_logit, store
-  - [ ] `reconstruct_logits(entry, out)` — fill vocab-size array from top-K + base
-  - [ ] Table: 64K entries (open addressing), ~13MB max. LRU/count-based eviction.
-  - [ ] Unit tests: insert/lookup, collision handling, reconstruct accuracy, eviction
-- **Métricas**: Lookup <1ns (FNV hash). Memory <15MB. reconstruct_logits <10μs.
+- **Implementación**:
+  - [x] `src/domain/pred_cache.rs` — 240 lines, fully tested
+  - [x] `CacheEntry`: top-32 tokens (u16) + logits (f32) + base_logit + hash + observations
+  - [x] `context_hash()`: FNV-1a over last N tokens (configurable order, default 8)
+  - [x] `lookup(hash, out)` → bool, full-hash collision check, reconstructs logits
+  - [x] `insert(hash, logits)` — extract top-K, compute base_logit, LFU eviction on collision
+  - [x] `reconstruct_logits(entry, out)` — fill vocab-size array from top-K + base
+  - [x] Table: 64K entries (open addressing), ~13MB max
+  - [x] 16 unit tests: hash determinism, insert/lookup, collision eviction, LFU survival,
+    min_obs threshold, disabled mode, hit rate tracking, large vocab (50280), e2e stream
+- **Métricas**: 0 warnings, 222 tests pass, BPB unchanged (1.2739 RWKV enwik8 10KB)
 - **Archivos**: `src/domain/pred_cache.rs` (new), `src/domain/mod.rs`
 
 #### R-049: PredCache Integration — Backbone Skip Protocol
@@ -1644,3 +1645,4 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | Insight: backbone es 99.5% del costo. Cache de predicciones por contexto = throughput scaling |
 | 2026-10-31 | Research: prediction-cache-research.md — diseño completo, prueba de determinismo, estimaciones |
 | 2026-10-31 | Estimación: 2-5x speedup en datos estructurados (logs, XML), 1.2x en texto natural |
+| 2026-10-31 | R-048 COMPLETADO: PredCache data structure — 64K table, top-32 logits, FNV-1a hash, 16 tests |
