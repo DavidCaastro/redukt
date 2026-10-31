@@ -2546,9 +2546,11 @@ mod tests {
     }
 
     #[test]
-    fn route_backbone_generic_binary_to_rwkv() {
+    fn route_backbone_always_mamba() {
         use crate::domain::content_detect::ContentType;
         use crate::domain::backbone::route_backbone;
-        assert_eq!(route_backbone(&ContentType::GenericBinary), BackboneChoice::Rwkv);
+        // Post-BUG-001: Mamba always (simplified routing)
+        assert_eq!(route_backbone(&ContentType::GenericBinary), BackboneChoice::Mamba);
+        assert_eq!(route_backbone(&ContentType::Text), BackboneChoice::Mamba);
     }
 }

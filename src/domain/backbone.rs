@@ -43,14 +43,12 @@ impl fmt::Display for BackboneChoice {
     }
 }
 
-/// Route content type to backbone (R-039, updated R-040).
-/// Mamba-130M wins 10/12 file types. RWKV only wins on GenericBinary (+4.6%).
-pub fn route_backbone(ct: &crate::domain::content_detect::ContentType) -> BackboneChoice {
-    use crate::domain::content_detect::ContentType;
-    match ct {
-        ContentType::GenericBinary => BackboneChoice::Rwkv,
-        _ => BackboneChoice::Mamba,
-    }
+/// Route content type to backbone (R-039, updated R-040, simplified post-BUG-001).
+/// Mamba-130M wins 10/12 file types. RWKV marginal on GenericBinary (+4.6%),
+/// but samba misclassified as GenericBinary lost -79% with RWKV routing.
+/// Simplified: Mamba always. Users can override with --backbone rwkv.
+pub fn route_backbone(_ct: &crate::domain::content_detect::ContentType) -> BackboneChoice {
+    BackboneChoice::Mamba
 }
 
 /// Recurrent state for a backbone model.

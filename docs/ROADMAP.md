@@ -1678,3 +1678,4 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | R-045 COMPLETADO: bit-plane CM hash — x-ray **-16.2%**, mr -2.6%, text 0% |
 | 2026-10-31 | BUG-001 RESUELTO: 13 missing byte tokens in BPE vocab — synthetic fallback added |
 | 2026-10-31 | BUG-001: x-ray BPB was 4.8969 (CORRUPTO) → 5.8008 (correcto) after fix |
+| 2026-10-31 | Routing simplificado: Mamba always (samba 1.291→0.271, -79%). Wins 13/19 vs brotli |
