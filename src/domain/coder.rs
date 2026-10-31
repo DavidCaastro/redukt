@@ -53,7 +53,8 @@ impl Cdf {
 
         let mut extra_used = 0u64;
         for i in 0..n {
-            let extra = (probs[i] as f64 * inv * remaining as f64) as u64;
+            // R-046: round-to-nearest instead of truncation (Nacrith audit)
+            let extra = (probs[i] as f64 * inv * remaining as f64 + 0.5) as u64;
             freqs[i] += extra as u32;
             extra_used += extra;
         }

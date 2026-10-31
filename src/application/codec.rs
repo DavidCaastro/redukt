@@ -30,6 +30,7 @@ pub const V4_FLAG_SHUFFLE: u8 = 0x08;
 pub const V4_FLAG_DELTA: u8 = 0x10;
 pub const V4_FLAG_ADAPTIVE_SKIP: u8 = 0x20;
 pub const V4_FLAG_BACKBONE: u8 = 0x40;
+pub const V4_FLAG_ENHANCED_CM: u8 = 0x80;
 pub const DEFAULT_BIAS_LR: f32 = 0.30;
 pub const DEFAULT_NGRAM_SCALE: f32 = 0.50;
 pub const DEFAULT_MIX_ETA: f32 = 0.01;
@@ -90,6 +91,7 @@ pub struct HeaderInfo {
     pub delta_stride: u8,        // 0 = no delta, 1+ = delta coding stride (R-030)
     pub skip_threshold: u8,      // 0 = disabled, 1-99 = adaptive RWKV skip threshold % (R-033)
     pub backbone: BackboneChoice, // R-039: which backbone was used
+    pub enhanced_cm: bool,       // R-043/R-044: entropy-adaptive mixer + SegmentModel
     pub header_size: usize,
 }
 
@@ -148,6 +150,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 e8e9: false, shuffle_stride: 0, delta_stride: 0,
                 skip_threshold: 0,
                 backbone: BackboneChoice::Rwkv,
+                enhanced_cm: false,
                 header_size: HEADER_SIZE,
             })
         }
@@ -158,7 +161,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let flags = data[12];
             let known = V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY | V4_FLAG_E8E9
                 | V4_FLAG_SHUFFLE | V4_FLAG_DELTA | V4_FLAG_ADAPTIVE_SKIP
-                | V4_FLAG_BACKBONE;
+                | V4_FLAG_BACKBONE | V4_FLAG_ENHANCED_CM;
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
@@ -279,11 +282,13 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 BackboneChoice::Rwkv
             };
 
+            let enhanced_cm = flags & V4_FLAG_ENHANCED_CM != 0;
+
             Ok(HeaderInfo {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
-                skip_threshold, backbone,
+                skip_threshold, backbone, enhanced_cm,
                 header_size: offset,
             })
         }
@@ -315,7 +320,7 @@ pub fn extract_stream_and_crc_v(
 pub fn build_v4_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
-    skip_threshold: u8, backbone: BackboneChoice,
+    skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
 ) -> Vec<u8> {
     let custom_hp = !uses_default_hp(bias_lr, ngram_scale, mix_eta);
     let (emb_method, emb_alpha) = parse_emb_surgery_str(emb_surgery);
@@ -333,6 +338,7 @@ pub fn build_v4_header(
     if has_delta { flags |= V4_FLAG_DELTA; }
     if has_skip { flags |= V4_FLAG_ADAPTIVE_SKIP; }
     if has_backbone { flags |= V4_FLAG_BACKBONE; }
+    if enhanced_cm { flags |= V4_FLAG_ENHANCED_CM; }
 
     let mut cap = V4_HEADER_BASE;
     if custom_hp { cap += 12; }
@@ -710,6 +716,8 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
+    mixer.set_entropy_scaling(true); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
     let mut enc = RangeEncoder::new();
 
     let mut state = model.create_state();
@@ -722,6 +730,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -754,6 +763,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
                 &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                 &run_buf, &word_buf,
             );
+            // R-044: add segment model bias
+            segment_m.compute_bias_into(&mut seg_buf);
+            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
 
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
@@ -773,6 +785,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         match_m.observe(tok as u32);
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
+        segment_m.observe(tok as u32);
 
         // Adaptive RWKV skip (R-033): skip forward when model was confident,
         // but limit consecutive skips to prevent state staleness cascade.
@@ -844,7 +857,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let hdr = build_v4_header(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
         e8e9_applied, shuffle_applied, delta_applied, adaptive_skip,
-        backbone_choice,
+        backbone_choice, true,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -1082,10 +1095,13 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
+    mixer.set_entropy_scaling(true); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
     let mut enc = RangeEncoder::new();
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let t_start = std::time::Instant::now();
 
     for t in 0..tokens.len() {
@@ -1104,6 +1120,8 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
                 ensemble_buf, logits, ng_buf, b_vec, &match_buf,
                 &run_buf, &word_buf,
             );
+            segment_m.compute_bias_into(&mut seg_buf);
+            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
 
             let cdf = cdf_from_logits(ensemble_buf);
             enc.encode_symbol(tok, &cdf);
@@ -1120,6 +1138,7 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
         match_m.observe(tok as u32);
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
+        segment_m.observe(tok as u32);
         model.forward_into(tok, state, scratch, logits);
     }
 
@@ -1131,7 +1150,7 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
 
     let hdr = build_v4_header(
         total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery,
-        false, 0, 0, 0, BackboneChoice::Rwkv,
+        false, 0, 0, 0, BackboneChoice::Rwkv, true,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -1263,6 +1282,8 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
+    mixer.set_entropy_scaling(hdr.enhanced_cm); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, hdr.enhanced_cm); // R-044
     let mut dec = RangeDecoder::new(stream);
 
     let mut state = model.create_state();
@@ -1274,6 +1295,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -1326,6 +1348,8 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                     &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                     &run_buf, &word_buf,
                 );
+                segment_m.compute_bias_into(&mut seg_buf);
+                for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -1341,6 +1365,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
+            segment_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
 
             if t > 0 && t % 100 == 0 {
@@ -1377,6 +1402,8 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                     &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                     &run_buf, &word_buf,
                 );
+                segment_m.compute_bias_into(&mut seg_buf);
+                for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -1408,6 +1435,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
+            segment_m.observe(tok);
 
             // Adaptive RWKV skip (R-033): identical decision to compress path.
             // probs_buf[sym] is the combined model's confidence for this token.
@@ -1594,6 +1622,8 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
+    mixer.set_entropy_scaling(true); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
 
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -1605,6 +1635,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -1634,6 +1665,8 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
                 &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                 &run_buf, &word_buf,
             );
+            segment_m.compute_bias_into(&mut seg_buf);
+            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
 
             softmax_into(&ensemble_buf, &mut probs_buf);
             let prob = probs_buf[tok] as f64;
@@ -1662,6 +1695,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
         match_m.observe(tok as u32);
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
+        segment_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
@@ -2084,10 +2118,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_header_v4_rejects_unknown_flags() {
+    fn parse_header_v4_all_flags_known() {
+        // All 8 flag bits are now defined — no unknown flags possible with u8.
         let mut file = make_azth_v4_default(100, &[0u8; 8], 0);
-        file[12] = 0x80; // unknown flag bit
-        assert!(parse_header(&file).is_err());
+        file[12] = V4_FLAG_ENHANCED_CM; // 0x80 is now a known flag
+        assert!(parse_header(&file).is_ok());
     }
 
     #[test]
@@ -2114,7 +2149,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_default() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE);
         assert_eq!(&hdr[..8], MAGIC_V4);
         assert_eq!(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 1000);
@@ -2123,7 +2158,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom() {
-        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(2000, 0.5, 0.7, 0.02, "", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP);
         let lr = f32::from_le_bytes([hdr[13], hdr[14], hdr[15], hdr[16]]);
@@ -2349,7 +2384,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_with_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         // 13 base + 5 emb-surgery = 18 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_EMB_SURGERY);
@@ -2360,7 +2395,7 @@ mod tests {
 
     #[test]
     fn build_v4_header_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(1000, 0.5, 0.7, 0.02, "norm", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         // 13 base + 12 custom HP + 5 emb-surgery = 30 bytes
         assert_eq!(hdr.len(), V4_HEADER_BASE + 12 + EMB_SURGERY_BYTES);
         assert_eq!(hdr[12], V4_FLAG_CUSTOM_HP | V4_FLAG_EMB_SURGERY);
@@ -2373,7 +2408,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_emb_surgery() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]); // stream
@@ -2387,7 +2422,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_custom_hp_plus_emb_surgery() {
-        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(999, 0.5, 0.7, 0.02, "spread", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 4]); // stream
@@ -2409,7 +2444,7 @@ mod tests {
     #[test]
     fn v4_emb_surgery_flag_rejected_by_old_reserved_check() {
         // Verify that 0x02 flag alone is accepted (not rejected as "unknown")
-        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(100, 0.30, 0.50, 0.01, "norm", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
@@ -2418,15 +2453,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_header_v4_rejects_unknown_flags_with_emb() {
-        // Bit 7 (0x80) should still be rejected even when 0x02 is set
-        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv);
-        hdr[12] |= 0x80; // add unknown flag
+    fn parse_header_v4_enhanced_cm_with_emb() {
+        // 0x80 (enhanced CM) + 0x02 (emb-surgery) are both known flags
+        let mut hdr = build_v4_header(100, 0.30, 0.50, 0.01, "center0.3", false, 0, 0, 0, BackboneChoice::Rwkv, false);
+        hdr[12] |= V4_FLAG_ENHANCED_CM;
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
         file.extend_from_slice(&0u32.to_le_bytes());
-        assert!(parse_header(&file).is_err());
+        let info = parse_header(&file).unwrap();
+        assert!(info.enhanced_cm);
     }
 
     // --- R-039: backbone choice header tests ---
@@ -2450,14 +2486,14 @@ mod tests {
 
     #[test]
     fn build_v4_header_rwkv_no_backbone_flag() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE);
         assert_eq!(hdr[12] & V4_FLAG_BACKBONE, 0); // no backbone flag for RWKV default
     }
 
     #[test]
     fn build_v4_header_mamba_sets_backbone_flag() {
-        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba);
+        let hdr = build_v4_header(1000, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba, false);
         assert_eq!(hdr.len(), V4_HEADER_BASE + 1); // +1 byte for backbone
         assert_ne!(hdr[12] & V4_FLAG_BACKBONE, 0);
         assert_eq!(hdr[V4_HEADER_BASE], 1); // Mamba = 1
@@ -2465,7 +2501,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_mamba_backbone() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba);
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]); // stream
@@ -2477,7 +2513,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_rwkv_default_backbone() {
-        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv);
+        let hdr = build_v4_header(500, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);
@@ -2488,7 +2524,7 @@ mod tests {
 
     #[test]
     fn parse_header_v4_mamba_with_custom_hp() {
-        let hdr = build_v4_header(500, 0.5, 0.7, 0.02, "", false, 0, 0, 0, BackboneChoice::Mamba);
+        let hdr = build_v4_header(500, 0.5, 0.7, 0.02, "", false, 0, 0, 0, BackboneChoice::Mamba, false);
         let mut file = Vec::new();
         file.extend_from_slice(&hdr);
         file.extend_from_slice(&[0u8; 8]);

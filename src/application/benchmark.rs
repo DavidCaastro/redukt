@@ -320,6 +320,8 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(0.01);
+    mixer.set_entropy_scaling(true); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -331,6 +333,7 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
 
     let t_start = Instant::now();
@@ -353,6 +356,8 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
                 &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                 &run_buf, &word_buf,
             );
+            segment_m.compute_bias_into(&mut seg_buf);
+            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
 
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
@@ -373,6 +378,7 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
         match_m.observe(tok as u32);
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
+        segment_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {
@@ -393,7 +399,7 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let input_crc = crc32::crc32(data);
     let hdr = build_v4_header(
         total_bytes as u32, 0.30, 0.50, 0.01, &emb_surgery, false, 0, 0, 0,
-        crate::domain::backbone::BackboneChoice::Rwkv,
+        crate::domain::backbone::BackboneChoice::Rwkv, true,
     );
     let mut azth = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     azth.extend_from_slice(&hdr);

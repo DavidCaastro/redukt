@@ -228,6 +228,8 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(mix_eta);
+    mixer.set_entropy_scaling(true); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -238,6 +240,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -255,6 +258,8 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
                 &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                 &run_buf, &word_buf,
             );
+            segment_m.compute_bias_into(&mut seg_buf);
+            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
             softmax_into(&ensemble_buf, &mut probs_buf);
@@ -268,6 +273,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
         match_m.observe(tok as u32);
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
+        segment_m.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
     }
 
@@ -277,7 +283,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
 
     let hdr = build_v4_header(
         total_bytes as u32, bias_lr, ngram_scale, mix_eta, "", false, 0, 0, 0,
-        crate::domain::backbone::BackboneChoice::Rwkv,
+        crate::domain::backbone::BackboneChoice::Rwkv, true,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -312,6 +318,8 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut run_m = RunModel::new(v);
     let mut word_m = WordModel::new(v);
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
+    mixer.set_entropy_scaling(hdr.enhanced_cm); // R-043
+    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, hdr.enhanced_cm); // R-044
     let mut dec = RangeDecoder::new(stream);
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -322,6 +330,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
     let mut word_buf = vec![0.0f32; v];
+    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
@@ -343,6 +352,8 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                     &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                     &run_buf, &word_buf,
                 );
+                segment_m.compute_bias_into(&mut seg_buf);
+                for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -358,6 +369,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
+            segment_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
         }
         for &tok in &decoded_tokens {
@@ -379,6 +391,8 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                     &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
                     &run_buf, &word_buf,
                 );
+                segment_m.compute_bias_into(&mut seg_buf);
+                for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -397,6 +411,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
+            segment_m.observe(tok);
             model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
             t += 1;
         }
