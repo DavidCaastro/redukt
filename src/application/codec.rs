@@ -2499,20 +2499,20 @@ mod tests {
     }
 
     #[test]
-    fn route_backbone_text_to_mamba() {
+    fn route_backbone_most_to_mamba() {
         use crate::domain::content_detect::ContentType;
         use crate::domain::backbone::route_backbone;
         assert_eq!(route_backbone(&ContentType::Text), BackboneChoice::Mamba);
         assert_eq!(route_backbone(&ContentType::StructuredText), BackboneChoice::Mamba);
+        assert_eq!(route_backbone(&ContentType::Executable), BackboneChoice::Mamba);
+        assert_eq!(route_backbone(&ContentType::FloatArray), BackboneChoice::Mamba);
+        assert_eq!(route_backbone(&ContentType::HighEntropy), BackboneChoice::Mamba);
     }
 
     #[test]
-    fn route_backbone_binary_to_rwkv() {
+    fn route_backbone_generic_binary_to_rwkv() {
         use crate::domain::content_detect::ContentType;
         use crate::domain::backbone::route_backbone;
-        assert_eq!(route_backbone(&ContentType::Executable), BackboneChoice::Rwkv);
-        assert_eq!(route_backbone(&ContentType::FloatArray), BackboneChoice::Rwkv);
-        assert_eq!(route_backbone(&ContentType::HighEntropy), BackboneChoice::Rwkv);
         assert_eq!(route_backbone(&ContentType::GenericBinary), BackboneChoice::Rwkv);
     }
 }

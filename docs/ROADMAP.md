@@ -1156,18 +1156,29 @@ Research: `docs/internal/research/adaptive-tokenization-research.md` (18 sources
   - 9 unit tests: choice roundtrip, from_str, header build/parse, routing for all 6 content types
 - **Resultado**: 198 tests pass, zero warnings, backward compatible (RWKV files don't set flag)
 
-#### R-040: Dual-backbone ensemble evaluation
-- **Estado**: PENDIENTE
-- **Prioridad**: P2 — research evaluation, informs future work
+#### R-040: Dual-backbone evaluation & routing optimization
+- **Estado**: COMPLETADO (2026-10-31)
+- **Prioridad**: P2 — research evaluation + routing fix
 - **Prerequisitos**: R-039 (router)
-- **Concepto**: On files where both backbones are close (facturae, ubl, nci, mozilla, reymont),
-  run BOTH and mix logits: `p = α·p_mamba + (1-α)·p_rwkv`. α selected by content type or
-  learned online per-file.
+- **Concepto**: Evaluate actual AZTH compression (not ce_bpb) with both backbones on 12 files.
+  Determine optimal routing based on empirical BPB comparison.
 - **Subtareas**:
-  - [ ] Evaluate ce_bpb with simple α∈{0.0, 0.25, 0.5, 0.75, 1.0} on 5 "close" files
-  - [ ] Determine if ensemble beats best-single on any file
-  - [ ] If yes: implement adaptive α in mixer; if no: close as informational
-- **Métricas**: ce_bpb per α per file. Decision: GO/NO-GO for ensemble.
+  - [x] Actual compression with RWKV+CM on 12 files (10KB, Q8 auto) [MEASURED]
+  - [x] Actual compression with Mamba+CM on 12 files (10KB, Q8 auto) [MEASURED]
+  - [x] Roundtrip verification for Mamba-compressed files (facturae, enwik8 PASS)
+  - [x] Routing optimization: updated `route_backbone()` — Mamba default, RWKV for GenericBinary only
+  - [x] Competitive analysis vs brotli-11 and gzip-9
+  - [x] Fix: MAMBA_WEIGHTS_DIR path corrected (`mamba-130m` not `mamba-130m-hf`)
+  - [x] 198+4 tests pass, zero warnings
+- **Resultado**:
+  - Mamba wins **10/12 files** (83%). RWKV only wins on GenericBinary (+1-4.6%)
+  - Biggest wins: samba **-79.1%**, dickens **-63.7%**, enwik8 **-27.6%**, apache **-27.0%**
+  - vs brotli-11: wins **8/12** (up from 7/12), average win margin **-50.5%**
+  - Best new BPB: samba **0.271** (-87.8% vs brotli), dickens **0.652** (-76.5% vs brotli)
+  - Initial hypothesis "byte-level RWKV better for binary" REFUTED
+  - Ensemble (mix logits) NOT needed — Mamba dominates, no "close" files found
+- **Decision**: NO-GO for ensemble. Single-backbone routing is optimal.
+- **Evidence**: `data/benchmark/results/dual-backbone-benchmark.md`, `.csv`
 
 #### R-041: Byte-level Mamba training feasibility (INVESTIGACIÓN)
 - **Estado**: PENDIENTE — investigación, no implementación inmediata
@@ -1181,16 +1192,13 @@ Research: `docs/internal/research/adaptive-tokenization-research.md` (18 sources
   - [ ] Decision: GO/NO-GO for implementation
 
 #### R-042: Tokenizer-aware preprocessing for binary
-- **Estado**: PENDIENTE
-- **Prioridad**: P2 — improves Mamba on binary without model changes
+- **Estado**: DEPRIORITIZED (R-040 results make this less critical)
+- **Prioridad**: P3 — reduced priority, Mamba already wins 10/12 without preprocessing
 - **Concepto**: Before BPE tokenization, preprocess binary data to make it more BPE-friendly.
-  Binary BPE research (Bommarito 2024) shows 3.37x compression with domain-trained BPE.
-  Alternatively: alphabet remapping, byte-frequency sorting, structure-aware splitting.
-- **Subtareas**:
-  - [ ] Measure Mamba ce_bpb on binary files with existing preprocessing (E8E9, shuffle, delta)
-  - [ ] Evaluate byte-frequency remapping: sort alphabet by frequency, remap bytes
-  - [ ] Evaluate if preprocessing alone closes the gap with RWKV on binary
-  - [ ] Decision: worth implementing or R-039 routing is sufficient
+- **R-040 finding**: Mamba already beats RWKV on most binary files (samba -79%, x-ray -16%,
+  sao -6%). Only GenericBinary (ooffice +1%, mr +4.6%) shows RWKV advantage, with tiny margins.
+  Preprocessing would help the 2 GenericBinary files but ROI is low.
+- **Decision**: DEFER. Routing to RWKV for GenericBinary is simpler and sufficient.
 
 #### Secuencia Fase 5
 
@@ -1371,5 +1379,12 @@ R-039 es el BLOCKER. R-040, R-041, R-042 son independientes entre sí.
 | 2026-10-31 | Hallazgo: nadie resuelve "un tokenizador para todo" con modelo pretrained [SOURCED, 18 refs] |
 | 2026-10-31 | Hallazgo: Redukt tiene ventaja única — dual backbone (Mamba BPE + RWKV byte-level) |
 | 2026-10-31 | Fase 5 definida: R-039 (router) → R-040 (ensemble) + R-041 (MambaByte) + R-042 (preprocessing) |
+| 2026-10-31 | R-039 COMPLETADO: content-adaptive backbone router — BackboneChoice, DynModel, FLAG 0x40 (0899c86) |
+| 2026-10-31 | R-040 COMPLETADO: dual-backbone benchmark — 12 archivos, actual AZTH compression [MEASURED] |
+| 2026-10-31 | R-040: Mamba wins **10/12** (83%). samba **-79.1%**, dickens **-63.7%**, enwik8 **-27.6%** |
+| 2026-10-31 | R-040: hipótesis "RWKV mejor para binarios" REFUTADA — Mamba gana incluso en Executable/FloatArray |
+| 2026-10-31 | R-040: routing actualizado — Mamba default, RWKV solo GenericBinary. vs brotli: 8/12 wins (-50.5% avg) |
+| 2026-10-31 | R-040: fix MAMBA_WEIGHTS_DIR path (mamba-130m-hf → mamba-130m) |
+| 2026-10-31 | Metodología delegación agéntica documentada: docs/internal/agent-delegation-methodology.md |
 | 2026-10-31 | docs: adaptive-tokenization-research.md — investigación completa con 18 referencias |
 | 2026-10-31 | R-039 ✅: content-adaptive backbone router — BackboneChoice enum, DynModel dispatch, FLAG 0x40, --backbone CLI, 9 tests |

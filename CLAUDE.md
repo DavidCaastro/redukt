@@ -157,52 +157,61 @@ Provenance documented in `weights/MANIFEST.md`.
 4. NOTICE file up to date
 5. README badges current
 
-## Benchmarks (Verified 2026-10-30, actual AZTH compression)
+## Benchmarks (Verified 2026-10-31, dual-backbone actual AZTH compression)
 
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
 All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
+Dual backbone: Mamba-130M (default) + RWKV-7 0.1B (GenericBinary only).
 Quantization: auto-selected Q8. F32 vs Q8 difference: <2.5% on all files.
-Q8 is 2.1x faster — correct production choice.
-Use `--quant f32|q8|q4|auto` to force quantization level.
+Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (actual AZTH v4)**: 1.3312 BPB [MEASURED: 2026-10-30]
-- **cross-entropy (hybrid-eval)**: 1.2813 BPB (Q8)
-- **coder efficiency**: 96.1% on enwik8 (v4 header saves 15 bytes vs v3)
-- **baseline (RWKV-only)**: 1.4067 BPB
+- **compress (Mamba+CM, AZTH v4)**: 0.9609 BPB [MEASURED: 2026-10-31]
+- **compress (RWKV+CM, AZTH v4)**: 1.3312 BPB [MEASURED: 2026-10-30]
+- **cross-entropy (hybrid-eval, RWKV)**: 1.2813 BPB (Q8)
+- **coder efficiency**: 94.5% on enwik8 Mamba, 96.0% RWKV
 
-### Strongest Results (actual AZTH compression, 10KB)
-| File | Redukt BPB | brotli-11 | Δ | Coder eff. |
+### Strongest Results (dual-backbone, actual AZTH, 10KB)
+| File | Redukt BPB | brotli-11 | Δ | Backbone |
 |---|---|---|---|---|
-| apache-access.log | **0.296** | 0.466 | **-37%** | 83.8% |
-| facturae-batch.xml | **0.447** | 0.890 | **-50%** | 90.0% |
-| ubl-invoice-batch.xml | **0.529** | 0.888 | **-40%** | 90.5% |
-| samba | **1.297** | 2.220 | **-42%** | 97.5% |
-| enwik8 | **1.331** | 2.352 | **-43%** | 96.0% |
+| apache-access.log | **0.216** | 0.466 | **-54%** | Mamba |
+| samba | **0.271** | 2.220 | **-88%** | Mamba |
+| facturae-batch.xml | **0.389** | 0.890 | **-56%** | Mamba |
+| ubl-invoice-batch.xml | **0.446** | 0.888 | **-50%** | Mamba |
+| dickens | **0.652** | 2.778 | **-77%** | Mamba |
+| enwik8 | **0.961** | 2.352 | **-59%** | Mamba |
 
-### Full Silesia + Industry (19 files, actual compression, 10KB Q8)
-| File | BPB | vs brotli | File | BPB | vs brotli |
-|---|---|---|---|---|---|
-| apache-access.log | 0.296 | -37% | samba | 1.297 | -42% |
-| linux-syslog.log | 0.414 | -29% | enwik8 | 1.331 | -43% |
-| facturae-batch.xml | 0.447 | -50% | dickens | 1.795 | -35% |
-| openssh-auth.log | 0.521 | -34% | webster | 1.801 | -36% |
-| ubl-invoice-batch.xml | 0.529 | -40% | reymont | 1.896 | -11% |
-| nci | 0.666 | -9% | mozilla | 2.021 | 0% |
-| xml | 0.674 | -25% | mr | 2.391 | +1% |
+### Full Benchmark (12 files, dual-backbone, 10KB Q8) [MEASURED: 2026-10-31]
+| File | BPB | Backbone | vs brotli | vs gzip |
+|---|---|---|---|---|
+| apache-access.log | 0.216 | Mamba | -54% | -60% |
+| facturae-batch.xml | 0.389 | Mamba | -56% | -64% |
+| ubl-invoice-batch.xml | 0.446 | Mamba | -50% | -59% |
+| nci | 0.609 | Mamba | -17% | -35% |
+| dickens | 0.652 | Mamba | -77% | -82% |
+| enwik8 | 0.961 | Mamba | -59% | -68% |
+| samba | 0.271 | Mamba | -88% | -91% |
+| mozilla | 1.938 | Mamba | -4% | -18% |
+| mr | 2.391 | RWKV | +1% | -14% |
+| ooffice | 3.750 | RWKV | +37% | +29% |
+| x-ray | 4.887 | Mamba | +6% | -17% |
+| sao | 8.666 | Mamba | +45% | +36% |
 
-Loses: ooffice +37%, osdb +21%, x-ray +27%, sao +54%, sample-invoice.pdf +41%.
-Wins 12/19 files. Coder efficiency: 84-99%.
+Wins 8/12 vs brotli-11, 10/12 vs gzip-9. Average win margin: -50.5% vs brotli.
+Loses: sao +45%, ooffice +37%, x-ray +6%, mr +1% (binary/high-entropy).
+Full evidence: `data/benchmark/results/dual-backbone-benchmark.md`, `.csv`.
 
-### Scale Test (batch mode, model loaded once)
+### RWKV-only Benchmark (19 files, 10KB Q8) [MEASURED: 2026-10-30]
+Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
+
+### Scale Test (batch mode, RWKV, model loaded once)
 | File | 10KB | 50KB | 100KB | brotli 100KB | Δ 100KB |
 |---|---|---|---|---|---|
 | apache-access.log | 0.296 | 0.227 | 0.224 | 0.328 | -32% |
 | dickens | 1.797 | 1.503 | 1.457 | 2.649 | -45% |
 | samba | 1.298 | 1.356 | 1.206 | 1.944 | -38% |
 
-Advantage grows with file size. Throughput: 60-69 tok/s (batch mode).
-Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
+Advantage grows with file size. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s.
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 
 ## Process Safety (Windows)

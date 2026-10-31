@@ -32,7 +32,7 @@ pub fn resolve_vocab_path(weights_path: &Path) -> PathBuf {
 }
 
 /// Default Mamba weights directory.
-const MAMBA_WEIGHTS_DIR: &str = "weights/mamba-130m-hf";
+const MAMBA_WEIGHTS_DIR: &str = "weights/mamba-130m";
 
 // --- RWKV loading ---
 

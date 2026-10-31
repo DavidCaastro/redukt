@@ -43,13 +43,13 @@ impl fmt::Display for BackboneChoice {
     }
 }
 
-/// Route content type to backbone (R-039).
-/// Text/StructuredText → Mamba (BPE advantage), rest → RWKV (byte-level).
+/// Route content type to backbone (R-039, updated R-040).
+/// Mamba-130M wins 10/12 file types. RWKV only wins on GenericBinary (+4.6%).
 pub fn route_backbone(ct: &crate::domain::content_detect::ContentType) -> BackboneChoice {
     use crate::domain::content_detect::ContentType;
     match ct {
-        ContentType::Text | ContentType::StructuredText => BackboneChoice::Mamba,
-        _ => BackboneChoice::Rwkv,
+        ContentType::GenericBinary => BackboneChoice::Rwkv,
+        _ => BackboneChoice::Mamba,
     }
 }
 
