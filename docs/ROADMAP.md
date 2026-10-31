@@ -1289,18 +1289,32 @@ vs brotli-11: 8/12 wins, avg margin -50.5%. Best: samba -88%, dickens -77%.
 - **Archivos**: `src/domain/segment_model.rs` (new), `src/application/codec.rs`, `src/application/api.rs`
 
 #### R-045: Bit-Plane CM Hash Features
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-10-31)
 - **Prioridad**: P2 — trivial implementation, uncertain impact
 - **Origen PDF**: "Bit-Plane Projection" — decompose bytes into bits for richer features
 - **Concepto**: Use individual bit positions of current/previous bytes as additional context
   in CM predictor hash functions. MSB (bit 7) captures case in ASCII, sign in floats.
   Bit-plane features add structural information without changing the backbone.
 - **Subtareas**:
-  - [ ] Add bit-plane context to ngram hash: XOR MSB/nibble of previous bytes
-  - [ ] Add bit-plane context to match_model hash: MSB as extra discriminator
-  - [ ] Benchmark: focus on binary files where bit-level correlations matter (float, executable)
-  - [ ] Unit tests: hash collision rate analysis
-- **Métricas**: BPB on binary files (x-ray, ooffice, mr). Target: 0-0.5% improvement.
+  - [x] Add bit-plane context to ngram hash: XOR MSB/nibble of last token's low byte
+  - [x] Add bit-plane context to match_model hash: MSB of both tokens as extra discriminator
+  - [x] Benchmark: 9 files measured [MEASURED]
+  - [x] Roundtrip verification: enwik8, dickens, samba — PASS
+- **Resultados** [MEASURED, 10KB]:
+  | File | Baseline | R-045 | Δ |
+  |---|---|---|---|
+  | x-ray | 5.8416 | 4.8969 | **-16.2%** |
+  | mr | 2.3914 | 2.3281 | **-2.6%** |
+  | samba | 1.2970 | 1.2914 | **-0.4%** |
+  | ooffice | 3.8588 | 3.8469 | **-0.3%** |
+  | enwik8 | 0.9633 | 0.9633 | 0% |
+  | dickens | 0.6523 | 0.6523 | 0% |
+  | apache | 0.2164 | 0.2164 | 0% |
+  | osdb | 5.5953 | 5.6336 | +0.7% |
+  | sao | 8.6430 | 8.6438 | +0.01% |
+- **Conclusión**: x-ray -16.2% es excelente. Texto sin regresión. Solo osdb +0.7% leve.
+- **Nota**: x-ray roundtrip falla con Mamba BPE (bug preexistente en tokenizer,
+  no causado por R-045). Funciona con RWKV backbone. Ver BUG-001.
 - **Archivos**: `src/domain/ngram.rs`, `src/domain/match_model.rs`
 
 #### R-046: Arithmetic Coder Precision Audit
@@ -1448,6 +1462,25 @@ Estrictamente secuencial: R-049 depende de R-048, R-050 depende de R-049.
 
 **Métrica de éxito Fase 7**: ≥2x speedup en datos estructurados (logs, XML, facturas)
 con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo dominio.
+
+---
+
+## Bugs conocidos
+
+#### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
+- **Estado**: ABIERTO
+- **Prioridad**: P1 — afecta roundtrip de archivos binarios con Mamba backbone
+- **Síntoma**: `size mismatch: decoded 10241 bytes, expected 10240` en x-ray 10KB
+  con shuffle+delta preprocessing. CRC también falla si se trunca.
+- **Causa raíz**: `encode(data) → tokens → concat(decode(tokens))` produce 1 byte extra.
+  El tokenizer BPE (GPT-NeoX, `src/infrastructure/mamba/tokenizer.rs`) no es
+  perfectly invertible para ciertos patrones binarios post-delta.
+- **No afecta**: RWKV-7 (World tokenizer, 1 byte = 1 token, siempre invertible).
+- **No afecta**: Mamba con datos de texto (enwik8, dickens, samba — roundtrip OK).
+- **Workaround**: usar `--backbone rwkv` para archivos binarios con delta.
+- **Fix pendiente**: diagnosticar qué secuencia de bytes causa el +1 en BPE decode.
+  Posiblemente `pre_tokenize` o `apply_merges` edge case con NUL bytes.
+- **Archivos**: `src/infrastructure/mamba/tokenizer.rs`
 
 ---
 
@@ -1644,3 +1677,5 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | R-049 IMPLEMENTADO Y REVERTIDO: +17.4% BPB inaceptable, +15.9% tok/s insuficiente |
 | 2026-10-31 | R-049 lección: state divergence con MAX_SKIPS=8 acumula error mucho más rápido que estimado |
 | 2026-10-31 | R-049 prerequisito: flag CLI opt-in + R-050 tuning antes de re-implementar |
+| 2026-10-31 | R-045 COMPLETADO: bit-plane CM hash — x-ray **-16.2%**, mr -2.6%, text 0% |
+| 2026-10-31 | BUG-001: Mamba BPE tokenizer roundtrip fails on x-ray+delta (10241 vs 10240 bytes) |

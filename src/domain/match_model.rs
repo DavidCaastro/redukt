@@ -164,6 +164,9 @@ fn bigram_hash(a: u32, b: u32) -> usize {
     h = h.wrapping_mul(0x100000001b3);
     h ^= b as u64;
     h = h.wrapping_mul(0x100000001b3);
+    // Bit-plane: MSB of both tokens' low bytes as extra discriminator
+    h ^= (((a & 0x80) as u64) << 24) | (((b & 0x80) as u64) << 32);
+    h = h.wrapping_mul(0x100000001b3);
     h as usize
 }
 

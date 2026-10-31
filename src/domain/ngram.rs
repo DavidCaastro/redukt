@@ -160,6 +160,18 @@ impl TokenNgram {
             hash ^= tok;
             hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
         }
+        // Bit-plane features: MSB and upper nibble of most recent token's low byte.
+        // Separates contexts that share token sequences but differ in bit structure
+        // (sign bits in floats, case in ASCII, type markers in structured formats).
+        let last_idx = if self.history_len <= self.max_order {
+            self.history_len - 1
+        } else {
+            (self.history_len - 1) % self.max_order
+        };
+        let low_byte = self.history[last_idx] & 0xFF;
+        hash ^= ((low_byte >> 7) as u64) << 32; // MSB
+        hash ^= ((low_byte >> 4) as u64) << 40; // upper nibble
+        hash = hash.wrapping_mul(0x100000001b3);
         hash
     }
 }
