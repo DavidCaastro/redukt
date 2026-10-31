@@ -17,7 +17,6 @@ use crate::domain::match_model::MatchModel;
 use crate::domain::run_model::RunModel;
 use crate::domain::word_model::WordModel;
 use crate::domain::mixer::AdaptiveMixer;
-use crate::domain::pred_cache::PredCache;
 use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
 use crate::application::codec::{cdf_from_logits, CRC_SIZE, build_v4_header};
@@ -323,8 +322,6 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let mut mixer = AdaptiveMixer::new(0.01);
     mixer.set_entropy_scaling(true); // R-043
     let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
-    let mut pred_cache = PredCache::new(true); // R-049
-    let mut pc_consec: u16 = 0;
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -382,18 +379,7 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
         segment_m.observe(tok as u32);
-
-        // R-049: PredCache
-        let pc_hash = pred_cache.context_hash(&tokens, t + 1);
-        let pc_hit = pc_consec < pred_cache.max_skips()
-            && pred_cache.lookup(pc_hash, &mut logits);
-        if pc_hit {
-            pc_consec += 1;
-        } else {
-            model.forward_into(tok, &mut state, &mut scratch, &mut logits);
-            pred_cache.insert(pc_hash, &logits);
-            pc_consec = 0;
-        }
+        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {
             let elapsed = t_start.elapsed().as_secs_f64();

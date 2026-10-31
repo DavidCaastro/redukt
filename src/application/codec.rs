@@ -8,7 +8,6 @@ use crate::domain::match_model::MatchModel;
 use crate::domain::run_model::RunModel;
 use crate::domain::word_model::WordModel;
 use crate::domain::mixer::AdaptiveMixer;
-use crate::domain::pred_cache::PredCache;
 use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
 use crate::application::model_loader;
@@ -743,10 +742,6 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         eprintln!("[compress] adaptive-skip: enabled (threshold={}%)", adaptive_skip);
     }
 
-    // R-049: prediction cache — skip backbone for repeated contexts
-    let mut pred_cache = PredCache::new(true);
-    let mut pc_consec: u16 = 0;
-
     eprintln!("[compress] encoding ...");
     let t_start = std::time::Instant::now();
 
@@ -792,29 +787,18 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         word_m.observe(tok as u32);
         segment_m.observe(tok as u32);
 
-        // R-049: PredCache has priority over adaptive skip (R-033).
-        // Check cache for this context; if hit, skip backbone entirely.
-        let pc_hash = pred_cache.context_hash(&tokens, t + 1);
-        let pc_hit = pc_consec < pred_cache.max_skips()
-            && pred_cache.lookup(pc_hash, &mut logits);
+        // Adaptive RWKV skip (R-033): skip forward when model was confident,
+        // but limit consecutive skips to prevent state staleness cascade.
+        let do_skip = adaptive_skip > 0 && t > 0
+            && consec_skips < MAX_CONSEC_SKIP
+            && probs_buf[tok] > skip_thr_f;
 
-        if pc_hit {
-            pc_consec += 1;
+        if do_skip {
+            skip_count += 1;
+            consec_skips += 1;
         } else {
-            // Fallback: adaptive skip (R-033)
-            let do_skip = adaptive_skip > 0 && t > 0
-                && consec_skips < MAX_CONSEC_SKIP
-                && probs_buf[tok] > skip_thr_f;
-
-            if do_skip {
-                skip_count += 1;
-                consec_skips += 1;
-            } else {
-                model.forward_into(tok, &mut state, &mut scratch, &mut logits);
-                pred_cache.insert(pc_hash, &logits);
-                consec_skips = 0;
-            }
-            pc_consec = 0;
+            model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+            consec_skips = 0;
         }
 
         if t > 0 && t % 100 == 0 {
@@ -832,13 +816,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     if adaptive_skip > 0 {
         let skip_pct = 100.0 * skip_count as f64 / tokens.len().max(1) as f64;
-        eprintln!("\n[compress] adaptive-skip: {} / {} ({:.1}%)",
+        eprintln!("\n[compress] skipped {} / {} forward passes ({:.1}%)",
                   skip_count, tokens.len(), skip_pct);
     }
-    // R-049: PredCache stats
-    eprintln!("[compress] pred-cache: {}/{} hits ({:.1}%), {} entries",
-        pred_cache.hits(), pred_cache.hits() + pred_cache.misses(),
-        pred_cache.hit_rate() * 100.0, pred_cache.occupied());
 
     let compressed = enc.finish();
     eprintln!();
@@ -1117,8 +1097,6 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
     let mut mixer = AdaptiveMixer::new(mix_eta);
     mixer.set_entropy_scaling(true); // R-043
     let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
-    let mut pred_cache = PredCache::new(true); // R-049
-    let mut pc_consec: u16 = 0;
     let mut enc = RangeEncoder::new();
     let mut match_buf = vec![0.0f32; v];
     let mut run_buf = vec![0.0f32; v];
@@ -1161,18 +1139,7 @@ fn compress_single_file<M: Backbone, T: BackendTokenizer>(
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
         segment_m.observe(tok as u32);
-
-        // R-049: PredCache
-        let pc_hash = pred_cache.context_hash(&tokens, t + 1);
-        let pc_hit = pc_consec < pred_cache.max_skips()
-            && pred_cache.lookup(pc_hash, logits);
-        if pc_hit {
-            pc_consec += 1;
-        } else {
-            model.forward_into(tok, state, scratch, logits);
-            pred_cache.insert(pc_hash, logits);
-            pc_consec = 0;
-        }
+        model.forward_into(tok, state, scratch, logits);
     }
 
     let compressed = enc.finish();
@@ -1317,8 +1284,6 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     mixer.set_entropy_scaling(hdr.enhanced_cm); // R-043
     let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, hdr.enhanced_cm); // R-044
-    let mut pred_cache = PredCache::new(true); // R-049
-    let mut pc_consec: u16 = 0;
     let mut dec = RangeDecoder::new(stream);
 
     let mut state = model.create_state();
@@ -1401,18 +1366,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             run_m.observe(tok);
             word_m.observe(tok);
             segment_m.observe(tok);
-
-            // R-049: PredCache
-            let pc_hash = pred_cache.context_hash(&decoded_tokens, t + 1);
-            let pc_hit = pc_consec < pred_cache.max_skips()
-                && pred_cache.lookup(pc_hash, &mut logits);
-            if pc_hit {
-                pc_consec += 1;
-            } else {
-                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
-                pred_cache.insert(pc_hash, &logits);
-                pc_consec = 0;
-            }
+            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
 
             if t > 0 && t % 100 == 0 {
                 governor.apply()
@@ -1434,7 +1388,6 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         t = token_count;
     } else {
         // v4 path: byte-count driven, interleaved decode+detokenize
-        let mut v4_tokens: Vec<u32> = Vec::with_capacity(total_bytes / 3 + 16);
         loop {
             let tok = if t == 0 {
                 let cdf = Cdf::uniform(v);
@@ -1478,35 +1431,24 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 break;
             }
 
-            v4_tokens.push(tok);
             ngram.observe(tok);
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
             segment_m.observe(tok);
 
-            // R-049: PredCache has priority over adaptive skip (R-033)
-            let pc_hash = pred_cache.context_hash(&v4_tokens, v4_tokens.len());
-            let pc_hit = pc_consec < pred_cache.max_skips()
-                && pred_cache.lookup(pc_hash, &mut logits);
+            // Adaptive RWKV skip (R-033): identical decision to compress path.
+            // probs_buf[sym] is the combined model's confidence for this token.
+            let do_skip = skip_threshold > 0 && t > 0
+                && consec_skips < MAX_CONSEC_SKIP
+                && probs_buf[tok as usize] > skip_thr_f;
 
-            if pc_hit {
-                pc_consec += 1;
+            if do_skip {
+                skip_count += 1;
+                consec_skips += 1;
             } else {
-                // Fallback: adaptive skip (R-033)
-                let do_skip = skip_threshold > 0 && t > 0
-                    && consec_skips < MAX_CONSEC_SKIP
-                    && probs_buf[tok as usize] > skip_thr_f;
-
-                if do_skip {
-                    skip_count += 1;
-                    consec_skips += 1;
-                } else {
-                    model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
-                    pred_cache.insert(pc_hash, &logits);
-                    consec_skips = 0;
-                }
-                pc_consec = 0;
+                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+                consec_skips = 0;
             }
             t += 1;
 
@@ -1526,13 +1468,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     if skip_threshold > 0 && t > 0 {
         let skip_pct = 100.0 * skip_count as f64 / t.max(1) as f64;
-        eprintln!("[decompress] adaptive-skip: {} / {} ({:.1}%)",
+        eprintln!("[decompress] skipped {} / {} forward passes ({:.1}%)",
                   skip_count, t, skip_pct);
     }
-    // R-049: PredCache stats
-    eprintln!("[decompress] pred-cache: {}/{} hits ({:.1}%), {} entries",
-        pred_cache.hits(), pred_cache.hits() + pred_cache.misses(),
-        pred_cache.hit_rate() * 100.0, pred_cache.occupied());
 
     // Flush streaming writer before verification
     if let Some(ref mut w) = writer {
