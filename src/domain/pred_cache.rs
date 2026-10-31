@@ -1,8 +1,5 @@
 //! Neural Prediction Cache (R-048).
 //!
-//! Not yet wired into codec loops (R-049). Allow dead_code until integration.
-#![allow(dead_code)]
-//!
 //! Hash table mapping context fingerprints (last N tokens) to top-K
 //! backbone logit distributions. Enables skipping the expensive backbone
 //! forward pass (~29ms) for previously-seen contexts.
@@ -85,7 +82,8 @@ impl PredCache {
         }
     }
 
-    /// Create with custom parameters.
+    /// Create with custom parameters (used in tests).
+    #[cfg(test)]
     pub fn with_params(
         enabled: bool, order: usize, min_obs: u16, max_skips: u16,
     ) -> Self {
@@ -100,8 +98,7 @@ impl PredCache {
         }
     }
 
-    /// Whether the cache is enabled.
-    pub fn enabled(&self) -> bool { self.enabled }
+
 
     /// Maximum consecutive skips allowed.
     pub fn max_skips(&self) -> u16 { self.max_skips }

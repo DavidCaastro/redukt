@@ -18,6 +18,7 @@ use crate::domain::match_model::MatchModel;
 use crate::domain::run_model::RunModel;
 use crate::domain::word_model::WordModel;
 use crate::domain::mixer::AdaptiveMixer;
+use crate::domain::pred_cache::PredCache;
 use crate::domain::tensor::softmax_into;
 use crate::domain::error::next_arg;
 use crate::domain::crc32;
@@ -230,6 +231,8 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut mixer = AdaptiveMixer::new(mix_eta);
     mixer.set_entropy_scaling(true); // R-043
     let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
+    let mut pred_cache = PredCache::new(true); // R-049
+    let mut pc_consec: u16 = 0;
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -274,7 +277,18 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
         run_m.observe(tok as u32);
         word_m.observe(tok as u32);
         segment_m.observe(tok as u32);
-        model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+
+        // R-049: PredCache
+        let pc_hash = pred_cache.context_hash(&tokens, t + 1);
+        let pc_hit = pc_consec < pred_cache.max_skips()
+            && pred_cache.lookup(pc_hash, &mut logits);
+        if pc_hit {
+            pc_consec += 1;
+        } else {
+            model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+            pred_cache.insert(pc_hash, &logits);
+            pc_consec = 0;
+        }
     }
 
     let compressed = enc.finish();
@@ -320,6 +334,8 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut mixer = AdaptiveMixer::new(hdr.mix_eta);
     mixer.set_entropy_scaling(hdr.enhanced_cm); // R-043
     let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, hdr.enhanced_cm); // R-044
+    let mut pred_cache = PredCache::new(true); // R-049
+    let mut pc_consec: u16 = 0;
     let mut dec = RangeDecoder::new(stream);
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -370,7 +386,18 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             run_m.observe(tok);
             word_m.observe(tok);
             segment_m.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+
+            // R-049: PredCache
+            let pc_hash = pred_cache.context_hash(&decoded_tokens, t + 1);
+            let pc_hit = pc_consec < pred_cache.max_skips()
+                && pred_cache.lookup(pc_hash, &mut logits);
+            if pc_hit {
+                pc_consec += 1;
+            } else {
+                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+                pred_cache.insert(pc_hash, &logits);
+                pc_consec = 0;
+            }
         }
         for &tok in &decoded_tokens {
             output.extend_from_slice(tokenizer.decode_token(tok));
@@ -378,6 +405,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     } else {
         // v4: byte-count driven, interleaved
         let mut t: usize = 0;
+        let mut v4_tokens: Vec<u32> = Vec::with_capacity(total_bytes / 3 + 16);
         loop {
             let tok = if t == 0 {
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
@@ -407,12 +435,24 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             if output.len() >= total_bytes {
                 break;
             }
+            v4_tokens.push(tok);
             ngram.observe(tok);
             match_m.observe(tok);
             run_m.observe(tok);
             word_m.observe(tok);
             segment_m.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+
+            // R-049: PredCache
+            let pc_hash = pred_cache.context_hash(&v4_tokens, v4_tokens.len());
+            let pc_hit = pc_consec < pred_cache.max_skips()
+                && pred_cache.lookup(pc_hash, &mut logits);
+            if pc_hit {
+                pc_consec += 1;
+            } else {
+                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+                pred_cache.insert(pc_hash, &logits);
+                pc_consec = 0;
+            }
             t += 1;
         }
     }
