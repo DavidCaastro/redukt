@@ -27,8 +27,8 @@ var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 ```
 
-Header size: **13 bytes** (default), +12 (custom HP), +5 (emb-surgery), +1 (shuffle), +1 (delta).
-Max header: 32 bytes (all flags set). CRC-32 trailer: 4 bytes.
+Header size: **13 bytes** (default), +12 (custom HP), +5 (emb-surgery), +1 (shuffle), +1 (delta), +1 (backbone).
+Max header: 33 bytes (all flags set). CRC-32 trailer: 4 bytes.
 
 ### FLAGS byte
 
@@ -39,7 +39,9 @@ Max header: 32 bytes (all flags set). CRC-32 trailer: 4 bytes.
 | 2   | `0x04` | E8E9            | E8/E9 x86 preprocessing was applied (R-027) |
 | 3   | `0x08` | SHUFFLE         | Byte-plane shuffle was applied (R-029, 1B stride follows) |
 | 4   | `0x10` | DELTA           | Delta coding was applied (R-030, 1B stride follows) |
-| 5-7 | `0xE0` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 5   | `0x20` | ADAPTIVE_SKIP   | Adaptive RWKV skip threshold follows (1B, R-033) |
+| 6   | `0x40` | BACKBONE        | Backbone ID follows (1 byte)               |
+| 7   | `0x80` | (reserved)      | Must be 0; decoder rejects unknown flags   |
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -99,6 +101,29 @@ or `--delta off`.
 
 **Decode order**: delta decode → unshuffle → E8E9 decode.
 
+### Backbone ID (BACKBONE flag)
+
+When FLAGS bit 6 (0x40) is set, 1 byte follows identifying the neural backbone
+used during compression:
+
+| Field       | Size | Description                              |
+|-------------|------|------------------------------------------|
+| BACKBONE_ID | 1B   | Neural backbone identifier (see table)   |
+
+| ID     | Backbone | Notes                                     |
+|--------|----------|-------------------------------------------|
+| `0x00` | RWKV-7   | Default backbone, backward compatible     |
+| `0x01` | Mamba    | Mamba SSM backbone (R-035)                |
+| `0x02`–`0xFF` | (reserved) | Decoder rejects unknown IDs      |
+
+When the flag is not set, RWKV-7 is assumed. This maintains full backward
+compatibility with existing v4 files — all files produced before this flag
+was introduced used RWKV-7 exclusively.
+
+**Decompression**: The decoder selects the matching backbone and weights based
+on `BACKBONE_ID`. Using the wrong backbone produces incorrect predictions and
+a CRC-32 mismatch.
+
 ### E8E9 Preprocessing (E8E9 flag, R-027)
 
 When FLAGS bit 2 (0x04) is set, the compressor applied E8/E9 x86 preprocessing
@@ -135,7 +160,7 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13–32       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta) |
+| v4      | `\x04`      | 13–33       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, backbone) |
 
 The decoder accepts v2, v3, and v4 files:
 - **v2**: no CRC check (backward compatible)

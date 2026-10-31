@@ -1,7 +1,57 @@
 //! Backbone abstraction — zero-cost trait interface for neural language models.
 //!
 //! Decouples the compression pipeline from any specific model implementation.
-//! Currently implemented by RWKV-7; designed for future Mamba/Griffin backends.
+//! Implemented by RWKV-7 (byte-level) and Mamba (BPE). Router selects per content type.
+
+use std::fmt;
+
+/// Which backbone to use for compression (R-039).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackboneChoice {
+    Rwkv,
+    Mamba,
+}
+
+impl BackboneChoice {
+    /// Encode as header byte: 0=RWKV, 1=Mamba.
+    pub fn header_byte(self) -> u8 {
+        match self { Self::Rwkv => 0, Self::Mamba => 1 }
+    }
+
+    /// Decode from header byte.
+    pub fn from_header_byte(b: u8) -> Option<Self> {
+        match b { 0 => Some(Self::Rwkv), 1 => Some(Self::Mamba), _ => None }
+    }
+
+    /// Parse CLI string ("rwkv", "mamba", "auto").
+    /// Returns None for "auto" (caller decides).
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "rwkv" => Some(Self::Rwkv),
+            "mamba" => Some(Self::Mamba),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BackboneChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rwkv => write!(f, "rwkv"),
+            Self::Mamba => write!(f, "mamba"),
+        }
+    }
+}
+
+/// Route content type to backbone (R-039).
+/// Text/StructuredText → Mamba (BPE advantage), rest → RWKV (byte-level).
+pub fn route_backbone(ct: &crate::domain::content_detect::ContentType) -> BackboneChoice {
+    use crate::domain::content_detect::ContentType;
+    match ct {
+        ContentType::Text | ContentType::StructuredText => BackboneChoice::Mamba,
+        _ => BackboneChoice::Rwkv,
+    }
+}
 
 /// Recurrent state for a backbone model.
 pub trait BackboneState: Send {

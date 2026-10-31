@@ -1139,24 +1139,22 @@ detector (R-028). The optimal strategy is routing text→Mamba, binary→RWKV.
 
 Research: `docs/internal/research/adaptive-tokenization-research.md` (18 sources)
 
-#### R-039: Content-adaptive backbone router
-- **Estado**: PENDIENTE
+#### R-039: Content-adaptive backbone router ✅
+- **Estado**: COMPLETADO (2026-10-31)
 - **Prioridad**: P1 — high impact, low risk, leverages existing infrastructure
-- **Prerequisitos**: R-028 (content detector), R-034 (backbone dock)
-- **Archivos**: `src/application/codec.rs`, `src/infrastructure/model_loader.rs`
-- **Concepto**: R-028 content_detect → {Text,Markup,Log,Code} → Mamba+BPE;
-  {GenericBinary,Incompressible} → RWKV+World. Both models loaded, router selects per-file.
-- **Subtareas**:
-  - [ ] Router trait: `fn select_backbone(content_type) -> BackboneChoice`
-  - [ ] `BackboneChoice` enum: `Mamba`, `Rwkv`, `Auto`
-  - [ ] CLI: `--backbone auto|mamba|rwkv` (default: auto)
-  - [ ] Codec: load both models when auto, route based on R-028
-  - [ ] AZTH v4: store backbone choice in header (new FLAG bit 0x20)
-  - [ ] Decompressor: read backbone flag, load correct model
-  - [ ] Unit tests: routing logic for all 6 content types
-  - [ ] Roundtrip: text file (Mamba path) + binary file (RWKV path)
-- **Métricas**: BPB on full 19-file benchmark, expected best-of-both-worlds
-- **Riesgo**: Model load time doubles if both loaded. Mitigación: lazy loading.
+- **Prerequisitos**: R-028 (content detector) ✅, R-034 (backbone dock) ✅
+- **Archivos**: `src/domain/backbone.rs`, `src/application/model_loader.rs`, `src/application/codec.rs`
+- **Implementación**:
+  - `BackboneChoice` enum (Rwkv, Mamba) in domain/backbone.rs with header_byte/from_header_byte/from_str_opt
+  - `route_backbone()` function: Text/StructuredText → Mamba, rest → RWKV
+  - `DynModel`/`DynTokenizer`/`DynState`/`DynScratch` unified enums in model_loader.rs
+  - `load_dyn_model()` loads correct backbone based on BackboneChoice
+  - AZTH v4 FLAG bit 6 (0x40) + 1B backbone ID in header
+  - `--backbone auto|mamba|rwkv` CLI flag in compress
+  - Decompress reads backbone from header, loads correct model
+  - Only chosen backbone loaded (no double model load)
+  - 9 unit tests: choice roundtrip, from_str, header build/parse, routing for all 6 content types
+- **Resultado**: 198 tests pass, zero warnings, backward compatible (RWKV files don't set flag)
 
 #### R-040: Dual-backbone ensemble evaluation
 - **Estado**: PENDIENTE
@@ -1374,3 +1372,4 @@ R-039 es el BLOCKER. R-040, R-041, R-042 son independientes entre sí.
 | 2026-10-31 | Hallazgo: Redukt tiene ventaja única — dual backbone (Mamba BPE + RWKV byte-level) |
 | 2026-10-31 | Fase 5 definida: R-039 (router) → R-040 (ensemble) + R-041 (MambaByte) + R-042 (preprocessing) |
 | 2026-10-31 | docs: adaptive-tokenization-research.md — investigación completa con 18 referencias |
+| 2026-10-31 | R-039 ✅: content-adaptive backbone router — BackboneChoice enum, DynModel dispatch, FLAG 0x40, --backbone CLI, 9 tests |

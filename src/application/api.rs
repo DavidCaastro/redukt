@@ -275,7 +275,10 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
 
     let input_crc = crc32::crc32(input);
 
-    let hdr = build_v4_header(total_bytes as u32, bias_lr, ngram_scale, mix_eta, "", false, 0, 0, 0);
+    let hdr = build_v4_header(
+        total_bytes as u32, bias_lr, ngram_scale, mix_eta, "", false, 0, 0, 0,
+        crate::domain::backbone::BackboneChoice::Rwkv,
+    );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
