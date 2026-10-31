@@ -1234,6 +1234,113 @@ vs brotli-11: 8/12 wins, avg margin -50.5%. Best: samba -88%, dickens -77%.
 
 ---
 
+### Fase 6: Information-Theoretic Enhancements (R-043 to R-047)
+
+> Origen: PDF "Matrices y Alternativas Vectoriales" — tokenización como problema de
+> compresión/proyección de señales. Filtrado por viabilidad sin retraining.
+> Research: 3 agentes paralelos (BPP/entropy, symbol-width/folding, codebase analysis).
+> Fuentes: BLT (2412.09871), Kronecker Embeddings (2605.29459), Proxy Compression
+> (2602.04289), Nacrith (2602.19626), ByteFlow (2603.03583), EmByte (EMNLP 2025).
+
+#### R-043: Entropy-Adaptive Mixer Weighting
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — zero retraining, uses existing entropy signal
+- **Origen PDF**: "Segmentación por Entropía Local" — cortes donde predictibilidad colapsa
+- **Concepto**: Modulate CM predictor weights based on backbone's per-byte cross-entropy.
+  At high-entropy positions (backbone uncertain), boost CM predictors (ngram, match, word).
+  At low-entropy positions (backbone confident), trust neural backbone more.
+- **Subtareas**:
+  - [ ] Compute per-token cross-entropy from backbone logits (already available post-softmax)
+  - [ ] Maintain running EMA of cross-entropy (exponential moving average)
+  - [ ] Entropy ratio = current_ce / ema_ce → modulation factor
+  - [ ] Scale CM weights: `w_cm *= clamp(entropy_ratio, 0.5, 2.0)`
+  - [ ] Benchmark: 12-file dual-backbone suite, measure per-file BPB delta
+  - [ ] Unit tests: modulation factor computation, edge cases
+- **Métricas**: BPB improvement on structured files (apache, facturae, xml).
+  Baseline: current mixer (static SGD). Target: 0.2-1% BPB reduction.
+- **Archivos**: `src/domain/mixer.rs`, `src/application/codec.rs`
+- **Risk**: Low — additive change, easily reverted. BPB could worsen on some files.
+
+#### R-044: Segment-Aware CM Predictor (SegmentModel)
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — new CM predictor, zero retraining
+- **Origen PDF**: "Agrupamiento suave" — segments of coherent information
+- **Concepto**: Track entropy-based segment boundaries. Within each segment, maintain
+  a per-segment byte frequency histogram that predicts based on local distribution.
+  Segment transitions occur when backbone entropy spikes above 2x running average.
+- **Subtareas**:
+  - [ ] Implement `SegmentModel` struct (segment detector + per-segment histogram)
+  - [ ] Segment boundary: entropy spike > 2x EMA → new segment
+  - [ ] Per-segment byte counts → Laplace-smoothed probability → log-bias
+  - [ ] Wire as 6th CM component in AdaptiveMixer (w_segment weight)
+  - [ ] Benchmark: 12-file suite, identify files with strongest segment structure
+  - [ ] Unit tests: segment detection, histogram updates, bias computation
+- **Métricas**: BPB on XML/logs (expected best: facturae, apache, ubl).
+  Target: 0.3-1.5% BPB improvement on structured files.
+- **Archivos**: `src/domain/segment_model.rs` (new), `src/domain/mixer.rs`, `src/application/codec.rs`
+
+#### R-045: Bit-Plane CM Hash Features
+- **Estado**: PENDIENTE
+- **Prioridad**: P2 — trivial implementation, uncertain impact
+- **Origen PDF**: "Bit-Plane Projection" — decompose bytes into bits for richer features
+- **Concepto**: Use individual bit positions of current/previous bytes as additional context
+  in CM predictor hash functions. MSB (bit 7) captures case in ASCII, sign in floats.
+  Bit-plane features add structural information without changing the backbone.
+- **Subtareas**:
+  - [ ] Add bit-plane context to ngram hash: XOR MSB/nibble of previous bytes
+  - [ ] Add bit-plane context to match_model hash: MSB as extra discriminator
+  - [ ] Benchmark: focus on binary files where bit-level correlations matter (float, executable)
+  - [ ] Unit tests: hash collision rate analysis
+- **Métricas**: BPB on binary files (x-ray, ooffice, mr). Target: 0-0.5% improvement.
+- **Archivos**: `src/domain/ngram.rs`, `src/domain/match_model.rs`
+
+#### R-046: Arithmetic Coder Precision Audit
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — Nacrith finding: CDF-24 = -28% BPB improvement [SOURCED: 2602.19626]
+- **Origen PDF**: "Codificación Aritmética / ANS" — longitud fraccionaria de bits
+- **Concepto**: Audit Redukt's range coder against Nacrith's CDF-24 findings. Verify:
+  (a) minimum frequency floor per symbol, (b) CDF rounding strategy,
+  (c) whether reduced CDF precision on low-probability tokens wastes bits.
+  Redukt already uses TOP=2^24 — but the floor/rounding details may differ.
+- **Subtareas**:
+  - [ ] Read Nacrith paper (2602.19626) Section 4.3 (CDF precision)
+  - [ ] Audit `src/domain/coder.rs`: CDF construction, min_freq, rounding
+  - [ ] Compare against Nacrith's implementation strategy
+  - [ ] If gap found: implement improved CDF construction
+  - [ ] Benchmark: coder_efficiency metric on all 12 files
+  - [ ] Roundtrip verification
+- **Métricas**: Coder efficiency (currently 84-99%). Target: ≥90% on all files.
+  Key metric: `overhead_bpb` reduction (currently 0.004-0.073 BPB).
+- **Archivos**: `src/domain/coder.rs`, `src/application/codec.rs`
+
+#### R-047: Bit-Plane Projection Research (FUTURE)
+- **Estado**: PENDIENTE — investigación, depende de R-041 (training infrastructure)
+- **Prioridad**: P3 — requires retraining, long-term
+- **Origen PDF**: "Proyección directa sin tabla de embeddings" — `z = W_proj · b + bias`
+- **Concepto**: Replace embedding lookup with learned bit-plane projection. Eliminates
+  vocabulary dependence entirely. Published precedent: Kronecker Embeddings (2605.29459)
+  achieves -2.5% val loss and 91-94% embedding param reduction, but requires training.
+- **Prerequisitos**: R-041 (MambaByte training), GPU access
+- **Decision**: Defer until training infrastructure exists. Embedding is <0.05% of model size.
+
+#### Secuencia Fase 6
+
+```
+R-043 (entropy mixer) ──┐
+R-044 (segment model) ──┼──→ CHECKPOINT: build + test + 12-file benchmark
+R-045 (bit-plane hash) ──┘
+         │
+R-046 (CDF audit) ──────────→ CHECKPOINT: coder efficiency audit
+         │
+R-047 (BPP research) ────────→ FUTURE (depende R-041)
+```
+
+R-043, R-044, R-045 son independientes (parallelizable).
+R-046 es independiente. R-047 es futuro.
+**Métrica de éxito Fase 6**: BPB improvement ≥0.5% avg on winning files, coder_eff ≥90% all files.
+
+---
+
 ## Registro de cambios
 
 | Fecha | Cambio |
