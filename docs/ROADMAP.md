@@ -1181,39 +1181,56 @@ Research: `docs/internal/research/adaptive-tokenization-research.md` (18 sources
 - **Evidence**: `data/benchmark/results/dual-backbone-benchmark.md`, `.csv`
 
 #### R-041: Byte-level Mamba training feasibility (INVESTIGACIÓN)
-- **Estado**: PENDIENTE — investigación, no implementación inmediata
+- **Estado**: COMPLETADO (investigación) — CONDITIONAL GO (2026-10-31)
 - **Prioridad**: P3 — future work, requires training infrastructure
-- **Concepto**: Train MambaByte-small (50-130M params) on byte sequences. Would eliminate
-  tokenization problem entirely. MambaByte-353M achieves 0.93 BPB on PG19 [SOURCED].
+- **Concepto**: Train MambaByte-small (50-130M params) on byte sequences (vocab=256).
 - **Subtareas**:
-  - [ ] Estimate training cost (GPU hours, data requirements)
-  - [ ] Define minimal training corpus (enwik8 + binary samples)
-  - [ ] Evaluate if Redukt's zero-dep constraint allows training loop in Rust
-  - [ ] Decision: GO/NO-GO for implementation
+  - [x] Training cost estimate: 200-500 A100-hours ($300-750) for 130M [SOURCED]
+  - [x] Corpus requirements: 10-30 GB mixed text+binary [SOURCED]
+  - [x] Pretrained models: NONE at target size/vocab; 353M text-only available [SOURCED]
+  - [x] Zero-dep constraint: training in PyTorch (external, one-time); inference in Rust (existing)
+  - [x] Decision: **CONDITIONAL GO** — validate with Phase 0 before committing
+- **Resultado (investigación)**:
+  - MambaByte-353M: 0.93 BPB PG19, ~1.05-1.15 enwik8 [SOURCED: Wang et al. 2024]
+  - MambaByte-130M (estimated): ~1.20-1.40 BPB enwik8 with CM [ESTIMATE]
+  - Throughput projection: 200-500 tok/s (2-5x over RWKV-7) [ESTIMATE]
+  - No pretrained small byte-level Mamba exists — training from scratch required
+  - Training is PyTorch/CUDA (external); zero-dep Rust constraint NOT violated
+  - Kill criterion: Phase 1 BPB > 1.5 on enwik8 10KB with CM → abort
+- **Phased plan**: Phase 0 (validate 353M, $0) → Phase 1 (50M, $200) → Phase 2 (130M, $500) → Phase 3 (integrate)
+- **References**: MambaByte (arXiv:2401.13660), StateSMix (arXiv:2605.02904), BLT (arXiv:2412.09871)
 
 #### R-042: Tokenizer-aware preprocessing for binary
-- **Estado**: DEPRIORITIZED (R-040 results make this less critical)
-- **Prioridad**: P3 — reduced priority, Mamba already wins 10/12 without preprocessing
-- **Concepto**: Before BPE tokenization, preprocess binary data to make it more BPE-friendly.
-- **R-040 finding**: Mamba already beats RWKV on most binary files (samba -79%, x-ray -16%,
-  sao -6%). Only GenericBinary (ooffice +1%, mr +4.6%) shows RWKV advantage, with tiny margins.
-  Preprocessing would help the 2 GenericBinary files but ROI is low.
-- **Decision**: DEFER. Routing to RWKV for GenericBinary is simpler and sufficient.
+- **Estado**: COMPLETADO (investigación) — NO-GO (2026-10-31)
+- **Prioridad**: P3 (was P2, deprioritized by R-040 results)
+- **Concepto**: Preprocess binary data to make it more BPE-friendly before Mamba tokenization.
+- **Subtareas**:
+  - [x] Evaluate byte-frequency remapping: NO-GO (semantic mismatch worsens predictions)
+  - [x] Evaluate structure-aware splitting: NO-GO for Mamba (already works for RWKV via R-031)
+  - [x] Evaluate alphabet reduction: NO-GO (same fundamental problem as remapping)
+  - [x] Evaluate E8E9+shuffle+delta before BPE: MARGINAL (5-10% max, doesn't close 7-41% gap)
+  - [x] Literature review: no known technique makes pretrained BPE model work on binary [SOURCED: 5 papers]
+- **R-040 finding**: Mamba already beats RWKV on most binary files. Routing is sufficient.
+- **R-042 finding**: BPE is fundamentally incompatible with binary — tokens carry wrong semantic
+  embeddings. The 130M params encode text-domain knowledge that actively harms binary predictions.
+  Even best-case preprocessing (~10% improvement) doesn't close the gap on files where RWKV wins.
+- **Decision**: NO-GO. Backbone routing (R-039/R-040) is the correct solution.
+  Future improvement requires byte-level model (R-041), not preprocessing.
 
 #### Secuencia Fase 5
 
 ```
-R-039 (router) ──→ R-040 (ensemble eval) ──→ decisión ensemble
+R-039 (router) ✅ ──→ R-040 (dual eval) ✅ ──→ NO-GO ensemble, routing optimizado
      │
-     ├──→ R-042 (binary preprocessing eval) ──→ decisión preprocessing
+     ├──→ R-042 (binary preproc) ✅ ──→ NO-GO, routing suficiente
      │
-     └──→ R-041 (MambaByte feasibility) ──→ decisión training
-
-R-039 es el BLOCKER. R-040, R-041, R-042 son independientes entre sí.
+     └──→ R-041 (MambaByte feasibility) ✅ ──→ CONDITIONAL GO, $300-750 training
 ```
 
-**Dependencias**: R-039 requiere R-028 ✅ + R-034 ✅. No hay bloqueantes.
-**Métrica de éxito Fase 5**: BPB ≤ min(Mamba, RWKV) en ≥17/19 archivos.
+**Estado Fase 5**: R-039 ✅ R-040 ✅ R-041 ✅(research) R-042 ✅(research)
+**Resultado**: Dual-backbone routing es la solución correcta. Mamba wins 10/12.
+vs brotli-11: 8/12 wins, avg margin -50.5%. Best: samba -88%, dickens -77%.
+**Siguiente paso**: R-041 Phase 0 (validate MambaByte-353M) cuando haya acceso GPU.
 
 ---
 
@@ -1388,3 +1405,9 @@ R-039 es el BLOCKER. R-040, R-041, R-042 son independientes entre sí.
 | 2026-10-31 | Metodología delegación agéntica documentada: docs/internal/agent-delegation-methodology.md |
 | 2026-10-31 | docs: adaptive-tokenization-research.md — investigación completa con 18 referencias |
 | 2026-10-31 | R-039 ✅: content-adaptive backbone router — BackboneChoice enum, DynModel dispatch, FLAG 0x40, --backbone CLI, 9 tests |
+| 2026-10-31 | R-041 COMPLETADO (investigación): CONDITIONAL GO — $300-750 training, 10-30GB corpus, no pretrained model [SOURCED] |
+| 2026-10-31 | R-041: MambaByte-130M estimado ~1.20-1.40 BPB enwik8 con CM, 200-500 tok/s [ESTIMATE] |
+| 2026-10-31 | R-041: plan faseado — Phase 0 (validate 353M) → Phase 1 (50M) → Phase 2 (130M) → Phase 3 (integrate) |
+| 2026-10-31 | R-042 COMPLETADO (investigación): NO-GO — BPE fundamentalmente incompatible con binarios [SOURCED: 5 papers] |
+| 2026-10-31 | R-042: remapping NO-GO, splitting NO-GO, E8E9+shuffle MARGINAL (5-10%), routing es la solución correcta |
+| 2026-10-31 | **FASE 5 COMPLETADA**: R-039 ✅ R-040 ✅ R-041 ✅(research) R-042 ✅(research) |
