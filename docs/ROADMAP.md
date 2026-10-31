@@ -1350,6 +1350,111 @@ R-045: deferred (P2, uncertain impact). R-047: future.
 
 ---
 
+### Fase 7: Backbone Offloading — PredCache (R-048 to R-050)
+
+> Origen: Insight del usuario — "almacenar las recurrencias en tabla hash,
+> trasladando conocimiento del backbone a los CM, iteración tras iteración."
+> Research: `docs/internal/research/prediction-cache-research.md`
+>
+> **Problema**: El backbone (Mamba-130M) cuesta ~29ms/token = 99.5% del tiempo.
+> No existe optimización de software que cierre la brecha 500,000x vs brotli.
+>
+> **Solución**: Cache de predicciones neurales indexado por contexto. Cuando
+> un contexto (últimos N tokens) se repite, reusar la distribución del backbone
+> en vez de ejecutar el forward pass. El cache absorbe progresivamente el
+> conocimiento del backbone, haciendo el sistema más rápido con el tiempo.
+>
+> **Diferencia vs R-033 (adaptive skip)**: R-033 reusa logits del token
+> anterior cuando la confianza es alta. PredCache almacena y recupera
+> distribuciones para CUALQUIER contexto previamente visto. Es estrictamente
+> más poderoso y subsume el adaptive skip.
+
+#### R-048: PredCache — Neural Prediction Cache (data structure)
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — addresses fundamental throughput bottleneck
+- **Concepto**: Hash table mapping context fingerprints to top-K backbone
+  logit distributions. Enables skipping the 29ms backbone forward pass
+  for previously-seen contexts.
+- **Subtareas**:
+  - [ ] `src/domain/pred_cache.rs` — new module
+  - [ ] `CacheEntry`: top-32 tokens (u16) + logits (f32) + base_logit + hash + observations
+  - [ ] `context_hash()`: FNV-1a over last N tokens (configurable order, default 8)
+  - [ ] `lookup(hash) -> Option<&CacheEntry>` with full-hash collision check
+  - [ ] `insert(hash, logits)` — extract top-K, compute base_logit, store
+  - [ ] `reconstruct_logits(entry, out)` — fill vocab-size array from top-K + base
+  - [ ] Table: 64K entries (open addressing), ~13MB max. LRU/count-based eviction.
+  - [ ] Unit tests: insert/lookup, collision handling, reconstruct accuracy, eviction
+- **Métricas**: Lookup <1ns (FNV hash). Memory <15MB. reconstruct_logits <10μs.
+- **Archivos**: `src/domain/pred_cache.rs` (new), `src/domain/mod.rs`
+
+#### R-049: PredCache Integration — Backbone Skip Protocol
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — requires R-048
+- **Concepto**: Wire PredCache into compress/decompress loops. Both sides
+  build identical caches from the same token stream, ensuring deterministic
+  skip decisions without additional header data.
+- **Subtareas**:
+  - [ ] Integrate in compress loop (codec.rs): check cache before `forward_into()`
+  - [ ] Integrate in decompress loop (codec.rs v4): identical logic
+  - [ ] Integrate in api.rs (compress_bytes, decompress)
+  - [ ] Integrate in benchmark.rs
+  - [ ] Decision protocol:
+    ```
+    use_cache = cache_hit && entry.observations >= MIN_OBS
+                && consecutive_skips < MAX_SKIPS
+    ```
+  - [ ] On cache hit: reconstruct logits, skip backbone, increment consecutive_skips
+  - [ ] On miss: run backbone, insert into cache, reset consecutive_skips
+  - [ ] CM always runs (cheap, corrects cached logits)
+  - [ ] Coexistence with R-033 adaptive skip (PredCache has priority)
+  - [ ] Roundtrip verification: enwik8, facturae, apache (10KB + 50KB)
+  - [ ] Constants: ORDER=8, MIN_OBS=2, MAX_SKIPS=8 (hardcoded, no header flag needed)
+- **Determinism proof**: Both sides process same tokens in order → same hashes →
+  same cache state → same skip decisions. Proven in research doc Section 6.
+- **Risk**: State divergence causes 0.5-3% BPB overhead (bounded by MAX_SKIPS).
+  No risk to correctness (roundtrip always passes — just compression quality).
+- **Archivos**: `src/application/codec.rs`, `src/application/api.rs`,
+  `src/application/benchmark.rs`
+
+#### R-050: PredCache Evaluation & Tuning
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — requires R-049
+- **Concepto**: Comprehensive benchmark of PredCache speedup vs BPB tradeoff.
+  Tune parameters per content type. Test scale behavior.
+- **Subtareas**:
+  - [ ] A/B benchmark: 12-file suite, PredCache ON vs OFF
+  - [ ] Per-file hit rate measurement and reporting
+  - [ ] Speedup measurement: tok/s with PredCache vs without
+  - [ ] BPB delta: quantify compression quality cost per file
+  - [ ] Scale test: 10KB → 50KB → 100KB → 500KB (hit rate should improve)
+  - [ ] Batch mode: cache persistence across files (same domain)
+  - [ ] Batch test: 10 facturas XML — measure progressive cache warming
+  - [ ] Memory profiling: actual cache usage vs theoretical max
+  - [ ] Tune: ORDER (4, 8, 16), MIN_OBS (1, 2, 4), MAX_SKIPS (4, 8, 16)
+  - [ ] Content-adaptive params via content_detect.rs integration
+  - [ ] Document optimal params per content type
+- **Métricas target**:
+  - Structured data (logs, XML): ≥2x speedup, ≤2% BPB overhead
+  - Natural text: ≥1.2x speedup, ≤3% BPB overhead
+  - Binary: minimal impact (≤5% overhead, ≤1.1x speedup)
+- **Archivos**: `data/benchmark/results/predcache-benchmark.csv` (new),
+  `docs/internal/research/prediction-cache-research.md` (update with results)
+
+#### Secuencia Fase 7
+
+```
+R-048 (data structure) ──→ R-049 (integration) ──→ CHECKPOINT: roundtrip + A/B
+                                                         │
+                                                    R-050 (eval + tuning) ──→ CHECKPOINT: full benchmark
+```
+
+Estrictamente secuencial: R-049 depende de R-048, R-050 depende de R-049.
+
+**Métrica de éxito Fase 7**: ≥2x speedup en datos estructurados (logs, XML, facturas)
+con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo dominio.
+
+---
+
 ## Registro de cambios
 
 | Fecha | Cambio |
@@ -1535,3 +1640,7 @@ R-045: deferred (P2, uncertain impact). R-047: future.
 | 2026-10-31 | R-046 COMPLETADO: CDF audit — Redukt already CDF-24 (matches Nacrith). Round-to-nearest applied. BPB unchanged [VERIFIED] |
 | 2026-10-31 | R-046: Nacrith -28% was CDF-16→CDF-24 transition, NOT applicable to Redukt (already CDF-24) |
 | 2026-10-31 | R-045 DIFERIDO: P2, uncertain impact on BPB. R-047 FUTURO: depende R-041 (training) |
+| 2026-10-31 | Fase 7 definida: R-048 (PredCache data structure) → R-049 (integration) → R-050 (eval & tuning) |
+| 2026-10-31 | Insight: backbone es 99.5% del costo. Cache de predicciones por contexto = throughput scaling |
+| 2026-10-31 | Research: prediction-cache-research.md — diseño completo, prueba de determinismo, estimaciones |
+| 2026-10-31 | Estimación: 2-5x speedup en datos estructurados (logs, XML), 1.2x en texto natural |
