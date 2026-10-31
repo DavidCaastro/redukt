@@ -1126,6 +1126,91 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 
 ---
 
+### Fase 5: Adaptive Tokenization & Backbone Routing (R-039 to R-042)
+
+**Diagnóstico**: BPE tokenization gives Mamba massive advantage on text (29-81% better than
+RWKV ce_bpb) but collapses on binary (7-41% worse). Research confirms: no system has solved
+"one tokenizer for all data with a pretrained model." Changing tokenization on a pretrained
+model creates severe distribution shift (EMNLP 2024). Architecture-level solutions (MambaByte,
+Bolmo) require training. The practical approach: content-adaptive backbone routing.
+
+**Key insight**: Redukt already has dual backbones (Mamba BPE + RWKV byte-level) and a content
+detector (R-028). The optimal strategy is routing text→Mamba, binary→RWKV.
+
+Research: `docs/internal/research/adaptive-tokenization-research.md` (18 sources)
+
+#### R-039: Content-adaptive backbone router
+- **Estado**: PENDIENTE
+- **Prioridad**: P1 — high impact, low risk, leverages existing infrastructure
+- **Prerequisitos**: R-028 (content detector), R-034 (backbone dock)
+- **Archivos**: `src/application/codec.rs`, `src/infrastructure/model_loader.rs`
+- **Concepto**: R-028 content_detect → {Text,Markup,Log,Code} → Mamba+BPE;
+  {GenericBinary,Incompressible} → RWKV+World. Both models loaded, router selects per-file.
+- **Subtareas**:
+  - [ ] Router trait: `fn select_backbone(content_type) -> BackboneChoice`
+  - [ ] `BackboneChoice` enum: `Mamba`, `Rwkv`, `Auto`
+  - [ ] CLI: `--backbone auto|mamba|rwkv` (default: auto)
+  - [ ] Codec: load both models when auto, route based on R-028
+  - [ ] AZTH v4: store backbone choice in header (new FLAG bit 0x20)
+  - [ ] Decompressor: read backbone flag, load correct model
+  - [ ] Unit tests: routing logic for all 6 content types
+  - [ ] Roundtrip: text file (Mamba path) + binary file (RWKV path)
+- **Métricas**: BPB on full 19-file benchmark, expected best-of-both-worlds
+- **Riesgo**: Model load time doubles if both loaded. Mitigación: lazy loading.
+
+#### R-040: Dual-backbone ensemble evaluation
+- **Estado**: PENDIENTE
+- **Prioridad**: P2 — research evaluation, informs future work
+- **Prerequisitos**: R-039 (router)
+- **Concepto**: On files where both backbones are close (facturae, ubl, nci, mozilla, reymont),
+  run BOTH and mix logits: `p = α·p_mamba + (1-α)·p_rwkv`. α selected by content type or
+  learned online per-file.
+- **Subtareas**:
+  - [ ] Evaluate ce_bpb with simple α∈{0.0, 0.25, 0.5, 0.75, 1.0} on 5 "close" files
+  - [ ] Determine if ensemble beats best-single on any file
+  - [ ] If yes: implement adaptive α in mixer; if no: close as informational
+- **Métricas**: ce_bpb per α per file. Decision: GO/NO-GO for ensemble.
+
+#### R-041: Byte-level Mamba training feasibility (INVESTIGACIÓN)
+- **Estado**: PENDIENTE — investigación, no implementación inmediata
+- **Prioridad**: P3 — future work, requires training infrastructure
+- **Concepto**: Train MambaByte-small (50-130M params) on byte sequences. Would eliminate
+  tokenization problem entirely. MambaByte-353M achieves 0.93 BPB on PG19 [SOURCED].
+- **Subtareas**:
+  - [ ] Estimate training cost (GPU hours, data requirements)
+  - [ ] Define minimal training corpus (enwik8 + binary samples)
+  - [ ] Evaluate if Redukt's zero-dep constraint allows training loop in Rust
+  - [ ] Decision: GO/NO-GO for implementation
+
+#### R-042: Tokenizer-aware preprocessing for binary
+- **Estado**: PENDIENTE
+- **Prioridad**: P2 — improves Mamba on binary without model changes
+- **Concepto**: Before BPE tokenization, preprocess binary data to make it more BPE-friendly.
+  Binary BPE research (Bommarito 2024) shows 3.37x compression with domain-trained BPE.
+  Alternatively: alphabet remapping, byte-frequency sorting, structure-aware splitting.
+- **Subtareas**:
+  - [ ] Measure Mamba ce_bpb on binary files with existing preprocessing (E8E9, shuffle, delta)
+  - [ ] Evaluate byte-frequency remapping: sort alphabet by frequency, remap bytes
+  - [ ] Evaluate if preprocessing alone closes the gap with RWKV on binary
+  - [ ] Decision: worth implementing or R-039 routing is sufficient
+
+#### Secuencia Fase 5
+
+```
+R-039 (router) ──→ R-040 (ensemble eval) ──→ decisión ensemble
+     │
+     ├──→ R-042 (binary preprocessing eval) ──→ decisión preprocessing
+     │
+     └──→ R-041 (MambaByte feasibility) ──→ decisión training
+
+R-039 es el BLOCKER. R-040, R-041, R-042 son independientes entre sí.
+```
+
+**Dependencias**: R-039 requiere R-028 ✅ + R-034 ✅. No hay bloqueantes.
+**Métrica de éxito Fase 5**: BPB ≤ min(Mamba, RWKV) en ≥17/19 archivos.
+
+---
+
 ## Registro de cambios
 
 | Fecha | Cambio |
@@ -1284,3 +1369,8 @@ Esto haría viable comprimir 1 TB en ~6 días con 50 cores — aceptable para co
 | 2026-10-30 | R-038: gap vs RWKV-7 halved: 6x (scalar) → 2.8x (SIMD). BPB identical (0.9074) |
 | 2026-10-30 | R-038 FULL BENCHMARK: 19 archivos, 33.6-34.7 tok/s (mean 34.3), Mamba wins 10/19 vs RWKV ce_bpb |
 | 2026-10-30 | R-038: samba -80.6%, webster -68.8%, dickens -65.0%. Pierde binarios: ooffice +41.3% |
+| 2026-10-31 | Investigación: adaptive tokenization — 3 agentes paralelos, 18 fuentes, 5 enfoques evaluados |
+| 2026-10-31 | Hallazgo: nadie resuelve "un tokenizador para todo" con modelo pretrained [SOURCED, 18 refs] |
+| 2026-10-31 | Hallazgo: Redukt tiene ventaja única — dual backbone (Mamba BPE + RWKV byte-level) |
+| 2026-10-31 | Fase 5 definida: R-039 (router) → R-040 (ensemble) + R-041 (MambaByte) + R-042 (preprocessing) |
+| 2026-10-31 | docs: adaptive-tokenization-research.md — investigación completa con 18 referencias |
