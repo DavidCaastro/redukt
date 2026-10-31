@@ -1389,31 +1389,26 @@ R-045: deferred (P2, uncertain impact). R-047: future.
 - **Archivos**: `src/domain/pred_cache.rs` (new), `src/domain/mod.rs`
 
 #### R-049: PredCache Integration — Backbone Skip Protocol
-- **Estado**: PENDIENTE
+- **Estado**: ❌ REVERTIDO (2026-10-31, e01411c)
 - **Prioridad**: P1 — requires R-048
 - **Concepto**: Wire PredCache into compress/decompress loops. Both sides
   build identical caches from the same token stream, ensuring deterministic
   skip decisions without additional header data.
-- **Subtareas**:
-  - [ ] Integrate in compress loop (codec.rs): check cache before `forward_into()`
-  - [ ] Integrate in decompress loop (codec.rs v4): identical logic
-  - [ ] Integrate in api.rs (compress_bytes, decompress)
-  - [ ] Integrate in benchmark.rs
-  - [ ] Decision protocol:
-    ```
-    use_cache = cache_hit && entry.observations >= MIN_OBS
-                && consecutive_skips < MAX_SKIPS
-    ```
-  - [ ] On cache hit: reconstruct logits, skip backbone, increment consecutive_skips
-  - [ ] On miss: run backbone, insert into cache, reset consecutive_skips
-  - [ ] CM always runs (cheap, corrects cached logits)
-  - [ ] Coexistence with R-033 adaptive skip (PredCache has priority)
-  - [ ] Roundtrip verification: enwik8, facturae, apache (10KB + 50KB)
-  - [ ] Constants: ORDER=8, MIN_OBS=2, MAX_SKIPS=8 (hardcoded, no header flag needed)
-- **Determinism proof**: Both sides process same tokens in order → same hashes →
-  same cache state → same skip decisions. Proven in research doc Section 6.
-- **Risk**: State divergence causes 0.5-3% BPB overhead (bounded by MAX_SKIPS).
-  No risk to correctness (roundtrip always passes — just compression quality).
+- **Implementación (revertida)**:
+  - Integrado en 7 loops: compress main, compress_single_file, v2/v3 decompress,
+    v4 decompress, api compress, api decompress, benchmark
+  - Determinismo CONFIRMADO: compress 598/3574 = decompress 598/3573 hits
+  - Roundtrip PASS (byte-identical, CRC-32 verified)
+- **Razón de reversión**:
+  - BPB: 0.9633 → 1.1305 (**+17.4%**) — inaceptable, estimación era 0-3% [MEASURED]
+  - Throughput: +15.9% (32.8→38.0 tok/s) — insuficiente para justificar la regresión
+  - Hardcoded siempre activo, sin flag CLI para desactivar
+  - State divergence con MAX_SKIPS=8 acumula error mucho más rápido de lo previsto
+  - **Decisión**: revertir hasta que R-050 (tuning) determine parámetros viables
+- **Prerequisitos para re-implementar**:
+  - [ ] Flag CLI `--pred-cache` (opt-in, no activo por defecto)
+  - [ ] R-050 tuning: encontrar MAX_SKIPS, MIN_OBS, ORDER óptimos por content type
+  - [ ] Objetivo: ≤3% BPB overhead con ≥2x speedup en datos estructurados
 - **Archivos**: `src/application/codec.rs`, `src/application/api.rs`,
   `src/application/benchmark.rs`
 
@@ -1646,3 +1641,6 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | Research: prediction-cache-research.md — diseño completo, prueba de determinismo, estimaciones |
 | 2026-10-31 | Estimación: 2-5x speedup en datos estructurados (logs, XML), 1.2x en texto natural |
 | 2026-10-31 | R-048 COMPLETADO: PredCache data structure — 64K table, top-32 logits, FNV-1a hash, 16 tests |
+| 2026-10-31 | R-049 IMPLEMENTADO Y REVERTIDO: +17.4% BPB inaceptable, +15.9% tok/s insuficiente |
+| 2026-10-31 | R-049 lección: state divergence con MAX_SKIPS=8 acumula error mucho más rápido que estimado |
+| 2026-10-31 | R-049 prerequisito: flag CLI opt-in + R-050 tuning antes de re-implementar |
