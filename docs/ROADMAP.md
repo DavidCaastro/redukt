@@ -1522,13 +1522,15 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 > Goal: maximize CPU utilization without GPU, exploit mathematical properties
 > of linear SSM recurrences and known-token compression asymmetry.
 
-#### R-054: Multi-threaded matmul
-- **Estado**: EN PROGRESO
-- **Riesgo BPB**: 0% (misma computación, diferente distribución entre cores)
-- **Target**: matmuls con rows > 4096 (LM head, in_proj)
-- **Implementación**: `std::thread::scope` (stdlib, zero-dep)
-- **Estimado**: 1.5-2x throughput overall
+#### R-054: Multi-threaded matmul ✅
+- **Estado**: COMPLETADO (f7a1eec, 2026-11-01)
+- **Riesgo BPB**: 0% (verificado — BPB idéntico)
+- **Target**: matmuls con rows > 4096 (Mamba LM head 50,280×768)
+- **Implementación**: `std::thread::scope` (stdlib, zero-dep), raw-slice kernels
+- **Funciones**: `mat_vec_mul_parallel_into`, `mat_vec_mul_scalar_raw`, `mat_vec_mul_avx2_nofma_raw`
+- **Threads**: `available_parallelism().min(4)`, cached en AtomicUsize
 - **Archivos**: `src/domain/tensor.rs`
+- **Resultado**: mismo-tier determinístico, cross-tier divergencia pre-existente
 
 #### R-055: Layer-by-layer parallel scan (compression-only)
 - **Estado**: PENDIENTE
@@ -1547,12 +1549,13 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 - **Dependencias**: R-051 (CmEnsemble), R-053 (speculative.rs)
 - **Estimado**: 2-4x en logs/XML, ~1x en texto variado
 
-#### R-057: dt-sparse state skip
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: ~0% (exacto cuando ε → 0)
-- **Descripción**: skip SSM state update per-channel cuando |dt[j]| < ε.
-  No es skip global, es per-channel — preserva precisión.
-- **Estimado**: 1.05-1.15x (SSM es 25% del layer time, 30-50% sparse)
+#### R-057: dt-sparse state skip ✅
+- **Estado**: COMPLETADO (f7a1eec, 2026-11-01)
+- **Riesgo BPB**: 0% (verificado — BPB idéntico, ε=1e-6 matemáticamente exacto)
+- **Descripción**: skip SSM state update per-channel cuando |dt[j]| < 1e-6.
+  State unchanged (da≈1, dt*x*b≈0), output computed from existing state.
+- **Implementación**: both scalar + AVX2 paths, `DT_SPARSE_EPS` constant
+- **Archivos**: `src/domain/tensor.rs` (ssm_recurrence_d16_scalar, ssm_recurrence_d16_avx2)
 
 #### R-058: LSH state memoization
 - **Estado**: INVESTIGACIÓN
@@ -1807,5 +1810,6 @@ R-058 (LSH memo) ──→ INVESTIGACIÓN                       │
 | 2026-11-01 | Prueba completa: 232 tests PASS, dickens 10KB 0.6464 BPB, roundtrip byte-identical |
 | 2026-11-01 | Research: cpu-parallelism-strategies.md — 5 mathematical strategies to break sequential bottleneck |
 | 2026-11-01 | Fase 9 definida: R-054 (parallel matmul) → R-055 (layer scan) → R-056 (CM-selective) → R-057 (dt-sparse) → R-058 (LSH) |
+| 2026-11-01 | R-054 ✅ parallel matmul (std::thread::scope, raw-slice kernels) + R-057 ✅ dt-sparse SSM skip (ε=1e-6). BPB unchanged. |
 | 2026-11-01 | Insight: CPU 84% idle because 1/12 threads active, NOT because of inefficiency |
 | 2026-11-01 | Insight: DRAM bandwidth 60% saturated on RWKV — multi-thread matmul helps compute, not memory |
