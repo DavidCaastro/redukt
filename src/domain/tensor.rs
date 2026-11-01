@@ -1187,6 +1187,10 @@ pub fn ssm_recurrence_d16(
     ssm_recurrence_d16_scalar(y_out, ss, dt, conv_out, a_log, b, c, d_vec, d_inner);
 }
 
+/// dt-sparse threshold (R-057): skip SSM state update when |dt| < ε.
+/// State is unchanged (da≈1, dt*x*b≈0), saving exp() calls.
+const DT_SPARSE_EPS: f32 = 1e-6;
+
 fn ssm_recurrence_d16_scalar(
     y_out: &mut [f32], ss: &mut [f32], dt: &[f32], conv_out: &[f32],
     a_log: &[f32], b: &[f32], c: &[f32], d_vec: &[f32], d_inner: usize,
@@ -1194,15 +1198,26 @@ fn ssm_recurrence_d16_scalar(
     for j in 0..d_inner {
         let dt_j = dt[j];
         let x_j = conv_out[j];
-        let mut y_val = 0.0f32;
-        for n in 0..16 {
-            let a_val = -portable_expf(a_log[j * 16 + n]);
-            let da = portable_expf(dt_j * a_val);
-            let idx = j * 16 + n;
-            ss[idx] = da * ss[idx] + dt_j * x_j * b[n];
-            y_val += ss[idx] * c[n];
+
+        if dt_j.abs() < DT_SPARSE_EPS {
+            // R-057: dt ≈ 0 → state unchanged, just compute output from existing state
+            let base = j * 16;
+            let mut y_val = 0.0f32;
+            for n in 0..16 {
+                y_val += ss[base + n] * c[n];
+            }
+            y_out[j] = y_val + d_vec[j] * x_j;
+        } else {
+            let mut y_val = 0.0f32;
+            for n in 0..16 {
+                let a_val = -portable_expf(a_log[j * 16 + n]);
+                let da = portable_expf(dt_j * a_val);
+                let idx = j * 16 + n;
+                ss[idx] = da * ss[idx] + dt_j * x_j * b[n];
+                y_val += ss[idx] * c[n];
+            }
+            y_out[j] = y_val + d_vec[j] * x_j;
         }
-        y_out[j] = y_val + d_vec[j] * x_j;
     }
 }
 
@@ -1222,6 +1237,18 @@ unsafe fn ssm_recurrence_d16_avx2(
 
     for j in 0..d_inner {
         let base = j * 16;
+
+        // R-057: dt-sparse skip — avoid 4 exp() calls when dt ≈ 0
+        if dt[j].abs() < DT_SPARSE_EPS {
+            let ss_lo = _mm256_loadu_ps(ss_ptr.add(base));
+            let ss_hi = _mm256_loadu_ps(ss_ptr.add(base + 8));
+            let sum = _mm256_add_ps(
+                _mm256_mul_ps(ss_lo, c_lo), _mm256_mul_ps(ss_hi, c_hi),
+            );
+            y_out[j] = hsum_avx2(sum) + d_vec[j] * conv_out[j];
+            continue;
+        }
+
         let dt_v = _mm256_set1_ps(dt[j]);
         let dtx_v = _mm256_set1_ps(dt[j] * conv_out[j]);
 
@@ -1445,13 +1472,41 @@ unsafe fn mat_vec_mul_avx2_fma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) 
     }
 }
 
+/// Minimum rows to activate multi-threaded dispatch.
+/// Below this threshold, thread spawn overhead dominates.
+const PARALLEL_MATMUL_MIN_ROWS: usize = 4096;
+
+/// Number of threads for parallel matmul (R-054).
+/// Cached at first call. Returns 1 if parallelism is unavailable.
+fn parallel_matmul_threads() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CACHED: AtomicUsize = AtomicUsize::new(0);
+    let v = CACHED.load(Ordering::Relaxed);
+    if v != 0 { return v; }
+    let n = std::thread::available_parallelism()
+        .map(|p| p.get().min(4)) // Cap at 4 — diminishing returns beyond
+        .unwrap_or(1);
+    CACHED.store(n, Ordering::Relaxed);
+    n
+}
+
 /// f32 mat-vec into pre-allocated output: out = mat @ vec.
 /// Dispatches: AVX2 (no FMA) > scalar.
+/// For large matrices (rows > 4096), splits rows across threads (R-054).
 /// AVX2 uses vmulps+vaddps (no fmadd) — per-element rounding matches scalar,
 /// but accumulation order differs (8-lane parallel vs sequential).
 /// Deterministic on same SIMD tier; cross-tier may differ slightly.
 /// Set REDUKT_NO_SIMD=1 to force scalar (cross-path roundtrip testing).
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    let rows = mat.shape[0];
+    let num_threads = parallel_matmul_threads();
+
+    // Parallel dispatch for large matmuls (R-054)
+    if rows >= PARALLEL_MATMUL_MIN_ROWS && num_threads > 1 {
+        mat_vec_mul_parallel_into(out, mat, vec, num_threads);
+        return;
+    }
+
     #[cfg(target_arch = "x86_64")]
     if !no_simd_override() && is_x86_feature_detected!("avx2") {
         unsafe { mat_vec_mul_avx2_nofma_into(out, mat, vec) };
@@ -1460,12 +1515,53 @@ pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
     mat_vec_mul_scalar_into(out, mat, vec);
 }
 
-/// Scalar fallback for f32 mat-vec: 4-row ILP.
-fn mat_vec_mul_scalar_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+/// Multi-threaded f32 mat-vec: partitions rows across threads.
+/// Each thread runs the full SIMD/scalar dispatch on its chunk.
+/// Deterministic: same rows always assigned to same partition.
+fn mat_vec_mul_parallel_into(
+    out: &mut [f32], mat: &Tensor, vec: &[f32], num_threads: usize,
+) {
     let rows = mat.shape[0];
     let cols = mat.shape[1];
-    let m = &mat.data;
-    let v = &vec[..cols];
+    // Align chunks to 4-row boundary for ILP
+    let chunk_raw = rows / num_threads;
+    let chunk = (chunk_raw / 4) * 4;
+
+    std::thread::scope(|s| {
+        let mat_data: &[f32] = &mat.data;
+        let mut remaining_out = out;
+        let mut start_row = 0;
+
+        for t in 0..num_threads {
+            let end_row = if t == num_threads - 1 { rows } else { start_row + chunk };
+            let nrows = end_row - start_row;
+            let (chunk_out, rest) = remaining_out.split_at_mut(nrows);
+            remaining_out = rest;
+
+            let mat_offset = start_row * cols;
+            let mat_slice = &mat_data[mat_offset..mat_offset + nrows * cols];
+            let v = &vec[..cols];
+
+            s.spawn(move || {
+                #[cfg(target_arch = "x86_64")]
+                if !no_simd_override() && is_x86_feature_detected!("avx2") {
+                    unsafe {
+                        mat_vec_mul_avx2_nofma_raw(chunk_out, mat_slice, v, nrows, cols);
+                    }
+                    return;
+                }
+                mat_vec_mul_scalar_raw(chunk_out, mat_slice, v, nrows, cols);
+            });
+
+            start_row = end_row;
+        }
+    });
+}
+
+/// Scalar f32 mat-vec on raw slice: 4-row ILP. Used by parallel dispatch.
+fn mat_vec_mul_scalar_raw(
+    out: &mut [f32], m: &[f32], v: &[f32], rows: usize, cols: usize,
+) {
     let rows_4 = rows / 4 * 4;
     for r in (0..rows_4).step_by(4) {
         let row0 = &m[r * cols..(r + 1) * cols];
@@ -1486,6 +1582,89 @@ fn mat_vec_mul_scalar_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
         for c in 0..cols { sum += row[c] * v[c]; }
         out[r] = sum;
     }
+}
+
+/// AVX2 noFMA f32 mat-vec on raw slice. Used by parallel dispatch.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn mat_vec_mul_avx2_nofma_raw(
+    out: &mut [f32], m: &[f32], v: &[f32], rows: usize, cols: usize,
+) {
+    let mp = m.as_ptr();
+    let vp = v.as_ptr();
+    let chunks = cols / 8;
+    let rem_start = chunks * 8;
+    let prefetch = !no_prefetch_override();
+
+    let rows_4 = rows / 4 * 4;
+    for r in (0..rows_4).step_by(4) {
+        let mut a0 = _mm256_setzero_ps();
+        let mut a1 = _mm256_setzero_ps();
+        let mut a2 = _mm256_setzero_ps();
+        let mut a3 = _mm256_setzero_ps();
+
+        let b0 = r * cols;
+        let b1 = b0 + cols;
+        let b2 = b1 + cols;
+        let b3 = b2 + cols;
+
+        if prefetch && r + 4 < rows {
+            let nb = (r + 4) * cols;
+            _mm_prefetch(mp.add(nb) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(mp.add(nb + cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(mp.add(nb + 2 * cols) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(mp.add(nb + 3 * cols) as *const i8, _MM_HINT_T0);
+        }
+
+        for ch in 0..chunks {
+            let off = ch * 8;
+            if prefetch && ch + 4 < chunks {
+                let poff = (ch + 4) * 8;
+                _mm_prefetch(mp.add(b0 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(mp.add(b1 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(mp.add(b2 + poff) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(mp.add(b3 + poff) as *const i8, _MM_HINT_T0);
+            }
+            let vv = _mm256_loadu_ps(vp.add(off));
+            a0 = _mm256_add_ps(a0, _mm256_mul_ps(_mm256_loadu_ps(mp.add(b0 + off)), vv));
+            a1 = _mm256_add_ps(a1, _mm256_mul_ps(_mm256_loadu_ps(mp.add(b1 + off)), vv));
+            a2 = _mm256_add_ps(a2, _mm256_mul_ps(_mm256_loadu_ps(mp.add(b2 + off)), vv));
+            a3 = _mm256_add_ps(a3, _mm256_mul_ps(_mm256_loadu_ps(mp.add(b3 + off)), vv));
+        }
+
+        let (mut s0, mut s1, mut s2, mut s3) = (
+            hsum_f32_avx(a0), hsum_f32_avx(a1),
+            hsum_f32_avx(a2), hsum_f32_avx(a3),
+        );
+        for c in rem_start..cols {
+            let vc = *v.get_unchecked(c);
+            s0 += *m.get_unchecked(b0 + c) * vc;
+            s1 += *m.get_unchecked(b1 + c) * vc;
+            s2 += *m.get_unchecked(b2 + c) * vc;
+            s3 += *m.get_unchecked(b3 + c) * vc;
+        }
+        out[r] = s0; out[r + 1] = s1; out[r + 2] = s2; out[r + 3] = s3;
+    }
+
+    for r in rows_4..rows {
+        let mut acc = _mm256_setzero_ps();
+        let base = r * cols;
+        for ch in 0..chunks {
+            let off = ch * 8;
+            let vv = _mm256_loadu_ps(vp.add(off));
+            acc = _mm256_add_ps(acc, _mm256_mul_ps(_mm256_loadu_ps(mp.add(base + off)), vv));
+        }
+        let mut s = hsum_f32_avx(acc);
+        for c in rem_start..cols {
+            s += *m.get_unchecked(base + c) * *v.get_unchecked(c);
+        }
+        out[r] = s;
+    }
+}
+
+/// Scalar fallback for f32 mat-vec: 4-row ILP. Delegates to raw version.
+fn mat_vec_mul_scalar_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
+    mat_vec_mul_scalar_raw(out, &mat.data, vec, mat.shape[0], mat.shape[1]);
 }
 
 /// Quantize f32 vec into reusable i8 buffer, returns scale.
