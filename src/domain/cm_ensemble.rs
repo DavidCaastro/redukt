@@ -131,6 +131,39 @@ impl CmEnsemble {
         }
         (best_token, best_score)
     }
+
+    /// CM-only top probability (R-056): returns the maximum probability
+    /// from CM biases alone (without backbone logits).
+    /// Must be called AFTER compute_biases().
+    /// Uses log-sum-exp for numerical stability.
+    pub fn cm_only_top_prob(&self) -> f32 {
+        let v = self.ng_buf.len();
+        let s = self.mixer.cm_scale;
+        let bias_vec = self.bias.bias_vector();
+        // Score = weighted CM biases (same formula as combine_with_match, backbone=0)
+        let mut max_score = f32::NEG_INFINITY;
+        for i in 0..v {
+            let score = s * self.mixer.w_ngram * self.ng_buf[i]
+                + s * self.mixer.w_bias * bias_vec[i]
+                + s * self.mixer.w_match * self.match_buf[i]
+                + s * self.mixer.w_run * self.run_buf[i]
+                + s * self.mixer.w_word * self.word_buf[i]
+                + self.seg_buf[i];
+            if score > max_score { max_score = score; }
+        }
+        // Softmax max = exp(max)/sum(exp) = 1/sum(exp(x-max))
+        let mut sum_exp = 0.0f32;
+        for i in 0..v {
+            let score = s * self.mixer.w_ngram * self.ng_buf[i]
+                + s * self.mixer.w_bias * bias_vec[i]
+                + s * self.mixer.w_match * self.match_buf[i]
+                + s * self.mixer.w_run * self.run_buf[i]
+                + s * self.mixer.w_word * self.word_buf[i]
+                + self.seg_buf[i];
+            sum_exp += (score - max_score).exp();
+        }
+        1.0 / sum_exp
+    }
 }
 
 #[cfg(test)]

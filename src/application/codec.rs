@@ -751,8 +751,9 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
         cm.observe(tok as u32);
 
-        // Adaptive RWKV skip (R-033): skip forward when model was confident,
-        // but limit consecutive skips to prevent state staleness cascade.
+        // CM-selective backbone skip (R-056): skip forward when ensemble
+        // was confident about this token. K≤3 consecutive skips bounds
+        // state divergence to ≤2.85|b| (Mamba |a|≈0.95).
         let do_skip = adaptive_skip > 0 && t > 0
             && consec_skips < MAX_CONSEC_SKIP
             && probs_buf[tok] > skip_thr_f;
@@ -1325,8 +1326,8 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
             cm.observe(tok);
 
-            // Adaptive RWKV skip (R-033): identical decision to compress path.
-            // probs_buf[sym] is the combined model's confidence for this token.
+            // CM-selective backbone skip (R-056): identical to compress path.
+            // Skip when ensemble was confident. K≤3 bounds state divergence.
             let do_skip = skip_threshold > 0 && t > 0
                 && consec_skips < MAX_CONSEC_SKIP
                 && probs_buf[tok as usize] > skip_thr_f;

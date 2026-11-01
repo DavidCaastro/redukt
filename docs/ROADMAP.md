@@ -1532,22 +1532,40 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 - **Archivos**: `src/domain/tensor.rs`
 - **Resultado**: mismo-tier determinístico, cross-tier divergencia pre-existente
 
-#### R-055: Layer-by-layer parallel scan (compression-only)
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: 0% (matemáticamente equivalente)
+#### R-055: Layer-by-layer parallel scan ❌ BLOQUEADO
+- **Estado**: BLOQUEADO — determinismo FP impide implementación (2026-11-01)
+- **Riesgo BPB**: 0% teórico, FATAL en práctica
 - **Descripción**: procesar TODOS los tokens por layer 1, luego layer 2, etc.
   Pre-compute per-token quantities en paralelo, parallel scan para SSM.
-- **Dependencias**: R-052 (parallel_scan.rs)
-- **Estimado**: 3-5x on 4 cores (compression only)
-- **Memoria**: +9.2 MB buffer (N × d_model × 4 bytes para 3000 tokens)
+- **Bloqueador**: Blelloch scan compone pares (a,b) con orden de asociación
+  diferente al recurrence secuencial. FP no-asociatividad:
+  `Sequential: a3*(a2*(a1*0+b1)+b2)+b3 ≠ Blelloch: (a3*a2*a1)*0 + (a3*a2)*b1 + a3*b2 + b3`
+  Compresor y descompresor DEBEN producir CDFs idénticas.
+  Parallel scan da resultados numéricamente diferentes → roundtrip FALLA.
+- **Factible solo con**: (a) fixed-point arithmetic, (b) format batch-only
+  (descompresor también batch, requiere todos los tokens — chicken-and-egg),
+  (c) double-pass (parallel + sequential) que no ahorra tiempo.
+- **Dependencias**: R-052 (parallel_scan.rs) — módulo listo, no wirable
 
-#### R-056: CM-selective backbone, K≤3
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: 1-3% (acotado por divergencia de estado)
-- **Descripción**: skip backbone forward cuando CM confidence > θ,
-  con K≤3 consecutive skips (cota de divergencia demostrable).
-- **Dependencias**: R-051 (CmEnsemble), R-053 (speculative.rs)
-- **Estimado**: 2-4x en logs/XML, ~1x en texto variado
+#### R-056: CM-selective backbone skip ❌ NO VIABLE
+- **Estado**: INVESTIGADO + DESCARTADO (2026-11-01)
+- **Riesgo BPB medido**: +81% a +294% — muy por encima del +3% budget
+- **Descripción**: skip backbone forward cuando confianza > θ,
+  con K≤1 o K≤3 consecutive skips.
+- **Hallazgos empíricos (10KB, Mamba)**:
+  - CM-only confidence (R-056 original): NUNCA supera 5% con BPE 50K vocab.
+    El vocabulario es demasiado grande para que CM solo concentre probabilidad.
+  - Ensemble confidence (R-033): K=1, θ=99% → apache +81% BPB (0.22→0.40),
+    enwik8 +35.7% (0.96→1.31). K=3, θ=95% → apache +101% (0.22→0.44).
+  - Throughput gain: 1.5-2.3x (57-87 tok/s vs 38 baseline).
+  - Tradeoff NO aceptable: la degradación BPB es 10-100x peor que el objetivo ≤3%.
+- **Causa raíz**: backbone proporciona >95% de la información predictiva.
+  Logits "stale" (de posición anterior) son cualitativamente incorrectos para
+  la posición actual. Incluso K=1 causa divergencia catastrófica en CDFs.
+- **Confirmación**: consistente con R-049 (PredCache, +17.4% BPB con K=8).
+  El backbone es irreduciblemente secuencial para lossless compression.
+- **Infraestructura preservada**: `cm_only_top_prob()` en CmEnsemble,
+  adaptive-skip en codec/header (FLAG 0x20), disponible para futuro byte-level model.
 
 #### R-057: dt-sparse state skip ✅
 - **Estado**: COMPLETADO (f7a1eec, 2026-11-01)
@@ -1567,18 +1585,17 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 #### Secuencia Fase 9
 
 ```
-R-054 (parallel matmul) ──→ R-057 (dt-sparse) ──→ CHECKPOINT: pruebas completas
-                                                         │
-R-056 (CM-selective) ──→ CHECKPOINT: BPB ≤ +3%          │
-                                                         │
-R-055 (layer scan) ──→ CHECKPOINT: compression-only      │
-                                                         │
-R-058 (LSH memo) ──→ INVESTIGACIÓN                       │
+R-054 ✅ (parallel matmul) ──→ R-057 ✅ (dt-sparse) ──→ COMPLETADOS
+R-055 ❌ (layer scan) ──→ BLOQUEADO por FP determinism
+R-056 ❌ (CM-selective) ──→ NO VIABLE (+81-294% BPB)
+R-058 ⏸ (LSH memo) ──→ INVESTIGACIÓN futura
 ```
 
-**Proyección combinada (CPU 4-core)**:
-- Texto: ~4-6x (96-144 tok/s) — 0% BPB risk
-- Datos estructurados: ~10-18x (240-430 tok/s) — 1-3% BPB risk
+**Resultado Fase 9**: de 5 estrategias, 2 implementadas (0% BPB risk),
+2 descartadas (backbone irreduciblemente secuencial), 1 en investigación.
+El backbone forward pass es el cuello de botella fundamental e irreducible
+para compresión lossless. Solo GPU parallelism (R-055 con formato batch-only)
+o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 - Gap vs brotli: de 46,000x a ~1,300-4,700x
 
 ---
@@ -1811,5 +1828,6 @@ R-058 (LSH memo) ──→ INVESTIGACIÓN                       │
 | 2026-11-01 | Research: cpu-parallelism-strategies.md — 5 mathematical strategies to break sequential bottleneck |
 | 2026-11-01 | Fase 9 definida: R-054 (parallel matmul) → R-055 (layer scan) → R-056 (CM-selective) → R-057 (dt-sparse) → R-058 (LSH) |
 | 2026-11-01 | R-054 ✅ parallel matmul (std::thread::scope, raw-slice kernels) + R-057 ✅ dt-sparse SSM skip (ε=1e-6). BPB unchanged. |
+| 2026-11-01 | R-055 ❌ BLOQUEADO (FP non-assoc breaks roundtrip). R-056 ❌ NO VIABLE (+81-294% BPB, backbone irreducible). |
 | 2026-11-01 | Insight: CPU 84% idle because 1/12 threads active, NOT because of inefficiency |
 | 2026-11-01 | Insight: DRAM bandwidth 60% saturated on RWKV — multi-thread matmul helps compute, not memory |
