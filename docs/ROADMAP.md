@@ -1514,9 +1514,69 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 
 **Estado Fase 8**: R-051 ✅ R-052 ✅ R-053 ✅ (módulos listos, integración futura)
 
-**Métrica de éxito**: módulos compilando y testeados sin modificar código existente.
-Integración real (GPU scan, speculative codec) es trabajo futuro dependiente de
-hardware (GPU) o decisión de producto (speculative opt-in).
+---
+
+### Fase 9: CPU Parallelism — Breaking the Sequential Bottleneck (R-054 to R-058)
+
+> Research: `docs/internal/research/cpu-parallelism-strategies.md`
+> Goal: maximize CPU utilization without GPU, exploit mathematical properties
+> of linear SSM recurrences and known-token compression asymmetry.
+
+#### R-054: Multi-threaded matmul
+- **Estado**: EN PROGRESO
+- **Riesgo BPB**: 0% (misma computación, diferente distribución entre cores)
+- **Target**: matmuls con rows > 4096 (LM head, in_proj)
+- **Implementación**: `std::thread::scope` (stdlib, zero-dep)
+- **Estimado**: 1.5-2x throughput overall
+- **Archivos**: `src/domain/tensor.rs`
+
+#### R-055: Layer-by-layer parallel scan (compression-only)
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (matemáticamente equivalente)
+- **Descripción**: procesar TODOS los tokens por layer 1, luego layer 2, etc.
+  Pre-compute per-token quantities en paralelo, parallel scan para SSM.
+- **Dependencias**: R-052 (parallel_scan.rs)
+- **Estimado**: 3-5x on 4 cores (compression only)
+- **Memoria**: +9.2 MB buffer (N × d_model × 4 bytes para 3000 tokens)
+
+#### R-056: CM-selective backbone, K≤3
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 1-3% (acotado por divergencia de estado)
+- **Descripción**: skip backbone forward cuando CM confidence > θ,
+  con K≤3 consecutive skips (cota de divergencia demostrable).
+- **Dependencias**: R-051 (CmEnsemble), R-053 (speculative.rs)
+- **Estimado**: 2-4x en logs/XML, ~1x en texto variado
+
+#### R-057: dt-sparse state skip
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: ~0% (exacto cuando ε → 0)
+- **Descripción**: skip SSM state update per-channel cuando |dt[j]| < ε.
+  No es skip global, es per-channel — preserva precisión.
+- **Estimado**: 1.05-1.15x (SSM es 25% del layer time, 30-50% sparse)
+
+#### R-058: LSH state memoization
+- **Estado**: INVESTIGACIÓN
+- **Riesgo BPB**: 1-5% (approximate matching)
+- **Descripción**: locality-sensitive hashing sobre estados del modelo.
+  Cache y reutiliza logits cuando estados son similares.
+  Evolución de R-049 (PredCache) con approximate matching.
+
+#### Secuencia Fase 9
+
+```
+R-054 (parallel matmul) ──→ R-057 (dt-sparse) ──→ CHECKPOINT: pruebas completas
+                                                         │
+R-056 (CM-selective) ──→ CHECKPOINT: BPB ≤ +3%          │
+                                                         │
+R-055 (layer scan) ──→ CHECKPOINT: compression-only      │
+                                                         │
+R-058 (LSH memo) ──→ INVESTIGACIÓN                       │
+```
+
+**Proyección combinada (CPU 4-core)**:
+- Texto: ~4-6x (96-144 tok/s) — 0% BPB risk
+- Datos estructurados: ~10-18x (240-430 tok/s) — 1-3% BPB risk
+- Gap vs brotli: de 46,000x a ~1,300-4,700x
 
 ---
 
@@ -1745,3 +1805,7 @@ hardware (GPU) o decisión de producto (speculative opt-in).
 | 2026-11-01 | R-053 COMPLETADO: speculative.rs — CM-draft + SpeculativeTracker + verify_draft, 5 tests (ad62291) |
 | 2026-11-01 | R-053: adaptive K via EMA acceptance rate, min_confidence early stop |
 | 2026-11-01 | Prueba completa: 232 tests PASS, dickens 10KB 0.6464 BPB, roundtrip byte-identical |
+| 2026-11-01 | Research: cpu-parallelism-strategies.md — 5 mathematical strategies to break sequential bottleneck |
+| 2026-11-01 | Fase 9 definida: R-054 (parallel matmul) → R-055 (layer scan) → R-056 (CM-selective) → R-057 (dt-sparse) → R-058 (LSH) |
+| 2026-11-01 | Insight: CPU 84% idle because 1/12 threads active, NOT because of inefficiency |
+| 2026-11-01 | Insight: DRAM bandwidth 60% saturated on RWKV — multi-thread matmul helps compute, not memory |
