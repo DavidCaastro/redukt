@@ -11,12 +11,7 @@
 
 use crate::domain::error::{AzError, AzResult, next_arg, parse_arg, read_file};
 use crate::domain::tensor::{softmax, Tensor};
-use crate::domain::ngram::TokenNgram;
-use crate::domain::bias_head::BiasHead;
-use crate::domain::match_model::MatchModel;
-use crate::domain::run_model::RunModel;
-use crate::domain::word_model::WordModel;
-use crate::domain::mixer::AdaptiveMixer;
+use crate::domain::cm_ensemble::CmEnsemble;
 use crate::domain::coder::{Cdf, RangeEncoder};
 use crate::domain::crc32;
 use crate::application::codec::{cdf_from_logits, CRC_SIZE, build_v4_header};
@@ -314,26 +309,12 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     let tokens = tokenizer.encode(data);
     let total_bytes = data.len();
 
-    let mut ngram = TokenNgram::new(4, v, 0.5);
-    let mut bias = BiasHead::new(v, 0.30);
-    let mut match_m = MatchModel::new(v);
-    let mut run_m = RunModel::new(v);
-    let mut word_m = WordModel::new(v);
-    let mut mixer = AdaptiveMixer::new(0.01);
-    mixer.set_entropy_scaling(true); // R-043
-    let mut segment_m = crate::domain::segment_model::SegmentModel::new(v, true); // R-044
+    let mut cm = CmEnsemble::new(v, 0.5, 0.30, 0.01, true);
     let mut enc = RangeEncoder::new();
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
-
-    // Pre-allocated buffers
-    let mut ng_buf = vec![0.0f32; v];
-    let mut match_buf = vec![0.0f32; v];
-    let mut run_buf = vec![0.0f32; v];
-    let mut word_buf = vec![0.0f32; v];
-    let mut seg_buf = vec![0.0f32; v]; // R-044
     let mut ensemble_buf = vec![0.0f32; v];
 
     let t_start = Instant::now();
@@ -347,17 +328,8 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
             let prob = 1.0 / v as f64;
             ce_bits += -prob.log2();
         } else {
-            ngram.compute_bias_into(&mut ng_buf, None);
-            match_m.compute_bias_into(&mut match_buf);
-            run_m.compute_bias_into(&mut run_buf);
-            word_m.compute_bias_into(&mut word_buf);
-            let b_vec = bias.bias_vector();
-            mixer.combine_with_match(
-                &mut ensemble_buf, &logits, &ng_buf, b_vec, &match_buf,
-                &run_buf, &word_buf,
-            );
-            segment_m.compute_bias_into(&mut seg_buf);
-            for i in 0..v { ensemble_buf[i] += seg_buf[i]; }
+            cm.compute_biases(None);
+            cm.combine_into(&mut ensemble_buf, &logits);
 
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
@@ -367,18 +339,10 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
             let prob = probs.data[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
 
-            mixer.update_with_match(
-                &probs.data, &ng_buf, bias.bias_vector(), &match_buf,
-                &run_buf, &word_buf, tok,
-            );
-            bias.update(&probs.data, tok);
+            cm.update(&probs.data, tok);
         }
 
-        ngram.observe(tok as u32);
-        match_m.observe(tok as u32);
-        run_m.observe(tok as u32);
-        word_m.observe(tok as u32);
-        segment_m.observe(tok as u32);
+        cm.observe(tok as u32);
         model.forward_into(tok, &mut state, &mut scratch, &mut logits);
 
         if t > 0 && (t % 500 == 0 || t == tokens.len() - 1) {

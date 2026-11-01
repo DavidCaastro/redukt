@@ -20,3 +20,6 @@ pub mod delta;
 pub mod record_detect;
 pub mod segment_model;
 pub mod pred_cache;
+pub mod cm_ensemble;
+pub mod parallel_scan;
+pub mod speculative;
