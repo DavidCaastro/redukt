@@ -1464,6 +1464,62 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 
 ---
 
+### Fase 8: Modular Execution Architecture (R-051 to R-053)
+
+> Prerequisito para GPU parallel scan y speculative execution.
+> Módulos puramente aditivos — no modifican backbone ni coder existentes.
+> Research: `docs/internal/research/execution-architecture-analysis.md`
+
+#### R-051: CmEnsemble — Context-Mixing consolidation
+- **Estado**: COMPLETADO (ad62291, 2026-11-01)
+- **Impacto**: -259 líneas de código duplicado, 9 loops refactorizados
+- **Archivos**: `src/domain/cm_ensemble.rs` (nuevo), `src/application/codec.rs`,
+  `src/application/api.rs`, `src/application/benchmark.rs`
+- **Descripción**: Agrupa los 6 modelos CM (TokenNgram, BiasHead, MatchModel,
+  RunModel, WordModel, SegmentModel) + AdaptiveMixer + 5 buffers pre-allocated
+  en un solo struct. Reemplaza 12+ parámetros sueltos por `CmEnsemble`.
+- **API**: `new()`, `compute_biases(entropy_hint)`, `combine_into()`, `update()`,
+  `observe()`, `draft_next()`, `with_bias_decay(tau)`
+- **Tests**: 3 unit tests + 232 existentes pass
+- **BPB**: sin cambio (dickens 10KB 0.6464, roundtrip byte-identical) [MEASURED]
+
+#### R-052: Parallel Scan — Generic Blelloch algorithm
+- **Estado**: COMPLETADO (ad62291, 2026-11-01)
+- **Impacto**: Infraestructura para GPU parallel scan futuro
+- **Archivos**: `src/domain/parallel_scan.rs` (nuevo)
+- **Descripción**: Algoritmo genérico de Blelloch scan (prefix sum) sobre
+  operaciones asociativas. O(N) trabajo, O(log N) profundidad secuencial.
+  Incluye `SsmScanPair` (escalar) y `SsmScanVec` (vectorial d_state)
+  para representar recurrencias SSM como pares composables (A, b).
+- **Tests**: 6 unit tests (scan, associativity, identity, recurrence equivalence)
+- **Pendiente**: wiring a Mamba forward pass (requiere GPU o multi-thread Rayon)
+
+#### R-053: Speculative Execution — CM-draft with backbone verify
+- **Estado**: COMPLETADO (ad62291, 2026-11-01)
+- **Impacto**: Infraestructura para speculative compression
+- **Archivos**: `src/domain/speculative.rs` (nuevo)
+- **Descripción**: Usa CmEnsemble (0.3% del costo) para predecir K tokens ahead.
+  `SpeculativeTracker` adapta K basado en rolling acceptance rate (EMA).
+  `draft_tokens()` genera draft, `verify_draft()` compara contra tokens reales.
+- **Tests**: 5 unit tests (adaptive K, acceptance rate, verify match/partial/none)
+- **Pendiente**: integración en codec.rs como `--speculative K` CLI flag
+
+#### Secuencia Fase 8
+
+```
+R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
+         │
+         └──→ R-053 (speculative) ──→ FUTURO: codec integration (--speculative K)
+```
+
+**Estado Fase 8**: R-051 ✅ R-052 ✅ R-053 ✅ (módulos listos, integración futura)
+
+**Métrica de éxito**: módulos compilando y testeados sin modificar código existente.
+Integración real (GPU scan, speculative codec) es trabajo futuro dependiente de
+hardware (GPU) o decisión de producto (speculative opt-in).
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -1679,3 +1735,13 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 | 2026-10-31 | BUG-001 RESUELTO: 13 missing byte tokens in BPE vocab — synthetic fallback added |
 | 2026-10-31 | BUG-001: x-ray BPB was 4.8969 (CORRUPTO) → 5.8008 (correcto) after fix |
 | 2026-10-31 | Routing simplificado: Mamba always (samba 1.291→0.271, -79%). Wins 13/19 vs brotli |
+| 2026-11-01 | docs: execution-architecture-analysis.md — parallel scan, speculative CM, 6 strategies (aa4fa56) |
+| 2026-11-01 | Fase 8 definida: modular execution architecture — CmEnsemble + parallel scan + speculative |
+| 2026-11-01 | R-051 COMPLETADO: CmEnsemble — 6 CM models + mixer + buffers en single struct (ad62291) |
+| 2026-11-01 | R-051: 9 loops refactorizados (codec 5, api 3, benchmark 1), -259 líneas duplicación |
+| 2026-11-01 | R-051: compute_biases(entropy_hint), combine_into(), update(), observe(), with_bias_decay(tau) |
+| 2026-11-01 | R-052 COMPLETADO: parallel_scan.rs — Blelloch scan + SsmScanPair/Vec, 6 tests (ad62291) |
+| 2026-11-01 | R-052: generic associative scan O(N log N) work, O(log N) depth. Model-agnostic. |
+| 2026-11-01 | R-053 COMPLETADO: speculative.rs — CM-draft + SpeculativeTracker + verify_draft, 5 tests (ad62291) |
+| 2026-11-01 | R-053: adaptive K via EMA acceptance rate, min_confidence early stop |
+| 2026-11-01 | Prueba completa: 232 tests PASS, dickens 10KB 0.6464 BPB, roundtrip byte-identical |
