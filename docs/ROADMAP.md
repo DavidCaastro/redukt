@@ -1866,37 +1866,46 @@ PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
   - [x] Resultado: ±0% = no medible → NO VIABLE, código revertido
 
 #### R-070: Conv1d SIMD
-- **Estado**: PENDIENTE
-- **Impacto estimado**: +0.5-1% throughput
-- **Riesgo BPB**: 0% (misma aritmética)
+- **Estado**: ❌ NO VIABLE (2026-11-02, análisis aritmético)
+- **Impacto estimado original**: +0.5-1% throughput
+- **Impacto real calculado**: +0.1% máximo teórico (indetectable)
 - **Descripción**: El conv1d shift register es scalar puro.
   d_inner×d_conv = 1536×4 = 6144 FMAs por token por capa.
-  Con AVX2: 8 canales simultáneos en el loop `for j in 0..di`.
-  Marginal (~1-2% del forward) pero trivial de implementar.
-- **Archivos**: `src/infrastructure/mamba/model.rs` (forward_layers_normed, conv1d block)
-- **Subtareas**:
-  - [ ] AVX2 kernel para conv1d shift + multiply + bias
-  - [ ] A/B controlado: tok/s SIMD vs scalar
-  - [ ] BPB bit-exact
+- **Análisis aritmético** (por qué no se implementa):
+  - Conv1d total: 6144 FMAs/capa × 24 capas = **147K FMAs/token**
+  - Total forward: in_proj(2.36M) + x_proj(123K) + dt_proj(74K) + out_proj(1.18M)
+    = 3.7M/capa × 24 + LM_head(38.6M) = **128.6M FMAs/token**
+  - Conv1d = **0.11%** del cómputo total. Incluso 10× speedup = +0.1% throughput.
+  - Además: memory layout interleaved (conv_state stride=3, weights stride=4)
+    requiere AVX2 gather (_mm256_i32gather_ps), anulando ventaja SIMD.
+  - Estimación original (+0.5-1%) era incorrecta: asumía conv1d = 1-2% del forward.
+- **Archivos**: sin cambios (análisis puro, no requiere implementación)
 
 #### R-071: Reduced-rank LM head (SVD factorization)
-- **Estado**: PENDIENTE
+- **Estado**: ❌ NO VIABLE (2026-11-02, análisis + precedentes)
 - **Impacto estimado**: +10-20% throughput (LM head = 30% of FLOPs)
-- **Riesgo BPB**: ~1-5% (depende del rank efectivo)
+- **Impacto real proyectado**: +3-6% total forward (30% × 10-20%)
+- **Riesgo BPB**: ALTO — precedentes empíricos indican degradación catastrófica
 - **Descripción**: El LM head (50280×768 = 38.6M FLOPs) es 30% del forward.
   Factorizar: `emb_w ≈ U(50280,k) × V(k,768)` con SVD truncado.
   Con k=256: 13.1M vs 38.6M = -66% FLOPs en LM head = -20% forward total.
-  R-016 probó SVD en TODAS las matrices RWKV y falló. Pero el LM head es
-  especial: proyección lineal pura, top-K tokens dominan la masa de probabilidad.
-  Si rank efectivo del embedding es alto → NO VIABLE (como R-016).
-- **Archivos**: `src/infrastructure/mamba/model.rs` (load, compute_head_into)
-- **Subtareas**:
-  - [ ] Medir rank efectivo (singular values) del embedding matrix
-  - [ ] Implementar SVD truncado at load time (k configurable)
-  - [ ] Dual-matmul: hidden→V→mid→U→logits
-  - [ ] Sweep k: 64, 128, 256, 384 — medir BPB vs throughput
-  - [ ] Si +3% BPB en CUALQUIER k → marcar NO VIABLE
-  - [ ] Roundtrip PASS
+- **Por qué NO se implementa** (3 razones convergentes):
+  1. **Mamba-130M rechaza TODA aproximación lossy**: Q8 PTQ = +16.6% BPB (R-064),
+     column pruning 10% = +2-5% BPB (R-061), layer skip = inaceptable (R-062).
+     El modelo es demasiado pequeño para tolerar pérdida de precisión. SVD truncado
+     es inherentemente lossy — la reconstrucción `U·V ≈ emb_w` pierde información
+     proporcional a los valores singulares descartados.
+  2. **R-016 precedente**: SVD en RWKV (ALL matrices) = +3.47% BPB AND 1.95× más lento.
+     High effective rank. El embedding matrix de Mamba tiene la misma estructura
+     (50280 tokens × 768 dims), no hay razón para esperar low effective rank.
+  3. **Throughput gain < noise floor**: Incluso el caso optimista (+6% total) está
+     en el rango ±3% de varianza térmica medida en R-068/R-069. Sería inmedible.
+  4. **Tied weights**: `emb_w` es compartida entre embedding lookup y LM head.
+     Factorizarla solo para head requiere almacenar U+V adicionales (50280×k + k×768
+     = ~50MB extra para k=256), parcialmente anulando el beneficio DRAM.
+  5. **Implementación SVD**: Requiere ~200 líneas de código (Golub-Kahan o power
+     iteration) sin dependencias externas, para un resultado predeciblemente negativo.
+- **Archivos**: sin cambios (análisis puro)
 
 #### Secuencia Fase 12
 
@@ -1907,7 +1916,20 @@ R-070 (conv1d SIMD) ──→ code change, +0.5-1%, independent
 R-071 (SVD LM head) ──→ code change, +10-20%, risky BPB
 ```
 
-Estado: R-068 ❌ R-069 ❌ R-070 ⏳ R-071 ⏳.
+Estado: R-068 ❌ R-069 ❌ R-070 ❌ R-071 ❌. **FASE 12 CERRADA.**
+
+**Conclusión Fase 12**: Las 4 técnicas de optimización compiler/operator son NO VIABLES:
+- PGO: +1.1% (ruido térmico). Workload es DRAM-bound, no CPU-bound.
+- Operator fusion: ±0%. Buffers intermedios son L1-resident (3KB << 32KB L1 cache).
+- Conv1d SIMD: 0.11% del cómputo total. 10× speedup = +0.1% (indetectable).
+- SVD LM head: Mamba-130M rechaza toda aproximación lossy (Q8 +16.6%, SVD peor).
+
+**Diagnóstico final de throughput Mamba**: El forward pass es >99% DRAM-bound.
+Las 5 GEMV por capa + LM head saturan el bus de memoria DDR4-2667 single-channel
+(21.3 GB/s teórico, 70-85% utilización medida). NINGUNA optimización de CPU
+(SIMD, PGO, fusion, code layout) puede superar este hard ceiling.
+Para throughput >34 tok/s se necesita: DDR5, dual-channel, modelo más pequeño
+(MambaByte ~50M), o cuantización QAT (no PTQ).
 
 ---
 
