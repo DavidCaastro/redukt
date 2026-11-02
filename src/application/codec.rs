@@ -1821,6 +1821,10 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut weights_dir = "weights/mamba-130m".to_string();
     let mut max_bytes: usize = 0;
+    let mut prune_frac: f32 = 0.0;
+    let mut highway_start: usize = 0;
+    let mut highway_thr: f32 = 0.01;
+    let mut resync_interval: usize = 32;
 
     let mut i = 0;
     while i < args.len() {
@@ -1829,6 +1833,18 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--bytes" => {
                 max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?;
+            }
+            "--prune" => {
+                prune_frac = parse_arg(next_arg(args, &mut i, "--prune")?, "--prune")?;
+            }
+            "--highway" => {
+                highway_start = parse_arg(next_arg(args, &mut i, "--highway")?, "--highway")?;
+            }
+            "--highway-thr" => {
+                highway_thr = parse_arg(next_arg(args, &mut i, "--highway-thr")?, "--highway-thr")?;
+            }
+            "--resync" => {
+                resync_interval = parse_arg(next_arg(args, &mut i, "--resync")?, "--resync")?;
             }
             _ => {}
         }
@@ -1845,7 +1861,17 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
     eprintln!("[mamba-eval] input: {} ({} bytes)", input_path, total_bytes);
 
     let weights_path = std::path::Path::new(&weights_dir);
-    let model = MambaModel::load(weights_path);
+    let mut model = MambaModel::load(weights_path);
+    if prune_frac > 0.0 {
+        model.apply_column_pruning(prune_frac);
+    }
+    if highway_start > 0 {
+        model.enable_highway(highway_start, highway_thr, resync_interval);
+        eprintln!(
+            "[mamba-eval] highway: layers >= {} (thr={}, resync={})",
+            highway_start, highway_thr, resync_interval,
+        );
+    }
     let tokenizer = BpeTokenizer::load(weights_path);
     let v = model.config.vocab_size;
 
@@ -1900,6 +1926,24 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
         "  time:  {:.1}s ({:.1} tok/s)",
         total_time, tokens.len() as f64 / total_time
     );
+    // R-059/R-061: report sparsity
+    if scratch.sparsity_total_channels > 0 {
+        let pct = 100.0 * scratch.sparsity_near_zero as f64
+            / scratch.sparsity_total_channels as f64;
+        eprintln!(
+            "  gated sparsity: {}/{} near-zero ({:.1}%)",
+            scratch.sparsity_near_zero, scratch.sparsity_total_channels, pct,
+        );
+    }
+    // R-062: highway stats
+    if scratch.highway_layers_skipped > 0 {
+        let total = scratch.highway_layers_run + scratch.highway_layers_skipped;
+        let pct = 100.0 * scratch.highway_layers_skipped as f64 / total as f64;
+        eprintln!(
+            "  highway: {}/{} layers skipped ({:.1}%)",
+            scratch.highway_layers_skipped, total, pct,
+        );
+    }
     Ok(())
 }
 

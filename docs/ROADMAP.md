@@ -1646,31 +1646,43 @@ o byte-level model (R-041 MambaByte) pueden romper esta barrera.
   `src/application/codec.rs`
 
 #### R-061: Wanda column pruning — d_inner reduction
-- **Estado**: INVESTIGACIÓN
-- **Riesgo BPB**: 1-3% (necesita medición empírica)
-- **Speedup estimado**: 14% (d_inner 1536 → ~1230, 20% columnas menos)
-- **Descripción**: one-shot structured pruning sin retraining.
-  Importancia = L2_norm(in_proj column) × L2_norm(out_proj column).
-  Determinista desde pesos del modelo (no requiere calibración).
-  Ambos lados (compress/decompress) computan mismas normas → misma poda.
-  Requiere ajustar conv1d, x_proj, dt_proj al nuevo d_inner.
-- **Prerequisito**: medir BPB en 3+ archivos con 10%, 20%, 30% pruning
-- **Papers**: Wanda (Sun et al., ICML 2023) arXiv:2306.11695,
-  SparseSSM (Tuo & Wang, 2025) arXiv:2506.09613
-- **Archivos**: `src/infrastructure/mamba/model.rs` (new: pruning logic at load)
+- **Estado**: ❌ NO VIABLE (validación empírica 2026-11-02)
+- **Resultado medido** (enwik8 10KB, mamba-eval):
+  - Baseline: 0.9074 BPB
+  - 1 canal (0.065%): **1.0928 BPB (+20.4%)** — 1 canal ya excede +5% budget
+  - 2% pruning: **4.0199 BPB (+343%)**
+  - 5% pruning: **3.0316 BPB (+234%)**
+  - 10% pruning: **4.8191 BPB (+431%)**
+- **Causa raíz**: Mamba-130M es demasiado pequeño para structured pruning.
+  Los papers (Wanda, SparseSSM) validan en modelos 7B+, donde hay redundancia.
+  A 130M params, cada canal de d_inner es irreemplazable.
+  La relación NO es monotónica (5% < 2% < 10%) porque la remoción de canales
+  diferentes tiene efectos variables — confirma alta sensibilidad.
+- **Implementación**: `apply_column_pruning(prune_frac)` en MambaModel +
+  `--prune` CLI en mamba-eval. Código conservado para futuros backbones mayores.
+- **Papers**: Wanda (Sun et al., ICML 2023) arXiv:2306.11695
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
 
 #### R-062: Highway layer skip — upper layer bypass
-- **Estado**: INVESTIGACIÓN
-- **Riesgo BPB**: 1-2% (Simba: 90% token sparsity at final layer retains perf)
-- **Speedup estimado**: 7% (2-3 layers skipped average, layers 18-23)
-- **Descripción**: para capas 18-23, medir ||residual_change|| / ||x||.
-  Si ratio < 0.01 → skip capas restantes (highway passthrough).
-  State para capas skipped no se actualiza (bounded por highway nature).
-  Force full forward cada N tokens para resync.
-- **Prerequisito**: medir residual norms en Mamba-130M layers 18-23
+- **Estado**: ❌ NO VIABLE (validación empírica 2026-11-02)
+- **Resultado medido** (enwik8 10KB, A/B controlado):
+  - thr=0.01: 0 layers skipped, BPB 0.9074 (idéntico)
+  - thr=0.05: 0 layers skipped, BPB 0.9074 (idéntico)
+  - thr=0.10: **17/85248 layers skipped (0.02%), BPB 0.9424 (+3.86%)**
+  - thr=0.15, start=20+: 0 layers skipped (residuales > 15%)
+  - thr=0.20: 4678/85248 (5.5%), BPB **7.3752 (+713%)**
+  - thr=0.15, start=12: 11636/85248 (13.6%), BPB **11.12 (+1125%)**
+- **Causa raíz**: las capas superiores de Mamba-130M NO son highways.
+  Todas las capas contribuyen >5% al hidden state norm. El paper Simba
+  observa "90% token sparsity" en modelos grandes (1.3B+), no en 130M.
+  Incluso 17 skips en 85K causan +3.86% BPB — la divergencia de estado
+  es severa a esta escala de modelo.
+- **Implementación**: `enable_highway(start, thr, resync)` + contadores.
+  `--highway`, `--highway-thr`, `--resync` CLI en mamba-eval.
+  Código conservado para futuros backbones mayores.
 - **Papers**: Simba (Song et al., TMLR 2025) arXiv:2505.20698,
   LAST (Gwak et al., NeurIPS 2024) arXiv:2411.02824
-- **Archivos**: `src/infrastructure/mamba/model.rs`
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
 
 #### R-063: Batch state checkpoint — prefix reuse
 - **Estado**: PENDIENTE
@@ -1690,14 +1702,16 @@ o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 ```
 R-059 (act. sparsity) ──→ medido: 1.9% ──→ NO VIABLE (necesita >25%)
 R-060 (pipeline) ──→ split + thread overlap ──→ marginal en DDR4
-R-061 (column pruning) ──→ medir BPB ──→ implementar si <+5% BPB
-R-062 (highway skip) ──→ medir residuals ──→ implementar si >30% triggers
+R-061 (column pruning) ──→ medido: +20% BPB @1 canal ──→ NO VIABLE
+R-062 (highway skip) ──→ medido: 0 skips @thr≤0.15 ──→ NO VIABLE
 R-063 (batch checkpoint) ──→ state snapshot ──→ LCP matching
 ```
 
-Estado: R-059 ✅ (no viable) + R-060 ✅ (marginal). Speedup combinado: ~0% en DDR4.
-R-061 y R-062 solo tras validación empírica de BPB. R-063 independiente (batch only).
-Conclusión: DRAM bandwidth es el bottleneck real, no FLOPs. Pipeline beneficiará DDR5.
+Estado: R-059 ✅ R-060 ✅ R-061 ❌ R-062 ❌. R-063 independiente (batch only).
+**Conclusión Fase 10**: Mamba-130M no tolera pruning NI layer skip.
+El modelo es demasiado pequeño (130M params): cada canal y capa es irreemplazable.
+Las técnicas de la literatura (Wanda, Simba, SparseSSM) validan en modelos 7B+.
+DRAM bandwidth sigue como bottleneck real. Solo R-063 (batch checkpoint) queda viable.
 
 ---
 
@@ -1945,3 +1959,10 @@ Conclusión: DRAM bandwidth es el bottleneck real, no FLOPs. Pipeline beneficiar
 | 2026-11-02 | R-060: throughput ~19 tok/s → ~19 tok/s (DDR4-2667 bandwidth saturado — speedup nulo) |
 | 2026-11-02 | R-060: pipeline solo en compress (decompress: tok[t] desconocido hasta decode logits[t-1]) |
 | 2026-11-02 | Insight: DRAM bandwidth es bottleneck real, pipeline beneficiará DDR5/dual-channel |
+| 2026-11-02 | R-061 ❌ NO VIABLE: Wanda column pruning — 1 canal (+0.065%) ya da +20.4% BPB |
+| 2026-11-02 | R-061: 2%=+343%, 5%=+234%, 10%=+431% (no monotónico, alta sensibilidad) |
+| 2026-11-02 | R-061: Mamba-130M demasiado pequeño para structured pruning (papers validan 7B+) |
+| 2026-11-02 | R-062 ❌ NO VIABLE: highway layer skip — capas NO son highways en Mamba-130M |
+| 2026-11-02 | R-062: thr≤0.15 → 0 skips (residuales >15%). thr=0.10 → 17/85K skips → +3.86% BPB |
+| 2026-11-02 | R-062: thr=0.20 → 5.5% skips → +713% BPB (catastrófico) |
+| 2026-11-02 | Conclusión Fase 10: 4/5 técnicas NO VIABLES en 130M. Solo R-063 (batch) pendiente |

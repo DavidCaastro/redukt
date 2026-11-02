@@ -60,6 +60,10 @@ pub struct MambaModel {
     emb_w: Tensor,             // (vocab_size, d_model) — also used as lm_head (tied)
     layers: Vec<MambaLayerWeights>,
     norm_f_w: Vec<f32>,        // (d_model,)
+    // R-062: highway layer skip configuration
+    pub highway_start: usize,   // first layer to check (0 = disabled)
+    pub highway_thr: f32,       // ||result||/||x|| threshold
+    pub resync_interval: usize, // force full forward every N tokens
 }
 
 // --- State ---
@@ -103,6 +107,10 @@ pub struct MambaScratch {
     // R-059: activation sparsity measurement
     pub sparsity_total_channels: u64,
     pub sparsity_near_zero: u64,
+    // R-062: highway layer skip measurement
+    pub highway_token_count: u64,
+    pub highway_layers_run: u64,
+    pub highway_layers_skipped: u64,
 }
 
 impl MambaScratch {
@@ -120,6 +128,9 @@ impl MambaScratch {
             normed: vec![0.0; config.d_model],
             sparsity_total_channels: 0,
             sparsity_near_zero: 0,
+            highway_token_count: 0,
+            highway_layers_run: 0,
+            highway_layers_skipped: 0,
         }
     }
 }
@@ -210,6 +221,9 @@ impl MambaModel {
             emb_w: emb_tensor,
             layers,
             norm_f_w: norm_f.data,
+            highway_start: 0,     // disabled by default
+            highway_thr: 0.01,
+            resync_interval: 32,
         }
     }
 
@@ -219,6 +233,132 @@ impl MambaModel {
 
     pub fn create_scratch(&self) -> MambaScratch {
         MambaScratch::new(&self.config)
+    }
+
+    /// Wanda-inspired column pruning: remove least-important d_inner channels (R-061).
+    /// Both compress and decompress compute identical norms → deterministic.
+    pub fn apply_column_pruning(&mut self, prune_frac: f32) {
+        let di = self.config.d_inner;
+        let d = self.config.d_model;
+        let ds = self.config.d_state;
+        let dc = self.config.d_conv;
+        let dr = self.config.dt_rank;
+        let n_prune = (di as f32 * prune_frac) as usize;
+        if n_prune == 0 { return; }
+        let new_di = di - n_prune;
+
+        for layer in &mut self.layers {
+            // Importance[j] = ||in_proj rows j,j+di|| * ||out_proj col j||
+            let mut importance = vec![0.0f32; di];
+            for j in 0..di {
+                let mut in_sq = 0.0f32;
+                for k in 0..d {
+                    let xv = layer.in_proj_w.data[j * d + k];
+                    let zv = layer.in_proj_w.data[(j + di) * d + k];
+                    in_sq += xv * xv + zv * zv;
+                }
+                let mut out_sq = 0.0f32;
+                for i in 0..d {
+                    let v = layer.out_proj_w.data[i * di + j];
+                    out_sq += v * v;
+                }
+                importance[j] = in_sq.sqrt() * out_sq.sqrt();
+            }
+
+            // Sort by importance ascending, keep top new_di
+            let mut idx: Vec<usize> = (0..di).collect();
+            idx.sort_by(|&a, &b| {
+                importance[a].partial_cmp(&importance[b]).unwrap()
+            });
+            let mut keep: Vec<usize> = idx[n_prune..].to_vec();
+            keep.sort(); // canonical ascending order
+
+            // Rebuild in_proj_w: (2*di, d) → (2*new_di, d)
+            let mut new_in = vec![0.0f32; 2 * new_di * d];
+            for (ni, &oj) in keep.iter().enumerate() {
+                let xs = oj * d;
+                let xd = ni * d;
+                new_in[xd..xd + d].copy_from_slice(
+                    &layer.in_proj_w.data[xs..xs + d],
+                );
+                let zs = (oj + di) * d;
+                let zd = (ni + new_di) * d;
+                new_in[zd..zd + d].copy_from_slice(
+                    &layer.in_proj_w.data[zs..zs + d],
+                );
+            }
+            layer.in_proj_w = Tensor::from_data(new_in, vec![2 * new_di, d]);
+
+            // Rebuild conv1d_w: (di*dc) → (new_di*dc)
+            let mut new_cw = vec![0.0f32; new_di * dc];
+            for (ni, &oj) in keep.iter().enumerate() {
+                new_cw[ni * dc..(ni + 1) * dc].copy_from_slice(
+                    &layer.conv1d_w[oj * dc..(oj + 1) * dc],
+                );
+            }
+            layer.conv1d_w = new_cw;
+
+            // conv1d_b
+            layer.conv1d_b = keep.iter().map(|&j| layer.conv1d_b[j]).collect();
+
+            // x_proj_w: (dr+2*ds, di) → (dr+2*ds, new_di)
+            let xr = dr + 2 * ds;
+            let mut new_xp = vec![0.0f32; xr * new_di];
+            for row in 0..xr {
+                for (ni, &oj) in keep.iter().enumerate() {
+                    new_xp[row * new_di + ni] =
+                        layer.x_proj_w.data[row * di + oj];
+                }
+            }
+            layer.x_proj_w = Tensor::from_data(new_xp, vec![xr, new_di]);
+
+            // dt_proj_w: (di, dr) → (new_di, dr)
+            let mut new_dt = vec![0.0f32; new_di * dr];
+            for (ni, &oj) in keep.iter().enumerate() {
+                new_dt[ni * dr..(ni + 1) * dr].copy_from_slice(
+                    &layer.dt_proj_w.data[oj * dr..(oj + 1) * dr],
+                );
+            }
+            layer.dt_proj_w = Tensor::from_data(new_dt, vec![new_di, dr]);
+
+            // dt_proj_b
+            layer.dt_proj_b = keep.iter().map(|&j| layer.dt_proj_b[j]).collect();
+
+            // a_log: (di*ds) → (new_di*ds)
+            let mut new_al = vec![0.0f32; new_di * ds];
+            for (ni, &oj) in keep.iter().enumerate() {
+                new_al[ni * ds..(ni + 1) * ds].copy_from_slice(
+                    &layer.a_log[oj * ds..(oj + 1) * ds],
+                );
+            }
+            layer.a_log = new_al;
+
+            // d_vec
+            layer.d_vec = keep.iter().map(|&j| layer.d_vec[j]).collect();
+
+            // out_proj_w: (d, di) → (d, new_di)
+            let mut new_op = vec![0.0f32; d * new_di];
+            for row in 0..d {
+                for (ni, &oj) in keep.iter().enumerate() {
+                    new_op[row * new_di + ni] =
+                        layer.out_proj_w.data[row * di + oj];
+                }
+            }
+            layer.out_proj_w = Tensor::from_data(new_op, vec![d, new_di]);
+        }
+
+        eprintln!(
+            "[mamba] column pruning: d_inner {} → {} ({:.0}% pruned)",
+            di, new_di, prune_frac * 100.0,
+        );
+        self.config.d_inner = new_di;
+    }
+
+    /// Enable highway layer skip (R-062).
+    pub fn enable_highway(&mut self, start_layer: usize, thr: f32, resync: usize) {
+        self.highway_start = start_layer;
+        self.highway_thr = thr;
+        self.resync_interval = resync;
     }
 
     /// Run embedding + all layers + final RMSNorm; result in `scratch.x` (R-060).
@@ -313,7 +453,27 @@ impl MambaModel {
             for j in 0..d {
                 scratch.x[j] += scratch.result[j];
             }
+
+            scratch.highway_layers_run += 1;
+
+            // R-062: highway skip — if upper-layer contribution is tiny, skip rest
+            if self.highway_start > 0 && layer_idx >= self.highway_start
+                && scratch.highway_token_count % self.resync_interval as u64 != 0
+            {
+                let delta_sq: f32 = scratch.result[..d].iter()
+                    .map(|v| v * v).sum();
+                let x_sq: f32 = scratch.x[..d].iter()
+                    .map(|v| v * v).sum();
+                let thr_sq = self.highway_thr * self.highway_thr;
+                if delta_sq < thr_sq * x_sq {
+                    let remaining = self.config.n_layer - layer_idx - 1;
+                    scratch.highway_layers_skipped += remaining as u64;
+                    break;
+                }
+            }
         }
+
+        scratch.highway_token_count += 1;
 
         // Final RMSNorm
         rms_norm_into(&mut scratch.x, &self.norm_f_w, 1e-5);
@@ -347,6 +507,9 @@ impl BackboneScratch for MambaScratch {
     fn reset_perf(&mut self) {
         self.sparsity_total_channels = 0;
         self.sparsity_near_zero = 0;
+        self.highway_token_count = 0;
+        self.highway_layers_run = 0;
+        self.highway_layers_skipped = 0;
     }
 }
 
