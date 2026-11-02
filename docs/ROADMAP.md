@@ -1834,23 +1834,36 @@ PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
   - [x] Resultado: +1.1% = ruido térmico → NO VIABLE
 
 #### R-069: Operator fusion — RMSNorm+matmul, matmul+residual
-- **Estado**: PENDIENTE
+- **Estado**: ❌ NO VIABLE (2026-11-02)
 - **Impacto estimado**: +2-5% throughput
-- **Riesgo BPB**: 0% (misma aritmética, menos buffers intermedios)
+- **Impacto medido**: ±0% (mediana idéntica, dentro de ruido térmico)
+- **Riesgo BPB**: 0% confirmado (BPB bit-exact)
 - **Descripción**: Cada capa Mamba escribe/lee ~84KB de buffers intermedios.
   24 capas × 30 tok/s = ~60 MB/s de tráfico intermedio innecesario.
-  Fusiones:
-  1. **RMSNorm + in_proj**: norm(x) y multiplicar por in_proj en un solo pass,
-     sin materializar `scratch.normed` (ahorra 3KB write + 3KB read por capa)
-  2. **out_proj + residual_add**: `x[j] += dot(out_proj_row_j, gated)` directo,
-     sin materializar `scratch.result` (ahorra 3KB write + 3KB read por capa)
-- **Archivos**: `src/infrastructure/mamba/model.rs` (forward_layers_normed)
+  Fusiones implementadas y medidas:
+  1. **RMSNorm + in_proj**: Eliminada la `copy_from_slice` + merge de 3 pases a 2.
+     Ahorro: 768 floats × 4B = 3KB por capa × 24 = 72KB/token.
+  2. **out_proj + residual_add**: `mat_vec_mul_add_into` acumula directo en x.
+     Ahorro: 768 floats × 4B = 3KB write+read por capa × 24 = 144KB/token.
+- **Resultado empírico** (A/B controlado, 3 rondas alternando, enwik8 10KB Mamba):
+  - Normal: 17.8, 18.1, 17.8 tok/s (mediana 17.8)
+  - Fusion: 17.6, 17.8, 18.0 tok/s (mediana 17.8)
+  - Delta:  -1.1%, -1.7%, +1.1% → mediana **±0%** (ruido térmico)
+  - BPB: 0.9648 ambos, output BIT-EXACT
+- **Por qué falla**: Los buffers intermedios (normed: 3KB, result: 3KB) caben en
+  L1 cache (32KB). No generan tráfico DRAM — solo L1. L1 tiene ~100+ GB/s de
+  throughput, así que ahorrar 216KB/token (a 18 tok/s = 3.9 MB/s) es el 0.004%
+  del ancho de banda L1. El bottleneck son las matrices de peso (4.7MB por capa
+  desde DRAM), no los buffers intermedios L1-resident.
+- **Código**: Implementado + revertido. `mat_vec_mul_add_into` (scalar + AVX2)
+  fue creado, probado, y eliminado. Inline RMSNorm también implementado y revertido.
+- **Archivos**: sin cambios permanentes (experiment revertido)
 - **Subtareas**:
-  - [ ] Fused RMSNorm+in_proj kernel
-  - [ ] Fused out_proj+residual kernel
-  - [ ] A/B controlado: tok/s fused vs current
-  - [ ] BPB bit-exact (misma aritmética, diferente orden de materialización)
-  - [ ] Roundtrip PASS
+  - [x] Fused RMSNorm+in_proj kernel (inline sum_sq + inv_rms + scale)
+  - [x] Fused out_proj+residual kernel (`mat_vec_mul_add_into` AVX2)
+  - [x] A/B controlado: tok/s fused vs current — ±0%
+  - [x] BPB bit-exact confirmado
+  - [x] Resultado: ±0% = no medible → NO VIABLE, código revertido
 
 #### R-070: Conv1d SIMD
 - **Estado**: PENDIENTE
@@ -1889,12 +1902,12 @@ PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
 
 ```
 R-068 (PGO) ──→ medido: +1.1% (ruido) ──→ NO VIABLE (DRAM-bound, no CPU-bound)
-R-069 (op fusion) ──→ code change, +2-5%, independent
+R-069 (op fusion) ──→ medido: ±0% ──→ NO VIABLE (buffers L1-resident, no DRAM)
 R-070 (conv1d SIMD) ──→ code change, +0.5-1%, independent
 R-071 (SVD LM head) ──→ code change, +10-20%, risky BPB
 ```
 
-Estado: R-068 ❌ R-069 ⏳ R-070 ⏳ R-071 ⏳.
+Estado: R-068 ❌ R-069 ❌ R-070 ⏳ R-071 ⏳.
 
 ---
 
