@@ -1715,6 +1715,97 @@ DRAM bandwidth sigue como bottleneck real. Solo R-063 (batch checkpoint) queda v
 
 ---
 
+### Fase 11: DRAM Bandwidth Optimization (R-064 to R-067)
+
+**Motivación**: Mamba-130M está memory-bound (intensidad aritmética ~2 FLOP/byte,
+ridge point DDR4-2667 ~9-13 FLOP/byte). El modelo usa f32 puro (493MB) — cada matmul
+lee 4 bytes/peso. El throughput actual (27-34 tok/s) está al 70-85% del techo teórico Q8.
+Processing-in-Memory (UPMEM, HBM-PIM) requiere hardware especial — no viable en laptop.
+Las técnicas de esta fase reducen el tráfico DRAM desde software.
+
+**Investigación base**: PIM/NDP survey (2026), MVDRAM, T-MAC, roofline analysis.
+
+#### R-064: Mamba Q8 quantization at load time
+- **Estado**: PENDIENTE
+- **Impacto**: **4x menos tráfico DRAM** en todas las matrices Mamba
+- **Riesgo BPB**: ~0-2.5% (Q8 probado acceptable en RWKV: <2.5% degradación)
+- **Descripción**: Mamba carga SafeTensors como f32 (493MB).
+  Convertir todas las matrices de peso a `Q8Tensor` al cargar el modelo.
+  Usar los kernels `q8_mat_vec_mul_into` existentes (AVX2+VNNI ya implementados).
+  Mamba pasa de `mat_vec_mul_into(f32)` a `q8_mat_vec_mul_into(i8)` en el hot loop.
+  El vector de activación se cuantiza on-the-fly (ya existe `quantize_vec_i8_into`).
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/domain/quant.rs`
+- **Subtareas**:
+  - [ ] Cambiar `MambaLayerWeights` de `Tensor` a `Q8Tensor` para las 5 matrices
+  - [ ] Cuantizar en `MambaModel::load()` tras leer SafeTensors
+  - [ ] Adaptar forward loop a `q8_mat_vec_mul_into` + scratch `v_q` buffer
+  - [ ] Mantener `emb_w` como f32 (embedding lookup no es matmul)
+  - [ ] A/B controlado: tok/s SIMD vs scalar, BPB multi-archivo
+  - [ ] Roundtrip PASS (enwik8, apache, dickens)
+
+#### R-065: NTA prefetch for weight streaming
+- **Estado**: PENDIENTE
+- **Impacto**: +10-20% throughput estimado
+- **Riesgo BPB**: 0% (no cambia cómputo, solo hints de cache)
+- **Descripción**: Los prefetch actuales usan `_MM_HINT_T0` (trae a L1/L2/L3).
+  Los pesos de GEMV se leen una vez por token — NO deberían contaminar L3.
+  Cambiar a `_MM_HINT_NTA` (non-temporal) para prefetch de pesos.
+  Mantener T0 para el vector de activación (reutilizado en cada fila).
+  El estado SSM se mantiene L1-residente al no competir con pesos en L3.
+- **Archivos**: `src/domain/tensor.rs` (q8_mat_vec_mul_avx2_into, mat_vec_mul_avx2_nofma_raw)
+- **Subtareas**:
+  - [ ] Cambiar `_MM_HINT_T0` a `_MM_HINT_NTA` en prefetch de pesos (Q8 + F32)
+  - [ ] Mantener T0 para prefetch de vector (si existe)
+  - [ ] Env var `REDUKT_NTA_PREFETCH=0` para rollback (default: NTA enabled)
+  - [ ] A/B controlado: tok/s NTA vs T0, min 3 rounds alternando
+  - [ ] BPB bit-exact (solo cambia timing, no cómputo)
+
+#### R-066: Mixed Q4/Q8 per-layer (Mamba)
+- **Estado**: PENDIENTE (depende R-064)
+- **Impacto**: ~35-40% bandwidth adicional sobre Q8 uniforme
+- **Riesgo BPB**: ~1-3% (presupuesto max: +3%)
+- **Descripción**: No todas las capas de Mamba-130M tienen la misma sensibilidad.
+  Medir KL-divergence por capa: cuantizar una capa a Q4, medir degradación BPB.
+  Capas insensitivas (KL < umbral) → Q4 (group_size=64). Resto → Q8.
+  Target: 50%+ de capas en Q4 = ~35-40% menos bandwidth total.
+  Si ninguna capa tolera Q4 (como R-061 sugiere), marcar NO VIABLE.
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
+- **Subtareas**:
+  - [ ] Instrumento de medición: per-layer Q4 BPB delta (eval mode)
+  - [ ] Identificar capas tolerantes a Q4 (KL < 0.01)
+  - [ ] Implementar QuantPolicy::PerLayer para Mamba
+  - [ ] Benchmark completo: BPB multi-archivo, roundtrip
+  - [ ] Si +3% BPB en CUALQUIER archivo → marcar NO VIABLE
+
+#### R-067: Weight layout optimization (L2-tile repack)
+- **Estado**: PENDIENTE (depende R-064)
+- **Impacto**: +5-15% throughput estimado
+- **Riesgo BPB**: 0% (mismos datos, diferente orden en memoria)
+- **Descripción**: Las matrices Q8 se almacenan row-major contiguo.
+  Al cargar, reorganizar en tiles de ~32KB (match L2 way size i5-1235U).
+  Cada tile: 128 filas × 256 columnas (128×256 bytes Q8 = 32KB).
+  El GEMV procesa tile-por-tile, maximizando hits en L2.
+  Solo afecta matrices grandes (in_proj 3072×768, emb 50280×768).
+- **Archivos**: `src/domain/tensor.rs` o `src/domain/quant.rs`
+- **Subtareas**:
+  - [ ] Función `retile_q8(mat, tile_rows, tile_cols)` al cargar
+  - [ ] Kernel `q8_mat_vec_tiled_into` que procesa por tiles
+  - [ ] A/B controlado: tok/s tiled vs linear, min 3 rounds
+  - [ ] BPB bit-exact (mismos valores, diferente layout)
+
+#### Secuencia Fase 11
+
+```
+R-064 (Mamba Q8) ──→ 4x menos DRAM ──→ baseline para R-066/R-067
+R-065 (NTA prefetch) ──→ independiente, paralelo con R-064
+R-066 (mixed Q4/Q8) ──→ depende R-064 ──→ puede ser NO VIABLE (sensibilidad 130M)
+R-067 (L2-tile) ──→ depende R-064 ──→ marginal si bandwidth ya no es bottleneck
+```
+
+Estado: R-064 ⏳ R-065 ⏳ R-066 ⏳ R-067 ⏳. Todas pendientes.
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -1966,3 +2057,5 @@ DRAM bandwidth sigue como bottleneck real. Solo R-063 (batch checkpoint) queda v
 | 2026-11-02 | R-062: thr≤0.15 → 0 skips (residuales >15%). thr=0.10 → 17/85K skips → +3.86% BPB |
 | 2026-11-02 | R-062: thr=0.20 → 5.5% skips → +713% BPB (catastrófico) |
 | 2026-11-02 | Conclusión Fase 10: 4/5 técnicas NO VIABLES en 130M. Solo R-063 (batch) pendiente |
+| 2026-11-02 | Investigación DRAM: PIM no viable en commodity DDR4, roofline analysis, 6 técnicas identificadas |
+| 2026-11-02 | Fase 11 definida: R-064 (Mamba Q8) → R-065 (NTA prefetch) → R-066 (mixed Q4/Q8) → R-067 (L2-tile) |
