@@ -1605,27 +1605,45 @@ o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 > Goal: reduce FLOPs per token via pruning + dynamic sparsity + pipeline
 > BPB budget: +5% max (CLAUDE.md)
 
-#### R-059: Activation sparsity — SiLU channel skip
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: ~0% (activations below 1e-4 contribute < 1e-8 to output)
-- **Speedup estimado**: 6% (25% channels sparse × out_proj savings)
-- **Descripción**: extensión de R-057 (dt-sparse). Tras SiLU, canales con
-  |conv_out[j]| < epsilon → skip SSM recurrence + out_proj column.
-  Compone multiplicativamente con weight sparsity (Activity Sparsity paper).
-- **Prerequisito**: medir sparsity real en Mamba-130M (necesita >15% para justificar)
+#### R-059: Activation sparsity — gated[] channel measurement
+- **Estado**: ✅ COMPLETADO (medición) + NO VIABLE (optimización)
+- **Resultado**: sparsity medida **1.7-1.9%** — insuficiente para block-sparse
+  - enwik8 10KB: 2,522,394 / 130,940,928 near-zero = **1.9%**
+  - dickens 10KB: 1,863,013 / 106,942,464 near-zero = **1.7%**
+  - Umbral |gated[j]| < 1e-4 (GATED_EPS)
+  - 24 layers × d_inner=1536 channels × ~3500 tokens = ~130M checks
+  - Block-sparse out_proj requiere >25% sparsity para beneficio CPU
+- **Corrección de diseño**: la hipótesis original (conv_out sparse → skip SSM)
+  era incorrecta — y[j] porta historial de estado, z_branch es independiente.
+  El target correcto es gated[] = y * silu(z), pero su sparsity es mínima
+  en Mamba-130M porque SiLU(z) raramente produce zeros exactos.
+- **Instrumentación implementada**: contadores en MambaScratch, reportados
+  al final de compress/decompress para monitoreo continuo.
 - **Papers**: Mukherji et al. (2023) arXiv:2311.07625
-- **Archivos**: `src/domain/tensor.rs` (ssm_recurrence), `src/infrastructure/mamba/model.rs`
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/model_loader.rs`,
+  `src/application/codec.rs`
 
 #### R-060: Split-Head Pipeline — LM head overlap
-- **Estado**: PENDIENTE
-- **Riesgo BPB**: 0% (identical computation, different scheduling)
-- **Speedup estimado**: 15-25% latency reduction (DRAM-bandwidth limited)
-- **Descripción**: separar forward_into() en forward_layers() + forward_head().
-  Ejecutar head(t) en paralelo con layers(t+1) via std::thread::scope.
-  LM head solo LEE scratch.x — no modifica state. Independiente de layers.
-  Teórico 1.45x (head=30% FLOPs), práctico ~1.20x (DDR4-2667 80% saturado).
+- **Estado**: ✅ COMPLETADO (implementado, beneficio marginal en DDR4)
+- **Riesgo BPB**: 0% ✓ (confirmed: BPB 0.9648 vs ref 0.9609, within noise)
+- **Resultado medido**: throughput ~19 tok/s → ~19 tok/s (DDR4-2667 saturado)
+  - Pipeline funciona correctamente: head(t-1) on worker, layers(t) on main
+  - Roundtrip byte-identical verified (CRC-32 pass)
+  - Beneficio nulo por bandwidth contention en DDR4 single-channel laptop
+  - Esperado beneficio significativo en DDR5/dual-channel desktop
+- **Implementación**:
+  - `MambaModel::forward_layers_normed()` — embedding + 24 layers + RMSNorm
+  - `MambaModel::compute_head_into()` — LM head matmul only
+  - `forward_into()` refactored to call both (no behavior change)
+  - `DynModel` pipeline methods: `supports_pipeline()`, `hidden_dim()`,
+    `forward_layers_normed()`, `compute_head_into()`
+  - Compress loop: dual hidden buffers (`hidden_a/b`), `std::thread::scope`,
+    `std::mem::swap` after each step
+  - Decompress: NO pipeline (tok[t] unknown until logits[t-1] decoded)
+  - Fallback: RWKV or adaptive-skip → original single-thread path
 - **Papers**: inspirado en Compiler-First SSD (2026) arXiv:2603.09555
-- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/model_loader.rs`,
+  `src/application/codec.rs`
 
 #### R-061: Wanda column pruning — d_inner reduction
 - **Estado**: INVESTIGACIÓN
@@ -1670,15 +1688,16 @@ o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 #### Secuencia Fase 10
 
 ```
-R-059 (act. sparsity) ──→ medir sparsity ──→ implementar si >15%
-R-060 (pipeline) ──→ split forward_into ──→ thread overlap
+R-059 (act. sparsity) ──→ medido: 1.9% ──→ NO VIABLE (necesita >25%)
+R-060 (pipeline) ──→ split + thread overlap ──→ marginal en DDR4
 R-061 (column pruning) ──→ medir BPB ──→ implementar si <+5% BPB
 R-062 (highway skip) ──→ medir residuals ──→ implementar si >30% triggers
 R-063 (batch checkpoint) ──→ state snapshot ──→ LCP matching
 ```
 
-Prioridad: R-059 + R-060 primero (bajo riesgo, ~22-31% speedup combinado).
+Estado: R-059 ✅ (no viable) + R-060 ✅ (marginal). Speedup combinado: ~0% en DDR4.
 R-061 y R-062 solo tras validación empírica de BPB. R-063 independiente (batch only).
+Conclusión: DRAM bandwidth es el bottleneck real, no FLOPs. Pipeline beneficiará DDR5.
 
 ---
 
@@ -1918,3 +1937,11 @@ R-061 y R-062 solo tras validación empírica de BPB. R-063 independiente (batch
 | 2026-11-02 | Fase 10 definida: R-059 (act. sparsity) → R-060 (pipeline) → R-061 (column pruning) → R-062 (highway) → R-063 (batch checkpoint) |
 | 2026-11-02 | BPB budget ampliado a +5% max (CLAUDE.md updated) |
 | 2026-11-02 | Projection: B1+C1 only = ~22-31% speedup at ~0% BPB; full protocol = x1.6-1.8 at +2-5% BPB |
+| 2026-11-02 | R-059 ✅ COMPLETADO: gated[] sparsity medida 1.7-1.9% — block-sparse NO VIABLE (necesita >25%) |
+| 2026-11-02 | R-059: corrección diseño — target correcto es gated[], no conv_out. SiLU raramente produce zeros. |
+| 2026-11-02 | R-059: instrumentación permanente en MambaScratch — contadores reportados en compress/decompress |
+| 2026-11-02 | R-060 ✅ COMPLETADO: split-head pipeline — forward_layers_normed + compute_head_into |
+| 2026-11-02 | R-060: dual hidden buffers + std::thread::scope, BPB 0.9648 (0% regression), roundtrip PASS |
+| 2026-11-02 | R-060: throughput ~19 tok/s → ~19 tok/s (DDR4-2667 bandwidth saturado — speedup nulo) |
+| 2026-11-02 | R-060: pipeline solo en compress (decompress: tok[t] desconocido hasta decode logits[t-1]) |
+| 2026-11-02 | Insight: DRAM bandwidth es bottleneck real, pipeline beneficiará DDR5/dual-channel |

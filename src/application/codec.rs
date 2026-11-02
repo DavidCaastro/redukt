@@ -727,55 +727,115 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("[compress] encoding ...");
     let t_start = std::time::Instant::now();
 
-    for t in 0..tokens.len() {
-        let tok = tokens[t] as usize;
+    let use_pipeline = model.supports_pipeline() && adaptive_skip == 0;
 
-        if t == 0 {
+    if use_pipeline {
+        // R-060: split-head pipeline — overlap LM head(t-1) with layers(t).
+        // head(t-1) only reads hidden_a + model weights (immutable).
+        // layers(t) reads/writes state + scratch (disjoint).
+        let d_hidden = model.hidden_dim();
+        let mut hidden_a = vec![0.0f32; d_hidden]; // hidden from step t-1
+        let mut hidden_b = vec![0.0f32; d_hidden]; // hidden from step t (work buf)
+
+        // Prime: step 0 — encode uniform, run layers, store hidden[0]
+        {
+            let tok = tokens[0] as usize;
             let cdf = Cdf::uniform(v);
             enc.encode_symbol(tok, &cdf);
-            let prob = 1.0 / v as f64;
-            ce_bits += -prob.log2();
-        } else {
+            ce_bits += -(1.0f64 / v as f64).log2();
+            cm.observe(tok as u32);
+            model.forward_layers_normed(tok, &mut state, &mut scratch, &mut hidden_a);
+        }
+
+        // Pipeline steps 1..N
+        for t in 1..tokens.len() {
+            let tok = tokens[t] as usize;
+
+            // Overlap: worker runs head(hidden_a) → logits; main runs layers(tok) → hidden_b
+            std::thread::scope(|s| {
+                let h = s.spawn(|| {
+                    model.compute_head_into(&hidden_a, &mut logits);
+                });
+                model.forward_layers_normed(tok, &mut state, &mut scratch, &mut hidden_b);
+                h.join().unwrap();
+            });
+            // logits = logits[t-1], hidden_b = hidden[t]
+
             cm.compute_biases(None);
             cm.combine_into(&mut ensemble_buf, &logits);
-
             let cdf = cdf_from_logits(&ensemble_buf);
             enc.encode_symbol(tok, &cdf);
-
             softmax_into(&ensemble_buf, &mut probs_buf);
             let prob = probs_buf[tok] as f64;
             ce_bits += -prob.max(1e-30).log2();
-
             cm.update(&probs_buf, tok);
+            cm.observe(tok as u32);
+
+            std::mem::swap(&mut hidden_a, &mut hidden_b);
+
+            if t % 100 == 0 {
+                governor.apply().map_err(|e| AzError::Format(e))?;
+            }
+            if t % 1000 == 0 || t == tokens.len() - 1 {
+                let elapsed = t_start.elapsed().as_secs_f64();
+                let pct = 100.0 * t as f64 / tokens.len() as f64;
+                let enc_size = enc.size();
+                eprint!(
+                    "\r[compress] {:.1}% | {} tokens | ~{} bytes | {:.1} tok/s   ",
+                    pct, t, enc_size, t as f64 / elapsed,
+                );
+            }
         }
+    } else {
+        // Original path: RWKV or adaptive-skip enabled.
+        for t in 0..tokens.len() {
+            let tok = tokens[t] as usize;
 
-        cm.observe(tok as u32);
+            if t == 0 {
+                let cdf = Cdf::uniform(v);
+                enc.encode_symbol(tok, &cdf);
+                let prob = 1.0 / v as f64;
+                ce_bits += -prob.log2();
+            } else {
+                cm.compute_biases(None);
+                cm.combine_into(&mut ensemble_buf, &logits);
+                let cdf = cdf_from_logits(&ensemble_buf);
+                enc.encode_symbol(tok, &cdf);
+                softmax_into(&ensemble_buf, &mut probs_buf);
+                let prob = probs_buf[tok] as f64;
+                ce_bits += -prob.max(1e-30).log2();
+                cm.update(&probs_buf, tok);
+            }
 
-        // CM-selective backbone skip (R-056): skip forward when ensemble
-        // was confident about this token. K≤3 consecutive skips bounds
-        // state divergence to ≤2.85|b| (Mamba |a|≈0.95).
-        let do_skip = adaptive_skip > 0 && t > 0
-            && consec_skips < MAX_CONSEC_SKIP
-            && probs_buf[tok] > skip_thr_f;
+            cm.observe(tok as u32);
 
-        if do_skip {
-            skip_count += 1;
-            consec_skips += 1;
-        } else {
-            model.forward_into(tok, &mut state, &mut scratch, &mut logits);
-            consec_skips = 0;
-        }
+            // CM-selective backbone skip (R-056): skip forward when ensemble
+            // was confident about this token. K≤3 consecutive skips bounds
+            // state divergence to ≤2.85|b| (Mamba |a|≈0.95).
+            let do_skip = adaptive_skip > 0 && t > 0
+                && consec_skips < MAX_CONSEC_SKIP
+                && probs_buf[tok] > skip_thr_f;
 
-        if t > 0 && t % 100 == 0 {
-            governor.apply()
-                .map_err(|e| AzError::Format(e))?;
-        }
-        if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
-            let elapsed = t_start.elapsed().as_secs_f64();
-            let pct = 100.0 * t as f64 / tokens.len() as f64;
-            let enc_size = enc.size();
-            eprint!("\r[compress] {:.1}% | {} tokens | ~{} bytes | {:.1} tok/s   ",
-                    pct, t, enc_size, t as f64 / elapsed);
+            if do_skip {
+                skip_count += 1;
+                consec_skips += 1;
+            } else {
+                model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+                consec_skips = 0;
+            }
+
+            if t > 0 && t % 100 == 0 {
+                governor.apply().map_err(|e| AzError::Format(e))?;
+            }
+            if t > 0 && (t % 1000 == 0 || t == tokens.len() - 1) {
+                let elapsed = t_start.elapsed().as_secs_f64();
+                let pct = 100.0 * t as f64 / tokens.len() as f64;
+                let enc_size = enc.size();
+                eprint!(
+                    "\r[compress] {:.1}% | {} tokens | ~{} bytes | {:.1} tok/s   ",
+                    pct, t, enc_size, t as f64 / elapsed,
+                );
+            }
         }
     }
 
@@ -783,6 +843,15 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         let skip_pct = 100.0 * skip_count as f64 / tokens.len().max(1) as f64;
         eprintln!("\n[compress] skipped {} / {} forward passes ({:.1}%)",
                   skip_count, tokens.len(), skip_pct);
+    }
+
+    // R-059: report activation sparsity
+    if let Some((total, near_zero)) = model_loader::DynModel::mamba_sparsity(&scratch) {
+        if total > 0 {
+            let pct = 100.0 * near_zero as f64 / total as f64;
+            eprintln!("[compress] gated sparsity: {}/{} channels near-zero ({:.1}%)",
+                      near_zero, total, pct);
+        }
     }
 
     let compressed = enc.finish();
@@ -1359,6 +1428,15 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         let skip_pct = 100.0 * skip_count as f64 / t.max(1) as f64;
         eprintln!("[decompress] skipped {} / {} forward passes ({:.1}%)",
                   skip_count, t, skip_pct);
+    }
+
+    // R-059: report activation sparsity
+    if let Some((total, near_zero)) = model_loader::DynModel::mamba_sparsity(&scratch) {
+        if total > 0 {
+            let pct = 100.0 * near_zero as f64 / total as f64;
+            eprintln!("[decompress] gated sparsity: {}/{} near-zero ({:.1}%)",
+                      near_zero, total, pct);
+        }
     }
 
     // Flush streaming writer before verification

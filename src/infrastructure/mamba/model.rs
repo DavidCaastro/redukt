@@ -90,7 +90,7 @@ impl MambaState {
 // --- Scratch ---
 
 pub struct MambaScratch {
-    x: Vec<f32>,               // (d_model,)
+    pub x: Vec<f32>,           // (d_model,) — normed hidden state after forward_layers_normed
     xz: Vec<f32>,              // (2*d_inner,)
     conv_out: Vec<f32>,        // (d_inner,)
     z_proj: Vec<f32>,          // (dt_rank + 2*d_state,)
@@ -100,6 +100,9 @@ pub struct MambaScratch {
     result: Vec<f32>,          // (d_model,)
     dt_raw: Vec<f32>,          // (dt_rank,)
     normed: Vec<f32>,          // (d_model,) — avoids per-step clone
+    // R-059: activation sparsity measurement
+    pub sparsity_total_channels: u64,
+    pub sparsity_near_zero: u64,
 }
 
 impl MambaScratch {
@@ -115,6 +118,8 @@ impl MambaScratch {
             result: vec![0.0; config.d_model],
             dt_raw: vec![0.0; config.dt_rank],
             normed: vec![0.0; config.d_model],
+            sparsity_total_channels: 0,
+            sparsity_near_zero: 0,
         }
     }
 }
@@ -216,10 +221,10 @@ impl MambaModel {
         MambaScratch::new(&self.config)
     }
 
-    /// Single-step forward pass (RNN mode).
-    pub fn forward_into(
-        &self, token: usize, state: &mut MambaState,
-        scratch: &mut MambaScratch, out_logits: &mut [f32],
+    /// Run embedding + all layers + final RMSNorm; result in `scratch.x` (R-060).
+    /// Does NOT compute the LM head. Use `compute_head_into` for that.
+    pub fn forward_layers_normed(
+        &self, token: usize, state: &mut MambaState, scratch: &mut MambaScratch,
     ) {
         let d = self.config.d_model;
         let di = self.config.d_inner;
@@ -266,9 +271,7 @@ impl MambaModel {
             silu_inplace(&mut scratch.conv_out[..di]);
 
             // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj
-            mat_vec_mul_into(
-                &mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out,
-            );
+            mat_vec_mul_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out);
 
             // Split z_proj → dt_raw, B, C
             scratch.dt_raw[..dr].copy_from_slice(&scratch.z_proj[..dr]);
@@ -276,9 +279,7 @@ impl MambaModel {
             let c_slice = &scratch.z_proj[dr + ds..dr + 2 * ds];
 
             // dt = softplus(dt_proj @ dt_raw + dt_proj_bias)
-            mat_vec_mul_into(
-                &mut scratch.dt, &lw.dt_proj_w, &scratch.dt_raw,
-            );
+            mat_vec_mul_into(&mut scratch.dt, &lw.dt_proj_w, &scratch.dt_raw);
             for j in 0..di {
                 scratch.dt[j] = portable_softplus(scratch.dt[j] + lw.dt_proj_b[j]);
             }
@@ -292,14 +293,21 @@ impl MambaModel {
             );
 
             // Gate: gated[j] = y[j] * silu(z_branch[j])
-            gated_silu_mul(
-                &mut scratch.gated[..di], &scratch.y[..di], z_branch,
-            );
+            gated_silu_mul(&mut scratch.gated[..di], &scratch.y[..di], z_branch);
+
+            // R-059: measure gated[] activation sparsity
+            {
+                const GATED_EPS: f32 = 1e-4;
+                for j in 0..di {
+                    scratch.sparsity_total_channels += 1;
+                    if scratch.gated[j].abs() < GATED_EPS {
+                        scratch.sparsity_near_zero += 1;
+                    }
+                }
+            }
 
             // out_proj: (d_model, d_inner) @ gated → result
-            mat_vec_mul_into(
-                &mut scratch.result, &lw.out_proj_w, &scratch.gated,
-            );
+            mat_vec_mul_into(&mut scratch.result, &lw.out_proj_w, &scratch.gated);
 
             // Residual add
             for j in 0..d {
@@ -309,8 +317,20 @@ impl MambaModel {
 
         // Final RMSNorm
         rms_norm_into(&mut scratch.x, &self.norm_f_w, 1e-5);
+    }
 
-        // LM head (tied weights): emb_w @ x → logits
+    /// Compute LM head from a pre-normed hidden vector (R-060).
+    /// `hidden` must be a slice of length `d_model` (e.g. a copy of `scratch.x`).
+    pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
+        mat_vec_mul_into(out_logits, &self.emb_w, hidden);
+    }
+
+    /// Single-step forward pass (RNN mode).
+    pub fn forward_into(
+        &self, token: usize, state: &mut MambaState,
+        scratch: &mut MambaScratch, out_logits: &mut [f32],
+    ) {
+        self.forward_layers_normed(token, state, scratch);
         mat_vec_mul_into(out_logits, &self.emb_w, &scratch.x);
     }
 }
@@ -323,7 +343,12 @@ impl BackboneState for MambaState {
     fn reset(&mut self) { self.reset(); }
 }
 
-impl BackboneScratch for MambaScratch {}
+impl BackboneScratch for MambaScratch {
+    fn reset_perf(&mut self) {
+        self.sparsity_total_channels = 0;
+        self.sparsity_near_zero = 0;
+    }
+}
 
 impl Backbone for MambaModel {
     type State = MambaState;

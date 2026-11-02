@@ -102,7 +102,7 @@ impl BackboneScratch for DynScratch {
     fn reset_perf(&mut self) {
         match self {
             Self::Rwkv(s) => s.reset_perf(),
-            Self::Mamba(_) => {}
+            Self::Mamba(s) => s.reset_perf(),
         }
     }
 }
@@ -165,6 +165,43 @@ impl BackendTokenizer for DynTokenizer {
 }
 
 impl DynModel {
+    /// Whether split-head pipeline is supported (R-060, Mamba only).
+    pub fn supports_pipeline(&self) -> bool {
+        matches!(self, Self::Mamba(_))
+    }
+
+    /// Hidden dimension for pipeline buffer allocation (R-060).
+    pub fn hidden_dim(&self) -> usize {
+        match self {
+            Self::Rwkv(m) => m.vocab_size(),
+            Self::Mamba(m) => m.config.d_model,
+        }
+    }
+
+    /// Run layers + RMSNorm only; copies `scratch.x` into `hidden_out` (R-060).
+    /// Mamba only — panics if called on RWKV.
+    pub fn forward_layers_normed(
+        &self, token: usize, state: &mut DynState, scratch: &mut DynScratch,
+        hidden_out: &mut [f32],
+    ) {
+        match (self, state, scratch) {
+            (Self::Mamba(m), DynState::Mamba(s), DynScratch::Mamba(sc)) => {
+                m.forward_layers_normed(token, s, sc);
+                hidden_out.copy_from_slice(&sc.x);
+            }
+            _ => panic!("pipeline only supported for Mamba"),
+        }
+    }
+
+    /// Compute LM head from a hidden buffer (R-060).
+    /// Mamba only — panics if called on RWKV.
+    pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
+        match self {
+            Self::Mamba(m) => m.compute_head_into(hidden, out_logits),
+            _ => panic!("pipeline only supported for Mamba"),
+        }
+    }
+
     /// Apply embedding surgery (RWKV-only, no-op for Mamba).
     pub fn embedding_surgery(&mut self, method: &str) {
         if let Self::Rwkv(m) = self {
@@ -176,6 +213,15 @@ impl DynModel {
     pub fn rwkv_perf(scratch: &DynScratch) -> Option<(u64, u64, u64, u64)> {
         if let DynScratch::Rwkv(s) = scratch {
             Some((s.perf_layers_us, s.perf_head_us, s.perf_tmix_us, s.perf_cmix_us))
+        } else {
+            None
+        }
+    }
+
+    /// Mamba activation sparsity stats (R-059).
+    pub fn mamba_sparsity(scratch: &DynScratch) -> Option<(u64, u64)> {
+        if let DynScratch::Mamba(s) = scratch {
+            Some((s.sparsity_total_channels, s.sparsity_near_zero))
         } else {
             None
         }
