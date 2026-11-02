@@ -1744,21 +1744,17 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 - **Código**: revertido completamente — model.rs idéntico a pre-R-064
 
 #### R-065: NTA prefetch for weight streaming
-- **Estado**: PENDIENTE
-- **Impacto**: +10-20% throughput estimado
-- **Riesgo BPB**: 0% (no cambia cómputo, solo hints de cache)
-- **Descripción**: Los prefetch actuales usan `_MM_HINT_T0` (trae a L1/L2/L3).
-  Los pesos de GEMV se leen una vez por token — NO deberían contaminar L3.
-  Cambiar a `_MM_HINT_NTA` (non-temporal) para prefetch de pesos.
-  Mantener T0 para el vector de activación (reutilizado en cada fila).
-  El estado SSM se mantiene L1-residente al no competir con pesos en L3.
-- **Archivos**: `src/domain/tensor.rs` (q8_mat_vec_mul_avx2_into, mat_vec_mul_avx2_nofma_raw)
-- **Subtareas**:
-  - [ ] Cambiar `_MM_HINT_T0` a `_MM_HINT_NTA` en prefetch de pesos (Q8 + F32)
-  - [ ] Mantener T0 para prefetch de vector (si existe)
-  - [ ] Env var `REDUKT_NTA_PREFETCH=0` para rollback (default: NTA enabled)
-  - [ ] A/B controlado: tok/s NTA vs T0, min 3 rounds alternando
-  - [ ] BPB bit-exact (solo cambia timing, no cómputo)
+- **Estado**: ❌ NO VIABLE (2026-11-02) [MEASURED]
+- **Impacto medido**: ±0% (dentro de noise térmico)
+- **BPB**: 0.9648 — idéntico con NTA y T0 (confirmado, no cambia cómputo)
+- **Descripción**: Implementado y medido en controlled A/B (same session, alternating).
+  Cambiados todos los 32 `_MM_HINT_T0` a `_MM_HINT_NTA` en 4 kernels GEMV.
+  Resultado: NTA 28.5-29.8 tok/s vs NO-PREFETCH 29.3-31.0 tok/s.
+  NTA NO mejora throughput en DDR4-2667 single-channel + 12MB L3.
+  Razón: Mamba-130M (493MB f32) ya evicta L3 completamente en cada token step.
+  NTA vs T0 es irrelevante cuando L3 working set >> L3 capacity (493MB >> 12MB).
+  NTA podría beneficiar en sistemas con L3 más grande (>64MB, server-class).
+- **Código**: revertido completamente — tensor.rs sin cambios
 
 #### R-066: Mixed Q4/Q8 per-layer (Mamba)
 - **Estado**: ❌ BLOQUEADO / NO VIABLE (2026-11-02)
@@ -1786,12 +1782,12 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 
 ```
 R-064 (Mamba Q8) ──→ medido: +16.6% BPB ──→ NO VIABLE (PTQ on 130M)
-R-065 (NTA prefetch) ──→ independiente, zero BPB risk
+R-065 (NTA prefetch) ──→ medido: ±0% tok/s ──→ NO VIABLE (L3 << model size)
 R-066 (mixed Q4/Q8) ──→ BLOQUEADO (R-064 Q8 ya falla, Q4 peor)
-R-067 (L2-tile) ──→ independiente, zero BPB risk
+R-067 (L2-tile) ──→ último intento, zero BPB risk
 ```
 
-Estado: R-064 ❌ R-065 ⏳ R-066 BLOQUEADO R-067 ⏳.
+Estado: R-064 ❌ R-065 ❌ R-066 ❌ R-067 ⏳.
 
 ---
 
@@ -2050,3 +2046,4 @@ Estado: R-064 ❌ R-065 ⏳ R-066 BLOQUEADO R-067 ⏳.
 | 2026-11-02 | Fase 11 definida: R-064 (Mamba Q8) → R-065 (NTA prefetch) → R-066 (mixed Q4/Q8) → R-067 (L2-tile) |
 | 2026-11-02 | R-064 ❌ NO VIABLE: Q8 PTQ +16.6% BPB (all-Q8), +14.5% (LM head only). Roundtrip PASS. Revertido |
 | 2026-11-02 | R-066 ❌ BLOQUEADO: Q8 ya inaceptable, Q4 peor. PTQ no viable en Mamba-130M |
+| 2026-11-02 | R-065 ❌ NO VIABLE: NTA prefetch ±0% (493MB >> 12MB L3, pollution irrelevant) |
