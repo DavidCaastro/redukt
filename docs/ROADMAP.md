@@ -1796,6 +1796,96 @@ Para superar esto se necesita: DDR5, dual-channel, o modelo más pequeño (Mamba
 
 ---
 
+### Fase 12: Compiler & Operator Optimization (R-068 to R-071)
+
+**Motivación**: Tras agotar optimizaciones SIMD, sparsity, quantization y cache (Fases 9-11),
+quedan técnicas a nivel de compilador y fusión de operadores que NO se han intentado.
+PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
+
+#### R-068: Profile-Guided Optimization (PGO)
+- **Estado**: PENDIENTE
+- **Impacto estimado**: +10-25% throughput
+- **Riesgo BPB**: 0% (misma lógica, mejor layout de código)
+- **Descripción**: Compilar con `-C profile-generate`, ejecutar workload representativo
+  (compress enwik8 10KB + apache 10KB), recompilar con `-C profile-use`.
+  PGO optimiza branch prediction, code layout, inlining decisions basado en datos reales.
+  Evidencia: +10-20% en llama.cpp, +15% en rustc self-compile.
+  Fat LTO (ya habilitado) + PGO = combinación óptima. Zero cambios de código.
+- **Archivos**: `Cargo.toml` (profile), scripts de build
+- **Subtareas**:
+  - [ ] Build instrumentado con profile-generate
+  - [ ] Ejecutar workload representativo (min 2 archivos: text + structured)
+  - [ ] Rebuild con profile-use
+  - [ ] A/B controlado: tok/s PGO vs normal, min 3 rounds alternando
+  - [ ] BPB bit-exact (PGO no cambia lógica)
+  - [ ] Documentar script reproducible para re-generar PGO
+
+#### R-069: Operator fusion — RMSNorm+matmul, matmul+residual
+- **Estado**: PENDIENTE
+- **Impacto estimado**: +2-5% throughput
+- **Riesgo BPB**: 0% (misma aritmética, menos buffers intermedios)
+- **Descripción**: Cada capa Mamba escribe/lee ~84KB de buffers intermedios.
+  24 capas × 30 tok/s = ~60 MB/s de tráfico intermedio innecesario.
+  Fusiones:
+  1. **RMSNorm + in_proj**: norm(x) y multiplicar por in_proj en un solo pass,
+     sin materializar `scratch.normed` (ahorra 3KB write + 3KB read por capa)
+  2. **out_proj + residual_add**: `x[j] += dot(out_proj_row_j, gated)` directo,
+     sin materializar `scratch.result` (ahorra 3KB write + 3KB read por capa)
+- **Archivos**: `src/infrastructure/mamba/model.rs` (forward_layers_normed)
+- **Subtareas**:
+  - [ ] Fused RMSNorm+in_proj kernel
+  - [ ] Fused out_proj+residual kernel
+  - [ ] A/B controlado: tok/s fused vs current
+  - [ ] BPB bit-exact (misma aritmética, diferente orden de materialización)
+  - [ ] Roundtrip PASS
+
+#### R-070: Conv1d SIMD
+- **Estado**: PENDIENTE
+- **Impacto estimado**: +0.5-1% throughput
+- **Riesgo BPB**: 0% (misma aritmética)
+- **Descripción**: El conv1d shift register es scalar puro.
+  d_inner×d_conv = 1536×4 = 6144 FMAs por token por capa.
+  Con AVX2: 8 canales simultáneos en el loop `for j in 0..di`.
+  Marginal (~1-2% del forward) pero trivial de implementar.
+- **Archivos**: `src/infrastructure/mamba/model.rs` (forward_layers_normed, conv1d block)
+- **Subtareas**:
+  - [ ] AVX2 kernel para conv1d shift + multiply + bias
+  - [ ] A/B controlado: tok/s SIMD vs scalar
+  - [ ] BPB bit-exact
+
+#### R-071: Reduced-rank LM head (SVD factorization)
+- **Estado**: PENDIENTE
+- **Impacto estimado**: +10-20% throughput (LM head = 30% of FLOPs)
+- **Riesgo BPB**: ~1-5% (depende del rank efectivo)
+- **Descripción**: El LM head (50280×768 = 38.6M FLOPs) es 30% del forward.
+  Factorizar: `emb_w ≈ U(50280,k) × V(k,768)` con SVD truncado.
+  Con k=256: 13.1M vs 38.6M = -66% FLOPs en LM head = -20% forward total.
+  R-016 probó SVD en TODAS las matrices RWKV y falló. Pero el LM head es
+  especial: proyección lineal pura, top-K tokens dominan la masa de probabilidad.
+  Si rank efectivo del embedding es alto → NO VIABLE (como R-016).
+- **Archivos**: `src/infrastructure/mamba/model.rs` (load, compute_head_into)
+- **Subtareas**:
+  - [ ] Medir rank efectivo (singular values) del embedding matrix
+  - [ ] Implementar SVD truncado at load time (k configurable)
+  - [ ] Dual-matmul: hidden→V→mid→U→logits
+  - [ ] Sweep k: 64, 128, 256, 384 — medir BPB vs throughput
+  - [ ] Si +3% BPB en CUALQUIER k → marcar NO VIABLE
+  - [ ] Roundtrip PASS
+
+#### Secuencia Fase 12
+
+```
+R-068 (PGO) ──→ zero code, +10-25%, independent
+R-069 (op fusion) ──→ code change, +2-5%, independent
+R-070 (conv1d SIMD) ──→ code change, +0.5-1%, independent
+R-071 (SVD LM head) ──→ code change, +10-20%, risky BPB
+```
+
+Estado: R-068 ⏳ R-069 ⏳ R-070 ⏳ R-071 ⏳. Todas pendientes.
+R-068 y R-069 son los de mayor ROI. R-071 es la apuesta más agresiva.
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2054,3 +2144,4 @@ Para superar esto se necesita: DDR5, dual-channel, o modelo más pequeño (Mamba
 | 2026-11-02 | R-065 ❌ NO VIABLE: NTA prefetch ±0% (493MB >> 12MB L3, pollution irrelevant) |
 | 2026-11-02 | R-067 ❌ NO VIABLE: L2-tile layout — GEMV streaming, tiling only helps GEMM |
 | 2026-11-02 | Fase 11 CERRADA: 4/4 técnicas NO VIABLES. DRAM bandwidth = hard ceiling |
+| 2026-11-02 | Fase 12 definida: R-068 (PGO) → R-069 (op fusion) → R-070 (conv1d SIMD) → R-071 (SVD LM head) |
