@@ -133,13 +133,6 @@ impl TokenNgram {
 
     /// Compute the N-gram logit bias as a standalone vector (for adaptive mixer).
     /// Returns Vec<f32> of size vocab_size with bias values.
-    #[allow(dead_code)]
-    pub fn compute_bias(&self, neural_entropy: Option<f32>) -> Vec<f32> {
-        let mut bias = vec![0.0f32; self.vocab_size];
-        self.predict(&mut bias, neural_entropy);
-        bias
-    }
-
     /// Zero-alloc variant: write bias into caller-provided buffer (must be vocab_size).
     /// Buffer is zeroed before prediction.
     pub fn compute_bias_into(&self, buf: &mut [f32], neural_entropy: Option<f32>) {

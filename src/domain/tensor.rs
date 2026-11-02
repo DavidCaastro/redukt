@@ -1752,7 +1752,7 @@ pub fn outer_product_into(out: &mut [f32], a: &[f32], b: &[f32]) {
     }
 }
 
-#[allow(dead_code)] // R-015: no longer used in hot path (rank-1 factorization)
+#[cfg(test)]
 pub fn mat_mat_mul_small_into(c: &mut [f32], a: &[f32], b: &[f32], n: usize) {
     for v in c[..n * n].iter_mut() { *v = 0.0; }
     for i in 0..n {

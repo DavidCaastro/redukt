@@ -112,58 +112,6 @@ impl CmEnsemble {
         self.segment_m.observe(token);
     }
 
-    /// Get the argmax prediction from CM models only (for speculative draft).
-    /// Returns (predicted_token, confidence) where confidence = max bias value.
-    pub fn draft_next(&mut self) -> (u32, f32) {
-        self.compute_biases(None);
-        let v = self.ng_buf.len();
-        let mut best_token = 0u32;
-        let mut best_score = f32::NEG_INFINITY;
-        for i in 0..v {
-            let score = self.ng_buf[i]
-                + self.match_buf[i]
-                + self.run_buf[i]
-                + self.word_buf[i];
-            if score > best_score {
-                best_score = score;
-                best_token = i as u32;
-            }
-        }
-        (best_token, best_score)
-    }
-
-    /// CM-only top probability (R-056): returns the maximum probability
-    /// from CM biases alone (without backbone logits).
-    /// Must be called AFTER compute_biases().
-    /// Uses log-sum-exp for numerical stability.
-    pub fn cm_only_top_prob(&self) -> f32 {
-        let v = self.ng_buf.len();
-        let s = self.mixer.cm_scale;
-        let bias_vec = self.bias.bias_vector();
-        // Score = weighted CM biases (same formula as combine_with_match, backbone=0)
-        let mut max_score = f32::NEG_INFINITY;
-        for i in 0..v {
-            let score = s * self.mixer.w_ngram * self.ng_buf[i]
-                + s * self.mixer.w_bias * bias_vec[i]
-                + s * self.mixer.w_match * self.match_buf[i]
-                + s * self.mixer.w_run * self.run_buf[i]
-                + s * self.mixer.w_word * self.word_buf[i]
-                + self.seg_buf[i];
-            if score > max_score { max_score = score; }
-        }
-        // Softmax max = exp(max)/sum(exp) = 1/sum(exp(x-max))
-        let mut sum_exp = 0.0f32;
-        for i in 0..v {
-            let score = s * self.mixer.w_ngram * self.ng_buf[i]
-                + s * self.mixer.w_bias * bias_vec[i]
-                + s * self.mixer.w_match * self.match_buf[i]
-                + s * self.mixer.w_run * self.run_buf[i]
-                + s * self.mixer.w_word * self.word_buf[i]
-                + self.seg_buf[i];
-            sum_exp += (score - max_score).exp();
-        }
-        1.0 / sum_exp
-    }
 }
 
 #[cfg(test)]
@@ -193,13 +141,4 @@ mod tests {
         assert!(sum >= 0.0);
     }
 
-    #[test]
-    fn draft_returns_valid_token() {
-        let mut cm = CmEnsemble::new(256, 0.5, 0.001, 0.01, false);
-        for &b in b"GET /index.html HTTP/1.1 200 512" {
-            cm.observe(b as u32);
-        }
-        let (tok, _conf) = cm.draft_next();
-        assert!((tok as usize) < 256);
-    }
 }

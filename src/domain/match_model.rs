@@ -72,42 +72,7 @@ impl MatchModel {
             self.heads[h] = pos as u32;
         }
 
-        // Try to extend active match
-        if self.match_len > 0 {
-            if self.match_pos > 0
-                && self.history[self.match_pos - 1] == token
-            {
-                // Match still alive: the token before match_pos matches
-                // Actually, we need to check: did the token we just saw
-                // match our prediction? If history[match_pos-1] was the
-                // predicted position, now advance.
-                // Correction: match_pos points to the token we predicted.
-                // If the actual token matches, extend.
-                // Wait, let me reconsider the match semantics.
-            }
-        }
-
-        // Re-evaluate match state after observing this token:
-        // Try to extend current match first
-        let extended = self.match_len > 0
-            && self.match_pos > 0
-            && self.match_pos <= pos
-            && self.history[self.match_pos - 1] == token;
-
-        if extended {
-            // Match continues — advance prediction position
-            self.match_pos += 0; // match_pos already points to next prediction
-            // Actually we predicted history[match_pos], and token matched.
-            // Now predict history[match_pos + 1].
-            // Hmm, let me rethink the state machine.
-        }
-
-        // Clean re-implementation of match state:
-        // After observing token at position `pos`, we want to find the longest
-        // suffix of history[0..=pos] that appears earlier in the history.
-        // Then match_pos = the position right after that earlier occurrence.
-
-        // Try extending existing match
+        // Try extending existing match (clean state machine)
         if self.match_len > 0 && self.match_pos < pos {
             if self.history[self.match_pos] == token {
                 self.match_len += 1;

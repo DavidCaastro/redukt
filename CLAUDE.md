@@ -8,7 +8,7 @@
 ## Identity
 
 Redukt: neural compression engine.
-Hybrid CM (19 hash-table models + LSTM mixer) + RWKV-7 (pretrained) + arithmetic coding.
+Hybrid CM (5 models + adaptive SGD mixer) + RWKV-7/Mamba (pretrained) + arithmetic coding.
 CPU-only, zero external dependencies, single Rust binary.
 
 Origin: extracted from original research project.

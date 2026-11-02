@@ -26,7 +26,7 @@ pub struct AdaptiveMixer {
     pub w_word: f32,
     eta: f32,
     // R-043: entropy-adaptive CM scaling
-    pub(crate) cm_scale: f32,
+    cm_scale: f32,
     ce_ema: f32,
     entropy_scaling: bool,
 }

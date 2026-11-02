@@ -15,9 +15,6 @@ pub struct BpeTokenizer {
     decoder: Vec<Vec<u8>>,
     /// Merge pairs: (token_a, token_b) → merged result, ordered by priority
     merges: Vec<(Vec<u8>, Vec<u8>)>,
-    /// Byte-to-unicode mapping (GPT-2 style)
-    byte_encoder: [u8; 256],
-    byte_decoder: HashMap<char, u8>,
     /// Fallback: byte → token ID for bytes not in encoder (0xC0, 0xC1, 0xF5-0xFF)
     byte_fallback: [u32; 256],
 }
@@ -36,7 +33,7 @@ impl BpeTokenizer {
             .unwrap_or_else(|e| panic!("[mamba-bpe] failed to read: {}", e));
 
         // Build byte<->unicode mapping (GPT-2 bytes_to_unicode)
-        let (byte_enc, byte_dec) = build_byte_unicode_map();
+        let (_byte_enc, byte_dec) = build_byte_unicode_map();
 
         // Parse vocab and merges from tokenizer.json
         let (vocab_map, merges_raw) = parse_tokenizer_json(&content);
@@ -101,7 +98,7 @@ impl BpeTokenizer {
             encoder.len(), merges.len()
         );
 
-        Self { encoder, decoder, merges, byte_encoder: byte_enc, byte_decoder: byte_dec, byte_fallback }
+        Self { encoder, decoder, merges, byte_fallback }
     }
 
     /// Encode bytes to token IDs using BPE.
