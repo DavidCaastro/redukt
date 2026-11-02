@@ -1726,22 +1726,22 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 **Investigación base**: PIM/NDP survey (2026), MVDRAM, T-MAC, roofline analysis.
 
 #### R-064: Mamba Q8 quantization at load time
-- **Estado**: PENDIENTE
-- **Impacto**: **4x menos tráfico DRAM** en todas las matrices Mamba
-- **Riesgo BPB**: ~0-2.5% (Q8 probado acceptable en RWKV: <2.5% degradación)
-- **Descripción**: Mamba carga SafeTensors como f32 (493MB).
-  Convertir todas las matrices de peso a `Q8Tensor` al cargar el modelo.
-  Usar los kernels `q8_mat_vec_mul_into` existentes (AVX2+VNNI ya implementados).
-  Mamba pasa de `mat_vec_mul_into(f32)` a `q8_mat_vec_mul_into(i8)` en el hot loop.
-  El vector de activación se cuantiza on-the-fly (ya existe `quantize_vec_i8_into`).
-- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/domain/quant.rs`
-- **Subtareas**:
-  - [ ] Cambiar `MambaLayerWeights` de `Tensor` a `Q8Tensor` para las 5 matrices
-  - [ ] Cuantizar en `MambaModel::load()` tras leer SafeTensors
-  - [ ] Adaptar forward loop a `q8_mat_vec_mul_into` + scratch `v_q` buffer
-  - [ ] Mantener `emb_w` como f32 (embedding lookup no es matmul)
-  - [ ] A/B controlado: tok/s SIMD vs scalar, BPB multi-archivo
-  - [ ] Roundtrip PASS (enwik8, apache, dickens)
+- **Estado**: ❌ NO VIABLE (2026-11-02) [MEASURED]
+- **Impacto esperado**: 4x menos tráfico DRAM
+- **Resultado**: +16.6% BPB (inaceptable, presupuesto ≤3%)
+- **Descripción**: Implementado y medido en 3 configuraciones:
+  1. **All-Q8** (layers + LM head): BPB 1.1208 vs baseline 0.9609 = **+16.6%** BPB
+  2. **Hybrid** (Q8 in_proj/out_proj, f32 x_proj/dt_proj): BPB 1.1168 = **+16.2%** BPB
+  3. **LM-head-only Q8** (layers f32, emb Q8): BPB 1.1000 = **+14.5%** BPB
+- **Roundtrip**: PASS en las 3 configuraciones (CRC-32 verified OK)
+- **Throughput**: 31-34 tok/s en todas (sin mejora — bottleneck es SSM, no GEMV)
+- **Análisis**: Mamba-130M no tolera Q8 PTQ (post-training quantization).
+  El LM head es el componente más sensible (+14.5% solo). Las capas layer
+  añaden solo +2% adicional. El modelo es demasiado pequeño — RWKV Q8 funciona
+  porque carga pesos GGUF ya cuantizados durante training (QAT), no PTQ.
+  Para que Q8 funcione se necesitaría QAT (quantization-aware training)
+  o calibración con datasets representativos (requiere entorno PyTorch externo).
+- **Código**: revertido completamente — model.rs idéntico a pre-R-064
 
 #### R-065: NTA prefetch for weight streaming
 - **Estado**: PENDIENTE
@@ -1761,21 +1761,10 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
   - [ ] BPB bit-exact (solo cambia timing, no cómputo)
 
 #### R-066: Mixed Q4/Q8 per-layer (Mamba)
-- **Estado**: PENDIENTE (depende R-064)
-- **Impacto**: ~35-40% bandwidth adicional sobre Q8 uniforme
-- **Riesgo BPB**: ~1-3% (presupuesto max: +3%)
-- **Descripción**: No todas las capas de Mamba-130M tienen la misma sensibilidad.
-  Medir KL-divergence por capa: cuantizar una capa a Q4, medir degradación BPB.
-  Capas insensitivas (KL < umbral) → Q4 (group_size=64). Resto → Q8.
-  Target: 50%+ de capas en Q4 = ~35-40% menos bandwidth total.
-  Si ninguna capa tolera Q4 (como R-061 sugiere), marcar NO VIABLE.
-- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
-- **Subtareas**:
-  - [ ] Instrumento de medición: per-layer Q4 BPB delta (eval mode)
-  - [ ] Identificar capas tolerantes a Q4 (KL < 0.01)
-  - [ ] Implementar QuantPolicy::PerLayer para Mamba
-  - [ ] Benchmark completo: BPB multi-archivo, roundtrip
-  - [ ] Si +3% BPB en CUALQUIER archivo → marcar NO VIABLE
+- **Estado**: ❌ BLOQUEADO / NO VIABLE (2026-11-02)
+- **Razón**: R-064 demostró que Q8 uniforme ya causa +16.6% BPB.
+  Q4 sería estrictamente peor. Mixed Q4/Q8 no tiene sentido si ni
+  Q8 puro es aceptable. Mamba-130M no tolera cuantización PTQ.
 
 #### R-067: Weight layout optimization (L2-tile repack)
 - **Estado**: PENDIENTE (depende R-064)
@@ -1796,13 +1785,13 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 #### Secuencia Fase 11
 
 ```
-R-064 (Mamba Q8) ──→ 4x menos DRAM ──→ baseline para R-066/R-067
-R-065 (NTA prefetch) ──→ independiente, paralelo con R-064
-R-066 (mixed Q4/Q8) ──→ depende R-064 ──→ puede ser NO VIABLE (sensibilidad 130M)
-R-067 (L2-tile) ──→ depende R-064 ──→ marginal si bandwidth ya no es bottleneck
+R-064 (Mamba Q8) ──→ medido: +16.6% BPB ──→ NO VIABLE (PTQ on 130M)
+R-065 (NTA prefetch) ──→ independiente, zero BPB risk
+R-066 (mixed Q4/Q8) ──→ BLOQUEADO (R-064 Q8 ya falla, Q4 peor)
+R-067 (L2-tile) ──→ independiente, zero BPB risk
 ```
 
-Estado: R-064 ⏳ R-065 ⏳ R-066 ⏳ R-067 ⏳. Todas pendientes.
+Estado: R-064 ❌ R-065 ⏳ R-066 BLOQUEADO R-067 ⏳.
 
 ---
 
@@ -2059,3 +2048,5 @@ Estado: R-064 ⏳ R-065 ⏳ R-066 ⏳ R-067 ⏳. Todas pendientes.
 | 2026-11-02 | Conclusión Fase 10: 4/5 técnicas NO VIABLES en 130M. Solo R-063 (batch) pendiente |
 | 2026-11-02 | Investigación DRAM: PIM no viable en commodity DDR4, roofline analysis, 6 técnicas identificadas |
 | 2026-11-02 | Fase 11 definida: R-064 (Mamba Q8) → R-065 (NTA prefetch) → R-066 (mixed Q4/Q8) → R-067 (L2-tile) |
+| 2026-11-02 | R-064 ❌ NO VIABLE: Q8 PTQ +16.6% BPB (all-Q8), +14.5% (LM head only). Roundtrip PASS. Revertido |
+| 2026-11-02 | R-066 ❌ BLOQUEADO: Q8 ya inaceptable, Q4 peor. PTQ no viable en Mamba-130M |
