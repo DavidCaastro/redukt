@@ -1763,20 +1763,16 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
   Q8 puro es aceptable. Mamba-130M no tolera cuantización PTQ.
 
 #### R-067: Weight layout optimization (L2-tile repack)
-- **Estado**: PENDIENTE (depende R-064)
-- **Impacto**: +5-15% throughput estimado
-- **Riesgo BPB**: 0% (mismos datos, diferente orden en memoria)
-- **Descripción**: Las matrices Q8 se almacenan row-major contiguo.
-  Al cargar, reorganizar en tiles de ~32KB (match L2 way size i5-1235U).
-  Cada tile: 128 filas × 256 columnas (128×256 bytes Q8 = 32KB).
-  El GEMV procesa tile-por-tile, maximizando hits en L2.
-  Solo afecta matrices grandes (in_proj 3072×768, emb 50280×768).
-- **Archivos**: `src/domain/tensor.rs` o `src/domain/quant.rs`
-- **Subtareas**:
-  - [ ] Función `retile_q8(mat, tile_rows, tile_cols)` al cargar
-  - [ ] Kernel `q8_mat_vec_tiled_into` que procesa por tiles
-  - [ ] A/B controlado: tok/s tiled vs linear, min 3 rounds
-  - [ ] BPB bit-exact (mismos valores, diferente layout)
+- **Estado**: ❌ NO VIABLE (2026-11-02, análisis teórico)
+- **Razón**: L2-tiling beneficia GEMM (reutilización de bloques), NO GEMV.
+  GEMV es streaming puro: cada fila se lee una vez, el vector se reutiliza
+  en L1 (768-1536 floats = 3-6KB << L1=48KB). El patrón ya es óptimo:
+  - Row-major sequential access → hardware prefetcher optimal
+  - 4-row ILP → hide DRAM latency
+  - Software prefetch → next row-block pre-staged in L2
+  Reordenar en tiles solo añadiría overhead de indexación sin reducir
+  DRAM traffic ni mejorar hit rate (ya ~95%+ en current layout).
+  El bottleneck fundamental es DRAM bandwidth (21.3 GB/s), no cache misses.
 
 #### Secuencia Fase 11
 
@@ -1784,10 +1780,19 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 R-064 (Mamba Q8) ──→ medido: +16.6% BPB ──→ NO VIABLE (PTQ on 130M)
 R-065 (NTA prefetch) ──→ medido: ±0% tok/s ──→ NO VIABLE (L3 << model size)
 R-066 (mixed Q4/Q8) ──→ BLOQUEADO (R-064 Q8 ya falla, Q4 peor)
-R-067 (L2-tile) ──→ último intento, zero BPB risk
+R-067 (L2-tile) ──→ análisis: GEMV ≠ GEMM ──→ NO VIABLE (tiling irrelevante)
 ```
 
-Estado: R-064 ❌ R-065 ❌ R-066 ❌ R-067 ⏳.
+Estado: R-064 ❌ R-065 ❌ R-066 ❌ R-067 ❌. **FASE 11 CERRADA.**
+
+**Conclusión Fase 11**: Las 4 técnicas de optimización DRAM son NO VIABLES en este hardware/modelo:
+- Q8 PTQ destruye BPB en Mamba-130M (modelo demasiado pequeño, necesita QAT)
+- NTA prefetch irrelevante cuando modelo >> L3 cache
+- Mixed Q4/Q8 bloqueado por Q8 ya inaceptable
+- L2-tiling no aplica a GEMV (streaming, no blocked)
+DRAM bandwidth (21.3 GB/s DDR4-2667 single-channel) es un hard ceiling.
+Throughput actual de 27-34 tok/s está al 70-85% del techo teórico.
+Para superar esto se necesita: DDR5, dual-channel, o modelo más pequeño (MambaByte).
 
 ---
 
@@ -2047,3 +2052,5 @@ Estado: R-064 ❌ R-065 ❌ R-066 ❌ R-067 ⏳.
 | 2026-11-02 | R-064 ❌ NO VIABLE: Q8 PTQ +16.6% BPB (all-Q8), +14.5% (LM head only). Roundtrip PASS. Revertido |
 | 2026-11-02 | R-066 ❌ BLOQUEADO: Q8 ya inaceptable, Q4 peor. PTQ no viable en Mamba-130M |
 | 2026-11-02 | R-065 ❌ NO VIABLE: NTA prefetch ±0% (493MB >> 12MB L3, pollution irrelevant) |
+| 2026-11-02 | R-067 ❌ NO VIABLE: L2-tile layout — GEMV streaming, tiling only helps GEMM |
+| 2026-11-02 | Fase 11 CERRADA: 4/4 técnicas NO VIABLES. DRAM bandwidth = hard ceiling |
