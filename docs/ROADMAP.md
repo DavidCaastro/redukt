@@ -1803,22 +1803,35 @@ quedan técnicas a nivel de compilador y fusión de operadores que NO se han int
 PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
 
 #### R-068: Profile-Guided Optimization (PGO)
-- **Estado**: PENDIENTE
+- **Estado**: ❌ NO VIABLE (2026-11-02)
 - **Impacto estimado**: +10-25% throughput
-- **Riesgo BPB**: 0% (misma lógica, mejor layout de código)
+- **Impacto medido**: +1.1% mediana (dentro de ruido térmico ±3%)
+- **Riesgo BPB**: 0% confirmado (BPB bit-exact entre PGO y normal)
 - **Descripción**: Compilar con `-C profile-generate`, ejecutar workload representativo
-  (compress enwik8 10KB + apache 10KB), recompilar con `-C profile-use`.
+  (compress enwik8 10KB + apache 10KB + dickens 10KB), recompilar con `-C profile-use`.
   PGO optimiza branch prediction, code layout, inlining decisions basado en datos reales.
-  Evidencia: +10-20% en llama.cpp, +15% en rustc self-compile.
+  Evidencia externa: +10-20% en llama.cpp, +15% en rustc self-compile.
   Fat LTO (ya habilitado) + PGO = combinación óptima. Zero cambios de código.
-- **Archivos**: `Cargo.toml` (profile), scripts de build
+- **Resultado empírico** (A/B controlado, 3 rondas alternando, enwik8 10KB Mamba):
+  - Normal: 18.3, 18.0, 17.9 tok/s (mediana 18.0)
+  - PGO:    18.6, 18.2, 17.3 tok/s (mediana 18.2)
+  - Delta:  +1.6%, +1.1%, -3.4% → mediana **+1.1%** (ruido térmico)
+  - BPB: 0.9648 ambos builds, output BIT-EXACT (verified xxd diff)
+- **Por qué falla PGO**: El bottleneck es DRAM bandwidth (GEMV streaming), no branch
+  prediction ni instruction cache misses. PGO optimiza hot paths y branch layout,
+  pero el 85%+ del tiempo se gasta en `mat_vec_mul` (streaming read-once de 493MB).
+  PGO beneficia workloads CPU-bound con branches complejos (compiladores, parsers),
+  no workloads memory-bound (GEMV en modelos grandes).
+  La evidencia de llama.cpp (+10-20%) viene de modelos cuantizados (Q4/Q8) donde
+  el bottleneck se mueve a CPU; en Mamba-130M F32 el bottleneck permanece en DRAM.
+- **Archivos**: sin cambios de código (build-only experiment)
 - **Subtareas**:
-  - [ ] Build instrumentado con profile-generate
-  - [ ] Ejecutar workload representativo (min 2 archivos: text + structured)
-  - [ ] Rebuild con profile-use
-  - [ ] A/B controlado: tok/s PGO vs normal, min 3 rounds alternando
-  - [ ] BPB bit-exact (PGO no cambia lógica)
-  - [ ] Documentar script reproducible para re-generar PGO
+  - [x] Build instrumentado con profile-generate
+  - [x] Ejecutar workload representativo (3 archivos: enwik8, apache, dickens)
+  - [x] Rebuild con profile-use (llvm-profdata merge + -Cprofile-use)
+  - [x] A/B controlado: tok/s PGO vs normal, 3 rounds alternando
+  - [x] BPB bit-exact confirmado
+  - [x] Resultado: +1.1% = ruido térmico → NO VIABLE
 
 #### R-069: Operator fusion — RMSNorm+matmul, matmul+residual
 - **Estado**: PENDIENTE
@@ -1875,14 +1888,13 @@ PGO (Profile-Guided Optimization) es la oportunidad más grande no explorada.
 #### Secuencia Fase 12
 
 ```
-R-068 (PGO) ──→ zero code, +10-25%, independent
+R-068 (PGO) ──→ medido: +1.1% (ruido) ──→ NO VIABLE (DRAM-bound, no CPU-bound)
 R-069 (op fusion) ──→ code change, +2-5%, independent
 R-070 (conv1d SIMD) ──→ code change, +0.5-1%, independent
 R-071 (SVD LM head) ──→ code change, +10-20%, risky BPB
 ```
 
-Estado: R-068 ⏳ R-069 ⏳ R-070 ⏳ R-071 ⏳. Todas pendientes.
-R-068 y R-069 son los de mayor ROI. R-071 es la apuesta más agresiva.
+Estado: R-068 ❌ R-069 ⏳ R-070 ⏳ R-071 ⏳.
 
 ---
 
