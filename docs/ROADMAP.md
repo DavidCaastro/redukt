@@ -1598,6 +1598,88 @@ para compresión lossless. Solo GPU parallelism (R-055 con formato batch-only)
 o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 - Gap vs brotli: de 46,000x a ~1,300-4,700x
 
+### Fase 10: Lottery Ticket Sparsity Protocol (R-059 to R-063)
+
+> Research: `docs/internal/research/lottery-ticket-sparsity-protocol.md`
+> Origin: Frankle & Carbin (MIT, 2018) — derivative works 2023-2026
+> Goal: reduce FLOPs per token via pruning + dynamic sparsity + pipeline
+> BPB budget: +5% max (CLAUDE.md)
+
+#### R-059: Activation sparsity — SiLU channel skip
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: ~0% (activations below 1e-4 contribute < 1e-8 to output)
+- **Speedup estimado**: 6% (25% channels sparse × out_proj savings)
+- **Descripción**: extensión de R-057 (dt-sparse). Tras SiLU, canales con
+  |conv_out[j]| < epsilon → skip SSM recurrence + out_proj column.
+  Compone multiplicativamente con weight sparsity (Activity Sparsity paper).
+- **Prerequisito**: medir sparsity real en Mamba-130M (necesita >15% para justificar)
+- **Papers**: Mukherji et al. (2023) arXiv:2311.07625
+- **Archivos**: `src/domain/tensor.rs` (ssm_recurrence), `src/infrastructure/mamba/model.rs`
+
+#### R-060: Split-Head Pipeline — LM head overlap
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (identical computation, different scheduling)
+- **Speedup estimado**: 15-25% latency reduction (DRAM-bandwidth limited)
+- **Descripción**: separar forward_into() en forward_layers() + forward_head().
+  Ejecutar head(t) en paralelo con layers(t+1) via std::thread::scope.
+  LM head solo LEE scratch.x — no modifica state. Independiente de layers.
+  Teórico 1.45x (head=30% FLOPs), práctico ~1.20x (DDR4-2667 80% saturado).
+- **Papers**: inspirado en Compiler-First SSD (2026) arXiv:2603.09555
+- **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
+
+#### R-061: Wanda column pruning — d_inner reduction
+- **Estado**: INVESTIGACIÓN
+- **Riesgo BPB**: 1-3% (necesita medición empírica)
+- **Speedup estimado**: 14% (d_inner 1536 → ~1230, 20% columnas menos)
+- **Descripción**: one-shot structured pruning sin retraining.
+  Importancia = L2_norm(in_proj column) × L2_norm(out_proj column).
+  Determinista desde pesos del modelo (no requiere calibración).
+  Ambos lados (compress/decompress) computan mismas normas → misma poda.
+  Requiere ajustar conv1d, x_proj, dt_proj al nuevo d_inner.
+- **Prerequisito**: medir BPB en 3+ archivos con 10%, 20%, 30% pruning
+- **Papers**: Wanda (Sun et al., ICML 2023) arXiv:2306.11695,
+  SparseSSM (Tuo & Wang, 2025) arXiv:2506.09613
+- **Archivos**: `src/infrastructure/mamba/model.rs` (new: pruning logic at load)
+
+#### R-062: Highway layer skip — upper layer bypass
+- **Estado**: INVESTIGACIÓN
+- **Riesgo BPB**: 1-2% (Simba: 90% token sparsity at final layer retains perf)
+- **Speedup estimado**: 7% (2-3 layers skipped average, layers 18-23)
+- **Descripción**: para capas 18-23, medir ||residual_change|| / ||x||.
+  Si ratio < 0.01 → skip capas restantes (highway passthrough).
+  State para capas skipped no se actualiza (bounded por highway nature).
+  Force full forward cada N tokens para resync.
+- **Prerequisito**: medir residual norms en Mamba-130M layers 18-23
+- **Papers**: Simba (Song et al., TMLR 2025) arXiv:2505.20698,
+  LAST (Gwak et al., NeurIPS 2024) arXiv:2411.02824
+- **Archivos**: `src/infrastructure/mamba/model.rs`
+
+#### R-063: Batch state checkpoint — prefix reuse
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (exact state memcpy, no approximation)
+- **Speedup estimado**: 2-10x (batch mode only, files with shared prefixes)
+- **Descripción**: en batch mode, snapshot state cada N tokens.
+  Al procesar siguiente archivo, detectar longest common prefix (LCP)
+  con token comparison. Si LCP > 200 tokens → restaurar checkpoint exacto
+  del punto LCP, skip forward passes del prefijo compartido.
+  Inspirado en Memory Caching (Google 2026) y Marconi (Amazon 2025).
+- **Papers**: Behrouz et al. (2026) arXiv:2602.24281,
+  Marconi (2025) arXiv:2411.19379
+- **Archivos**: `src/application/codec.rs` (batch loop), `src/infrastructure/mamba/model.rs` (state ser/de)
+
+#### Secuencia Fase 10
+
+```
+R-059 (act. sparsity) ──→ medir sparsity ──→ implementar si >15%
+R-060 (pipeline) ──→ split forward_into ──→ thread overlap
+R-061 (column pruning) ──→ medir BPB ──→ implementar si <+5% BPB
+R-062 (highway skip) ──→ medir residuals ──→ implementar si >30% triggers
+R-063 (batch checkpoint) ──→ state snapshot ──→ LCP matching
+```
+
+Prioridad: R-059 + R-060 primero (bajo riesgo, ~22-31% speedup combinado).
+R-061 y R-062 solo tras validación empírica de BPB. R-063 independiente (batch only).
+
 ---
 
 ## Bugs conocidos
@@ -1831,3 +1913,8 @@ o byte-level model (R-041 MambaByte) pueden romper esta barrera.
 | 2026-11-01 | R-055 ❌ BLOQUEADO (FP non-assoc breaks roundtrip). R-056 ❌ NO VIABLE (+81-294% BPB, backbone irreducible). |
 | 2026-11-01 | Insight: CPU 84% idle because 1/12 threads active, NOT because of inefficiency |
 | 2026-11-01 | Insight: DRAM bandwidth 60% saturated on RWKV — multi-thread matmul helps compute, not memory |
+| 2026-11-02 | Research: lottery-ticket-sparsity-protocol.md — Frankle-Carbin derivatives for SSM acceleration |
+| 2026-11-02 | Research: 6 papers analyzed (SparseSSM, LAST, Simba, Wanda, Activity Sparsity, ReplaySSM+3) |
+| 2026-11-02 | Fase 10 definida: R-059 (act. sparsity) → R-060 (pipeline) → R-061 (column pruning) → R-062 (highway) → R-063 (batch checkpoint) |
+| 2026-11-02 | BPB budget ampliado a +5% max (CLAUDE.md updated) |
+| 2026-11-02 | Projection: B1+C1 only = ~22-31% speedup at ~0% BPB; full protocol = x1.6-1.8 at +2-5% BPB |

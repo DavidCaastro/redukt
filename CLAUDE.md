@@ -157,6 +157,12 @@ Provenance documented in `weights/MANIFEST.md`.
 4. NOTICE file up to date
 5. README badges current
 
+### BPB Budget for Optimizations
+- Maximum allowed BPB regression from any optimization: **+5%**
+- Measured on enwik8 10KB (reference) + at least 2 additional files
+- Optimizations exceeding +5% BPB MUST be reverted or made opt-in
+- Q4 quantization (+12.7%) remains NOT viable under this budget
+
 ## Benchmarks (Verified 2026-10-31, dual-backbone actual AZTH compression)
 
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
