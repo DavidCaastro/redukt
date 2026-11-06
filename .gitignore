@@ -14,3 +14,13 @@ data/benchmark/industry/
 data/benchmark/*.zip
 .env
 *.pdb
+
+# Kaggle credentials (NEVER commit)
+.kaggle/
+kaggle.json
+# Kaggle kernel metadata (generated)
+notebooks/kaggle-gpu-validation/
+# Kaggle results (downloaded)
+data/benchmark/results/kaggle/
+# Plugin build artifacts
+plugins/redukt-gpu/target/
