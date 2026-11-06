@@ -1945,7 +1945,7 @@ locked a CUDA/NVIDIA destruiría la portabilidad. Arquitectura de plugins permit
 cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del core.
 
 #### R-072: Backend FFI interface definition
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-11-06, 9dc1fdd)
 - **Riesgo BPB**: 0% (solo definición de interfaz, zero runtime impact)
 - **Descripción**: Definir el contrato C ABI que todo plugin GPU debe implementar.
   4 funciones: `backend_init`, `backend_forward`, `backend_reset_state`, `backend_free`.
@@ -1953,13 +1953,13 @@ cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del co
   es un contrato del dominio (como `Backbone` trait), no una implementación.
 - **Archivos**: `src/domain/backend_ffi.rs`, `src/domain/mod.rs`
 - **Subtareas**:
-  - [ ] Definir `BackendInfo` struct (version, vocab_size, name)
-  - [ ] Definir `BackendVTable` con 4 function pointers
-  - [ ] Definir constantes de versión para compatibilidad
-  - [ ] Tests: construcción de VTable con funciones dummy
+  - [x] Definir `BackendInfo` struct (version, vocab_size, name)
+  - [x] Definir `BackendVTable` con 4 function pointers
+  - [x] Definir constantes de versión para compatibilidad
+  - [x] Tests: construcción de VTable con funciones dummy
 
 #### R-073: Cross-platform dynamic plugin loader
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-11-06, de9c06e)
 - **Riesgo BPB**: 0% (carga opcional, fallback a CPU si no hay plugin)
 - **Descripción**: Loader que busca `redukt-gpu.dll` (Windows) / `libredukt_gpu.so` (Linux)
   / `libredukt_gpu.dylib` (macOS) junto al ejecutable. Usa raw FFI a OS:
@@ -1969,15 +1969,15 @@ cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del co
 - **Archivos**: `src/infrastructure/plugin_backend/loader.rs`, `src/infrastructure/plugin_backend/mod.rs`,
   `src/infrastructure/mod.rs`
 - **Subtareas**:
-  - [ ] `PluginLibrary` struct (handle + vtable)
-  - [ ] `PluginLibrary::try_load()` → `Option<PluginLibrary>` (no panic)
-  - [ ] Platform-specific: Windows (kernel32 LoadLibraryW), Unix (dlopen)
-  - [ ] Symbol resolution con validación de versión
-  - [ ] Drop impl para FreeLibrary/dlclose
-  - [ ] Tests: carga fallida retorna None (no panic)
+  - [x] `PluginLibrary` struct (handle + vtable)
+  - [x] `PluginLibrary::try_load()` → `Option<PluginLibrary>` (no panic)
+  - [x] Platform-specific: Windows (kernel32 LoadLibraryW), Unix (dlopen)
+  - [x] Symbol resolution con validación de versión
+  - [x] Drop impl para FreeLibrary/dlclose
+  - [x] Tests: carga fallida retorna None (no panic)
 
 #### R-074: PluginBackend impl Backbone + auto-fallback
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-11-06, 33c3a2e)
 - **Riesgo BPB**: 0% (wrapper transparente, misma interfaz)
 - **Descripción**: `PluginBackend` struct que implementa `Backbone` trait via FFI.
   `PluginState` y `PluginScratch` como wrappers opacos. Se añade variante
@@ -1987,17 +1987,17 @@ cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del co
 - **Archivos**: `src/infrastructure/plugin_backend/model.rs`, `src/domain/backbone.rs`,
   `src/application/model_loader.rs`
 - **Subtareas**:
-  - [ ] `PluginBackend` struct (wraps PluginLibrary + config)
-  - [ ] `PluginState`, `PluginScratch` (opaque, minimal)
-  - [ ] `impl Backbone for PluginBackend`
-  - [ ] `BackboneChoice::Plugin` variant + header byte (2)
-  - [ ] `DynModel::Plugin` variant + all match arms
-  - [ ] `--backend plugin` CLI flag
-  - [ ] Auto-fallback: try plugin → Mamba → RWKV
-  - [ ] Tests: fallback cuando no hay plugin, trait dispatch
+  - [x] `PluginBackend` struct (wraps PluginLibrary + config)
+  - [x] `PluginState`, `PluginScratch` (opaque, minimal)
+  - [x] `impl Backbone for PluginBackend`
+  - [x] `BackboneChoice::Plugin` variant + header byte (2)
+  - [x] `DynModel::Plugin` variant + all match arms
+  - [x] `--backend plugin` CLI flag
+  - [x] Auto-fallback: try plugin → Mamba → RWKV
+  - [x] Tests: fallback cuando no hay plugin, trait dispatch
 
 #### R-075: wgpu compute shader plugin skeleton
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-11-06, fd510a7)
 - **Riesgo BPB**: 0% (proyecto separado, no compilado por default)
 - **Descripción**: Proyecto separado en `plugins/redukt-gpu/` con su propio Cargo.toml.
   Usa `wgpu` crate para GPU compute portátil (Vulkan/Metal/DX12/OpenGL).
@@ -2009,15 +2009,15 @@ cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del co
 - **Archivos**: `plugins/redukt-gpu/Cargo.toml`, `plugins/redukt-gpu/src/lib.rs`,
   `plugins/redukt-gpu/src/kernels/`, `plugins/redukt-gpu/README.md`
 - **Subtareas**:
-  - [ ] Proyecto Cargo con wgpu + safetensors deps
-  - [ ] FFI exports matching R-072 VTable
-  - [ ] GPU device initialization + adapter selection
-  - [ ] Placeholder forward pass (CPU fallback inside plugin)
-  - [ ] Build produces .dll/.so/.dylib
-  - [ ] README con instrucciones de build
+  - [x] Proyecto Cargo con wgpu + safetensors deps
+  - [x] FFI exports matching R-072 VTable
+  - [x] GPU device initialization + adapter selection
+  - [x] Placeholder forward pass (CPU fallback inside plugin)
+  - [x] Build produces .dll/.so/.dylib
+  - [x] README con instrucciones de build
 
 #### R-076: Kaggle validation & benchmark protocol
-- **Estado**: PENDIENTE
+- **Estado**: ✅ COMPLETADO (2026-11-06, 1280937)
 - **Riesgo BPB**: N/A (documentación + validación)
 - **Descripción**: Documentación de cómo usar Kaggle (30h GPU gratis/semana)
   para validar el plugin GPU. Template de notebook. Protocolo de benchmark:
@@ -2027,10 +2027,10 @@ cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del co
 - **Archivos**: `docs/internal/research/gpu-backend-architecture.md`,
   `docs/internal/kaggle-validation-protocol.md`
 - **Subtareas**:
-  - [ ] Documento de arquitectura GPU backend
-  - [ ] Protocolo de validación Kaggle
-  - [ ] Template de notebook (.ipynb o .py)
-  - [ ] Mapping de R-041 (MambaByte training) a Kaggle free tier
+  - [x] Documento de arquitectura GPU backend
+  - [x] Protocolo de validación Kaggle
+  - [x] Template de notebook (.ipynb o .py)
+  - [x] Mapping de R-041 (MambaByte training) a Kaggle free tier
 
 #### Secuencia Fase 13
 
@@ -2045,6 +2045,13 @@ R-076 (Kaggle validation) ←─────────────────
 R-072 → R-073 → R-074 son secuenciales (cada uno depende del anterior).
 R-075 depende de R-072 (FFI interface) + R-074 (integration points).
 R-076 es independiente (documentación).
+
+Estado: R-072 ✅ R-073 ✅ R-074 ✅ R-075 ✅ R-076 ✅. **FASE 13 COMPLETADA.**
+
+**Resultado**: Arquitectura de plugin GPU portátil implementada. Core zero-dep preservado.
+PluginBackend integrado en DynModel con auto-fallback. Plugin wgpu skeleton compilado
+(placeholder). 214 tests pasando (210 unit + 4 integration). Documentación de arquitectura
+y protocolo de validación Kaggle creados.
 
 ---
 
@@ -2308,3 +2315,4 @@ R-076 es independiente (documentación).
 | 2026-11-02 | Fase 11 CERRADA: 4/4 técnicas NO VIABLES. DRAM bandwidth = hard ceiling |
 | 2026-11-02 | Fase 12 definida: R-068 (PGO) → R-069 (op fusion) → R-070 (conv1d SIMD) → R-071 (SVD LM head) |
 | 2026-11-06 | Fase 13 añadida: Portable GPU Backend Architecture (R-072 to R-076) |
+| 2026-11-06 | R-072 to R-076 COMPLETADOS — Fase 13 cerrada. Plugin GPU backend architecture. |
