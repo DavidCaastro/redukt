@@ -162,7 +162,7 @@ for name in BENCH_FILES:
 
     t0 = time.time()
     rc, stdout = run(
-        f"{REDUKT} compress {fpath} {azth} --backbone mamba --bytes 10240",
+        f"{REDUKT} compress --input {fpath} --output {azth} --backbone mamba --bytes 10240",
         cwd=REPO_DIR,
     )
     elapsed = time.time() - t0
@@ -189,7 +189,7 @@ section("Phase 5: GPU Plugin Test")
 
 # Test plugin loading
 rc, stdout = run(
-    f"{REDUKT} compress {DATA_DIR}/enwik8 {DATA_DIR}/enwik8.gpu.azth "
+    f"{REDUKT} compress --input {DATA_DIR}/enwik8 --output {DATA_DIR}/enwik8.gpu.azth "
     f"--backbone plugin --bytes 10240",
     cwd=REPO_DIR,
 )
@@ -205,7 +205,7 @@ if rc == 0:
 
         t0 = time.time()
         rc, stdout = run(
-            f"{REDUKT} compress {fpath} {azth} --backbone plugin --bytes 10240",
+            f"{REDUKT} compress --input {fpath} --output {azth} --backbone plugin --bytes 10240",
             cwd=REPO_DIR,
         )
         elapsed = time.time() - t0
@@ -235,9 +235,9 @@ report_lines = []
 
 enwik8_path = f"{DATA_DIR}/enwik8"
 if os.path.exists(enwik8_path):
-    run(f"{REDUKT} compress {enwik8_path} {DATA_DIR}/det1.azth --backbone mamba --bytes 10240",
+    run(f"{REDUKT} compress --input {enwik8_path} --output {DATA_DIR}/det1.azth --backbone mamba --bytes 10240",
         cwd=REPO_DIR)
-    run(f"{REDUKT} compress {enwik8_path} {DATA_DIR}/det2.azth --backbone mamba --bytes 10240",
+    run(f"{REDUKT} compress --input {enwik8_path} --output {DATA_DIR}/det2.azth --backbone mamba --bytes 10240",
         cwd=REPO_DIR)
     rc, _ = run(f"diff {DATA_DIR}/det1.azth {DATA_DIR}/det2.azth")
     det_result = "PASS" if rc == 0 else "FAIL"
@@ -245,7 +245,7 @@ if os.path.exists(enwik8_path):
     print(f"Determinism check: {det_result}")
 
     # Roundtrip check
-    run(f"{REDUKT} decompress {DATA_DIR}/det1.azth {DATA_DIR}/det1.dec --backbone mamba",
+    run(f"{REDUKT} decompress --input {DATA_DIR}/det1.azth --output {DATA_DIR}/det1.dec",
         cwd=REPO_DIR)
     rc, _ = run(f"diff {enwik8_path} {DATA_DIR}/det1.dec")
     rt_result = "PASS" if rc == 0 else "FAIL"
