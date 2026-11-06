@@ -57,7 +57,7 @@ struct MambaLayerWeights {
 
 pub struct MambaModel {
     pub config: MambaConfig,
-    emb_w: Tensor,             // (vocab_size, d_model) — also used as lm_head (tied)
+    emb_w: Tensor,             // (vocab_size, d_model) — embedding + lm_head (tied)
     layers: Vec<MambaLayerWeights>,
     norm_f_w: Vec<f32>,        // (d_model,)
     // R-062: highway layer skip configuration
@@ -236,7 +236,9 @@ impl MambaModel {
     }
 
     /// Wanda-inspired column pruning: remove least-important d_inner channels (R-061).
-    /// Both compress and decompress compute identical norms → deterministic.
+    /// NOTE: Marked NO VIABLE — included for experimental CLI only.
+    /// Operates on Q8 data by dequantizing columns for importance scoring,
+    /// then rebuilds pruned Q8 tensors.
     pub fn apply_column_pruning(&mut self, prune_frac: f32) {
         let di = self.config.d_inner;
         let d = self.config.d_model;
@@ -248,7 +250,6 @@ impl MambaModel {
         let new_di = di - n_prune;
 
         for layer in &mut self.layers {
-            // Importance[j] = ||in_proj rows j,j+di|| * ||out_proj col j||
             let mut importance = vec![0.0f32; di];
             for j in 0..di {
                 let mut in_sq = 0.0f32;
@@ -265,13 +266,12 @@ impl MambaModel {
                 importance[j] = in_sq.sqrt() * out_sq.sqrt();
             }
 
-            // Sort by importance ascending, keep top new_di
             let mut idx: Vec<usize> = (0..di).collect();
             idx.sort_by(|&a, &b| {
                 importance[a].partial_cmp(&importance[b]).unwrap()
             });
             let mut keep: Vec<usize> = idx[n_prune..].to_vec();
-            keep.sort(); // canonical ascending order
+            keep.sort();
 
             // Rebuild in_proj_w: (2*di, d) → (2*new_di, d)
             let mut new_in = vec![0.0f32; 2 * new_di * d];
@@ -289,16 +289,13 @@ impl MambaModel {
             }
             layer.in_proj_w = Tensor::from_data(new_in, vec![2 * new_di, d]);
 
-            // Rebuild conv1d_w: (di*dc) → (new_di*dc)
+            // conv1d_w, conv1d_b
             let mut new_cw = vec![0.0f32; new_di * dc];
             for (ni, &oj) in keep.iter().enumerate() {
-                new_cw[ni * dc..(ni + 1) * dc].copy_from_slice(
-                    &layer.conv1d_w[oj * dc..(oj + 1) * dc],
-                );
+                new_cw[ni * dc..(ni + 1) * dc]
+                    .copy_from_slice(&layer.conv1d_w[oj * dc..(oj + 1) * dc]);
             }
             layer.conv1d_w = new_cw;
-
-            // conv1d_b
             layer.conv1d_b = keep.iter().map(|&j| layer.conv1d_b[j]).collect();
 
             // x_proj_w: (dr+2*ds, di) → (dr+2*ds, new_di)
@@ -320,20 +317,15 @@ impl MambaModel {
                 );
             }
             layer.dt_proj_w = Tensor::from_data(new_dt, vec![new_di, dr]);
-
-            // dt_proj_b
             layer.dt_proj_b = keep.iter().map(|&j| layer.dt_proj_b[j]).collect();
 
-            // a_log: (di*ds) → (new_di*ds)
+            // a_log, d_vec
             let mut new_al = vec![0.0f32; new_di * ds];
             for (ni, &oj) in keep.iter().enumerate() {
-                new_al[ni * ds..(ni + 1) * ds].copy_from_slice(
-                    &layer.a_log[oj * ds..(oj + 1) * ds],
-                );
+                new_al[ni * ds..(ni + 1) * ds]
+                    .copy_from_slice(&layer.a_log[oj * ds..(oj + 1) * ds]);
             }
             layer.a_log = new_al;
-
-            // d_vec
             layer.d_vec = keep.iter().map(|&j| layer.d_vec[j]).collect();
 
             // out_proj_w: (d, di) → (d, new_di)
@@ -410,7 +402,7 @@ impl MambaModel {
             // Bulk SiLU via SIMD
             silu_inplace(&mut scratch.conv_out[..di]);
 
-            // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj
+            // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj [f32, narrow]
             mat_vec_mul_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out);
 
             // Split z_proj → dt_raw, B, C
@@ -418,7 +410,7 @@ impl MambaModel {
             let b_slice = &scratch.z_proj[dr..dr + ds];
             let c_slice = &scratch.z_proj[dr + ds..dr + 2 * ds];
 
-            // dt = softplus(dt_proj @ dt_raw + dt_proj_bias)
+            // dt = softplus(dt_proj @ dt_raw + dt_proj_bias) [f32, narrow]
             mat_vec_mul_into(&mut scratch.dt, &lw.dt_proj_w, &scratch.dt_raw);
             for j in 0..di {
                 scratch.dt[j] = portable_softplus(scratch.dt[j] + lw.dt_proj_b[j]);

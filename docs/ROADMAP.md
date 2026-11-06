@@ -1933,6 +1933,121 @@ Para throughput >34 tok/s se necesita: DDR5, dual-channel, modelo más pequeño
 
 ---
 
+### Fase 13: Portable GPU Backend Architecture (R-072 to R-076)
+
+> Goal: hardware-agnostic execution — deploy on any CPU, GPU, or future accelerator.
+> Principle: core Redukt stays zero-dep; GPU acceleration via optional runtime plugins.
+> Research: analysis from backbone-scalability + DRAM bandwidth ceiling (Fases 9-12).
+
+**Motivación**: Fases 9-12 demostraron que DRAM bandwidth DDR4 es un hard ceiling
+(27-34 tok/s, 70-85% utilización). Para throughput >100x se necesita GPU, pero
+locked a CUDA/NVIDIA destruiría la portabilidad. Arquitectura de plugins permite
+cualquier backend (Vulkan, Metal, DX12, OpenCL, CUDA) sin romper zero-dep del core.
+
+#### R-072: Backend FFI interface definition
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (solo definición de interfaz, zero runtime impact)
+- **Descripción**: Definir el contrato C ABI que todo plugin GPU debe implementar.
+  4 funciones: `backend_init`, `backend_forward`, `backend_reset_state`, `backend_free`.
+  `#[repr(C)]` structs para paso de datos. Vive en `src/domain/backend_ffi.rs` porque
+  es un contrato del dominio (como `Backbone` trait), no una implementación.
+- **Archivos**: `src/domain/backend_ffi.rs`, `src/domain/mod.rs`
+- **Subtareas**:
+  - [ ] Definir `BackendInfo` struct (version, vocab_size, name)
+  - [ ] Definir `BackendVTable` con 4 function pointers
+  - [ ] Definir constantes de versión para compatibilidad
+  - [ ] Tests: construcción de VTable con funciones dummy
+
+#### R-073: Cross-platform dynamic plugin loader
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (carga opcional, fallback a CPU si no hay plugin)
+- **Descripción**: Loader que busca `redukt-gpu.dll` (Windows) / `libredukt_gpu.so` (Linux)
+  / `libredukt_gpu.dylib` (macOS) junto al ejecutable. Usa raw FFI a OS:
+  `LoadLibraryW`/`GetProcAddress` en Windows (patrón ya establecido en governor.rs),
+  `dlopen`/`dlsym` en Unix. Zero crate dependencies.
+  Si el plugin no existe → silenciosamente usa CPU. Sin error, sin warning.
+- **Archivos**: `src/infrastructure/plugin_backend/loader.rs`, `src/infrastructure/plugin_backend/mod.rs`,
+  `src/infrastructure/mod.rs`
+- **Subtareas**:
+  - [ ] `PluginLibrary` struct (handle + vtable)
+  - [ ] `PluginLibrary::try_load()` → `Option<PluginLibrary>` (no panic)
+  - [ ] Platform-specific: Windows (kernel32 LoadLibraryW), Unix (dlopen)
+  - [ ] Symbol resolution con validación de versión
+  - [ ] Drop impl para FreeLibrary/dlclose
+  - [ ] Tests: carga fallida retorna None (no panic)
+
+#### R-074: PluginBackend impl Backbone + auto-fallback
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (wrapper transparente, misma interfaz)
+- **Descripción**: `PluginBackend` struct que implementa `Backbone` trait via FFI.
+  `PluginState` y `PluginScratch` como wrappers opacos. Se añade variante
+  `DynModel::Plugin(PluginBackend)` al enum. `BackboneChoice::Plugin` en el enum.
+  `load_dyn_model` intenta plugin primero si `--backend plugin` o auto-detect.
+  Fallback automático: si plugin no disponible → Mamba CPU (transparente).
+- **Archivos**: `src/infrastructure/plugin_backend/model.rs`, `src/domain/backbone.rs`,
+  `src/application/model_loader.rs`
+- **Subtareas**:
+  - [ ] `PluginBackend` struct (wraps PluginLibrary + config)
+  - [ ] `PluginState`, `PluginScratch` (opaque, minimal)
+  - [ ] `impl Backbone for PluginBackend`
+  - [ ] `BackboneChoice::Plugin` variant + header byte (2)
+  - [ ] `DynModel::Plugin` variant + all match arms
+  - [ ] `--backend plugin` CLI flag
+  - [ ] Auto-fallback: try plugin → Mamba → RWKV
+  - [ ] Tests: fallback cuando no hay plugin, trait dispatch
+
+#### R-075: wgpu compute shader plugin skeleton
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: 0% (proyecto separado, no compilado por default)
+- **Descripción**: Proyecto separado en `plugins/redukt-gpu/` con su propio Cargo.toml.
+  Usa `wgpu` crate para GPU compute portátil (Vulkan/Metal/DX12/OpenGL).
+  Compila a shared library (.dll/.so/.dylib) que implementa la FFI de R-072.
+  Skeleton: estructura de proyecto, build system, forward pass placeholder.
+  NO es parte del binario principal (zero-dep preservado).
+- **Backends wgpu**: Vulkan (Linux/Win/Android), Metal (macOS/iOS),
+  DX12 (Windows), OpenGL (fallback) — cubre 95%+ del hardware actual y futuro.
+- **Archivos**: `plugins/redukt-gpu/Cargo.toml`, `plugins/redukt-gpu/src/lib.rs`,
+  `plugins/redukt-gpu/src/kernels/`, `plugins/redukt-gpu/README.md`
+- **Subtareas**:
+  - [ ] Proyecto Cargo con wgpu + safetensors deps
+  - [ ] FFI exports matching R-072 VTable
+  - [ ] GPU device initialization + adapter selection
+  - [ ] Placeholder forward pass (CPU fallback inside plugin)
+  - [ ] Build produces .dll/.so/.dylib
+  - [ ] README con instrucciones de build
+
+#### R-076: Kaggle validation & benchmark protocol
+- **Estado**: PENDIENTE
+- **Riesgo BPB**: N/A (documentación + validación)
+- **Descripción**: Documentación de cómo usar Kaggle (30h GPU gratis/semana)
+  para validar el plugin GPU. Template de notebook. Protocolo de benchmark:
+  12 archivos estándar, BPB CPU vs GPU (debe ser idéntico para determinismo),
+  throughput comparison, roundtrip verification.
+  También documenta path hacia MambaByte training (R-041) en Kaggle.
+- **Archivos**: `docs/internal/research/gpu-backend-architecture.md`,
+  `docs/internal/kaggle-validation-protocol.md`
+- **Subtareas**:
+  - [ ] Documento de arquitectura GPU backend
+  - [ ] Protocolo de validación Kaggle
+  - [ ] Template de notebook (.ipynb o .py)
+  - [ ] Mapping de R-041 (MambaByte training) a Kaggle free tier
+
+#### Secuencia Fase 13
+
+```
+R-072 (FFI interface) ──→ R-073 (plugin loader) ──→ R-074 (PluginBackend trait)
+                                                         │
+R-075 (wgpu skeleton) ←──────────────────────────────────┘
+                                                         │
+R-076 (Kaggle validation) ←──────────────────────────────┘
+```
+
+R-072 → R-073 → R-074 son secuenciales (cada uno depende del anterior).
+R-075 depende de R-072 (FFI interface) + R-074 (integration points).
+R-076 es independiente (documentación).
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2192,3 +2307,4 @@ Para throughput >34 tok/s se necesita: DDR5, dual-channel, modelo más pequeño
 | 2026-11-02 | R-067 ❌ NO VIABLE: L2-tile layout — GEMV streaming, tiling only helps GEMM |
 | 2026-11-02 | Fase 11 CERRADA: 4/4 técnicas NO VIABLES. DRAM bandwidth = hard ceiling |
 | 2026-11-02 | Fase 12 definida: R-068 (PGO) → R-069 (op fusion) → R-070 (conv1d SIMD) → R-071 (SVD LM head) |
+| 2026-11-06 | Fase 13 añadida: Portable GPU Backend Architecture (R-072 to R-076) |
