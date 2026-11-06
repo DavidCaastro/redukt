@@ -1,0 +1,20 @@
+[package]
+name = "redukt-gpu"
+version = "0.1.0"
+edition = "2021"
+description = "GPU compute backend plugin for Redukt compression engine"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# wgpu for portable GPU compute (Vulkan/Metal/DX12/OpenGL)
+# Uncomment when implementing actual GPU kernels:
+# wgpu = "24"
+# bytemuck = "1"
+# safetensors = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
