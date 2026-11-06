@@ -8,7 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESULTS_DIR="$REPO_DIR/data/benchmark/results/kaggle"
 
-KAGGLE_JSON="$HOME/.kaggle/kaggle.json"
+# Find kaggle.json (handle Windows paths with spaces)
+KAGGLE_JSON="$USERPROFILE/.kaggle/kaggle.json"
+if [ ! -f "$KAGGLE_JSON" ]; then
+    KAGGLE_JSON="$HOME/.kaggle/kaggle.json"
+fi
 if [ ! -f "$KAGGLE_JSON" ]; then
     echo "ERROR: Run scripts/kaggle-setup.sh first."
     exit 1
@@ -22,15 +26,16 @@ if [ "${1:-}" = "--wait" ]; then
 fi
 
 check_status() {
-    STATUS=$(kaggle kernels status "$KERNEL_SLUG" 2>/dev/null | tail -1)
-    echo "[kaggle-status] $KERNEL_SLUG: $STATUS"
-    echo "$STATUS"
+    local out
+    out=$(python -m kaggle kernels status "$KERNEL_SLUG" 2>/dev/null | tail -1)
+    echo "[kaggle-status] $KERNEL_SLUG: $out"
+    echo "$out"
 }
 
 download_results() {
     echo "[kaggle-status] Downloading results..."
     mkdir -p "$RESULTS_DIR"
-    kaggle kernels output "$KERNEL_SLUG" -p "$RESULTS_DIR"
+    python -m kaggle kernels output "$KERNEL_SLUG" -p "$RESULTS_DIR"
     echo "[kaggle-status] Results saved to: $RESULTS_DIR/"
     if [ -f "$RESULTS_DIR/gpu-benchmark.csv" ]; then
         echo ""

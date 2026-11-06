@@ -16,8 +16,11 @@ case "$GPU_TYPE" in
     *)    echo "Usage: $0 [t4|p100]"; exit 1 ;;
 esac
 
-# Get username from kaggle.json
-KAGGLE_JSON="$HOME/.kaggle/kaggle.json"
+# Find kaggle.json (handle Windows paths with spaces)
+KAGGLE_JSON="$USERPROFILE/.kaggle/kaggle.json"
+if [ ! -f "$KAGGLE_JSON" ]; then
+    KAGGLE_JSON="$HOME/.kaggle/kaggle.json"
+fi
 if [ ! -f "$KAGGLE_JSON" ]; then
     echo "ERROR: Run scripts/kaggle-setup.sh first."
     exit 1
@@ -53,7 +56,7 @@ fi
 cp "$NB_DIR/gpu-validation.py" "$KERNEL_DIR/gpu-validation.py"
 
 echo "[kaggle-push] Pushing to Kaggle ($GPU_TYPE)..."
-kaggle kernels push -p "$KERNEL_DIR"
+python -m kaggle kernels push -p "$KERNEL_DIR"
 
 echo ""
 echo "[kaggle-push] Notebook submitted: $KERNEL_SLUG"
