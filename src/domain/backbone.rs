@@ -10,25 +10,36 @@ use std::fmt;
 pub enum BackboneChoice {
     Rwkv,
     Mamba,
+    Plugin,
 }
 
 impl BackboneChoice {
-    /// Encode as header byte: 0=RWKV, 1=Mamba.
+    /// Encode as header byte: 0=RWKV, 1=Mamba, 2=Plugin.
     pub fn header_byte(self) -> u8 {
-        match self { Self::Rwkv => 0, Self::Mamba => 1 }
+        match self {
+            Self::Rwkv => 0,
+            Self::Mamba => 1,
+            Self::Plugin => 2,
+        }
     }
 
     /// Decode from header byte.
     pub fn from_header_byte(b: u8) -> Option<Self> {
-        match b { 0 => Some(Self::Rwkv), 1 => Some(Self::Mamba), _ => None }
+        match b {
+            0 => Some(Self::Rwkv),
+            1 => Some(Self::Mamba),
+            2 => Some(Self::Plugin),
+            _ => None,
+        }
     }
 
-    /// Parse CLI string ("rwkv", "mamba", "auto").
+    /// Parse CLI string ("rwkv", "mamba", "plugin", "auto").
     /// Returns None for "auto" (caller decides).
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "rwkv" => Some(Self::Rwkv),
             "mamba" => Some(Self::Mamba),
+            "plugin" => Some(Self::Plugin),
             _ => None,
         }
     }
@@ -39,6 +50,7 @@ impl fmt::Display for BackboneChoice {
         match self {
             Self::Rwkv => write!(f, "rwkv"),
             Self::Mamba => write!(f, "mamba"),
+            Self::Plugin => write!(f, "plugin"),
         }
     }
 }

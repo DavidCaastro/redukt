@@ -2452,9 +2452,11 @@ mod tests {
     fn backbone_choice_roundtrip() {
         assert_eq!(BackboneChoice::from_header_byte(0), Some(BackboneChoice::Rwkv));
         assert_eq!(BackboneChoice::from_header_byte(1), Some(BackboneChoice::Mamba));
-        assert_eq!(BackboneChoice::from_header_byte(2), None);
+        assert_eq!(BackboneChoice::from_header_byte(2), Some(BackboneChoice::Plugin));
+        assert_eq!(BackboneChoice::from_header_byte(3), None);
         assert_eq!(BackboneChoice::Rwkv.header_byte(), 0);
         assert_eq!(BackboneChoice::Mamba.header_byte(), 1);
+        assert_eq!(BackboneChoice::Plugin.header_byte(), 2);
     }
 
     #[test]

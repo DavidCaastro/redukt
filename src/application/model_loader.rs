@@ -13,6 +13,9 @@ use crate::infrastructure::rwkv7::model::Rwkv7Model;
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
 use crate::infrastructure::mamba::model::{MambaModel, MambaState, MambaScratch};
 use crate::infrastructure::mamba::tokenizer::BpeTokenizer;
+use crate::infrastructure::plugin_backend::model::{
+    PluginBackend, PluginState, PluginScratch, PluginTokenizer,
+};
 
 // --- Path resolution ---
 
@@ -69,24 +72,28 @@ pub fn load_mamba_model_and_tokenizer(weights_dir: &str) -> (MambaModel, BpeToke
 pub enum DynModel {
     Rwkv(Rwkv7Model),
     Mamba(MambaModel),
+    Plugin(PluginBackend),
 }
 
 /// Dynamic state wrapper.
 pub enum DynState {
     Rwkv(<Rwkv7Model as Backbone>::State),
     Mamba(MambaState),
+    Plugin(PluginState),
 }
 
 /// Dynamic scratch wrapper.
 pub enum DynScratch {
     Rwkv(<Rwkv7Model as Backbone>::Scratch),
     Mamba(MambaScratch),
+    Plugin(PluginScratch),
 }
 
 /// Dynamic tokenizer wrapper.
 pub enum DynTokenizer {
     World(WorldTokenizer),
     Bpe(BpeTokenizer),
+    Plugin(PluginTokenizer),
 }
 
 impl BackboneState for DynState {
@@ -94,6 +101,7 @@ impl BackboneState for DynState {
         match self {
             Self::Rwkv(s) => s.reset(),
             Self::Mamba(s) => s.reset(),
+            Self::Plugin(s) => s.reset(),
         }
     }
 }
@@ -103,6 +111,7 @@ impl BackboneScratch for DynScratch {
         match self {
             Self::Rwkv(s) => s.reset_perf(),
             Self::Mamba(s) => s.reset_perf(),
+            Self::Plugin(s) => s.reset_perf(),
         }
     }
 }
@@ -115,6 +124,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => m.vocab_size(),
             Self::Mamba(m) => m.vocab_size(),
+            Self::Plugin(m) => m.vocab_size(),
         }
     }
 
@@ -122,6 +132,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => DynState::Rwkv(m.create_state()),
             Self::Mamba(m) => DynState::Mamba(m.create_state()),
+            Self::Plugin(m) => DynState::Plugin(m.create_state()),
         }
     }
 
@@ -129,6 +140,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => DynScratch::Rwkv(m.create_scratch()),
             Self::Mamba(m) => DynScratch::Mamba(m.create_scratch()),
+            Self::Plugin(m) => DynScratch::Plugin(m.create_scratch()),
         }
     }
 
@@ -143,6 +155,9 @@ impl Backbone for DynModel {
             (Self::Mamba(m), DynState::Mamba(s), DynScratch::Mamba(sc)) => {
                 m.forward_into(token, s, sc, out_logits);
             }
+            (Self::Plugin(m), DynState::Plugin(s), DynScratch::Plugin(sc)) => {
+                m.forward_into(token, s, sc, out_logits);
+            }
             _ => panic!("DynModel/DynState/DynScratch type mismatch"),
         }
     }
@@ -153,6 +168,7 @@ impl BackendTokenizer for DynTokenizer {
         match self {
             Self::World(t) => t.encode(data),
             Self::Bpe(t) => t.encode(data),
+            Self::Plugin(t) => t.encode(data),
         }
     }
 
@@ -160,6 +176,7 @@ impl BackendTokenizer for DynTokenizer {
         match self {
             Self::World(t) => t.decode_token(id),
             Self::Bpe(t) => t.decode_token(id),
+            Self::Plugin(t) => t.decode_token(id),
         }
     }
 }
@@ -175,6 +192,7 @@ impl DynModel {
         match self {
             Self::Rwkv(m) => m.vocab_size(),
             Self::Mamba(m) => m.config.d_model,
+            Self::Plugin(m) => m.info().hidden_dim as usize,
         }
     }
 
@@ -247,6 +265,11 @@ pub fn load_dyn_model(
             };
             let (m, t) = load_mamba_model_and_tokenizer(mamba_dir);
             (DynModel::Mamba(m), DynTokenizer::Bpe(t))
+        }
+        BackboneChoice::Plugin => {
+            let pb = PluginBackend::try_new(rwkv_weights, 0)
+                .expect("[plugin] GPU backend not found or init failed");
+            (DynModel::Plugin(pb), DynTokenizer::Plugin(PluginTokenizer::new()))
         }
     }
 }
