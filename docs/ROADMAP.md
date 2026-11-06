@@ -2055,6 +2055,36 @@ y protocolo de validación Kaggle creados.
 
 ---
 
+### Fase 14: Token Reduction & Entropy-Gated Inference (R-077 → R-079)
+
+Diagnosis: sequential token-by-token processing is the fundamental throughput bottleneck.
+23 approaches investigated across 4 tracks (multi-token prediction, tokenization, pattern caching, hybrid CM-backbone). 21 NO-GO, 2 CONDITIONAL GO.
+Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
+
+- R-077: Nacrith-style CM entropy gate
+  - Compute CM-only Shannon entropy before backbone forward pass
+  - If H < threshold: skip backbone, use CM-only CDF for arithmetic coding
+  - Store threshold in AZTH v4 header (reuse FLAGS 0x20 adaptive-skip field)
+  - MAX_CONSEC_SKIP=3 bounds Mamba state divergence
+  - Evidence: Nacrith (2026) achieves 30-70% skip rate, -0.39 BPB on Transformers [SOURCED]
+  - Target: ≤+3% BPB regression, ≥15% skip rate, ≥1.15× throughput
+  - Dependencies: CmEnsemble (R-051), AZTH v4 (R-018)
+
+- R-078: Kaggle GPU validation — benchmark analysis & documentation
+  - Analyze Kaggle v3 results (18 benchmark entries, determinism PASS, roundtrip PASS)
+  - Document CPU baseline (25.7 tok/s T4), plugin throughput (85K-100K tok/s placeholder)
+  - Cross-platform determinism: enwik8 0.9633 BPB Kaggle vs 0.9609 local
+  - Evidence: `data/benchmark/results/kaggle-v3/`
+
+- R-079: MambaByte training feasibility update (research)
+  - Update R-041 with Byteification adapter path (Nature 2026)
+  - Cost estimate: $50-200 adapter vs $300-750 from-scratch
+  - Byte-level CM entropy gate projection: 40-70% skip rate
+  - Combined throughput projection: 500-2,000 tok/s GPU T4
+  - Dependencies: R-041, R-077 results
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2316,3 +2346,4 @@ y protocolo de validación Kaggle creados.
 | 2026-11-02 | Fase 12 definida: R-068 (PGO) → R-069 (op fusion) → R-070 (conv1d SIMD) → R-071 (SVD LM head) |
 | 2026-11-06 | Fase 13 añadida: Portable GPU Backend Architecture (R-072 to R-076) |
 | 2026-11-06 | R-072 to R-076 COMPLETADOS — Fase 13 cerrada. Plugin GPU backend architecture. |
+| 2026-11-07 | Fase 14 definida: R-077 → R-078 → R-079. Token reduction research (23 approaches, 21 NO-GO, 2 GO). Nacrith-style entropy gate = immediate next step. |
