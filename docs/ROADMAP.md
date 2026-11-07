@@ -2156,8 +2156,8 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
   - **Nota**: MambaModel no necesita cambios (ya parametrizado por config.vocab_size)
   - **Ejecutable sin weights**: skeleton funcional, placeholder weights para tests
 
-- R-083: Cross-framework validation notebook
-  - **Estado**: PENDIENTE
+- R-083: Cross-framework validation notebook ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07)
   - **Deliverable**: `notebooks/mambabyte-validate.py`
   - **Subtareas**:
     - [ ] Load same weights in PyTorch + Rust, compare logits (max diff <1e-5)
@@ -2445,3 +2445,5 @@ R-082 (Rust byte tokenizer) ─────────────────�
 | 2026-11-07 | R-082 COMPLETADO — ByteTokenizer (vocab=256), BackboneChoice::MambaByte, model_loader integration, 3 tests. |
 | 2026-11-07 | R-080 COMPLETADO — mambabyte-train.py (922 lines): MambaByte-96M PyTorch, TPU v5e-8 + GPU T4, checkpointing, byte streaming, SafeTensors export. |
 | 2026-11-07 | R-081 COMPLETADO — convert-mambabyte-weights.py (287 lines): PyTorch→SafeTensors, key mapping, shape validation, SHA-256 provenance. |
+| 2026-11-07 | R-083 COMPLETADO — mambabyte-validate.py (1005 lines): cross-framework validation, 6 tests (BPB range, agreement, roundtrip, determinism, multi-file). |
+| 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
