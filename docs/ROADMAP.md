@@ -2089,12 +2089,19 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
   - Synthetic files: 0.10-0.11 BPB (SHA-256 periodic pattern, CM learns trivially)
   - Evidence: `data/benchmark/results/kaggle-v3/analysis.md`, `gpu-benchmark.csv`
 
-- R-079: MambaByte training feasibility update (research)
-  - Update R-041 with Byteification adapter path (Nature 2026)
-  - Cost estimate: $50-200 adapter vs $300-750 from-scratch
-  - Byte-level CM entropy gate projection: 40-70% skip rate
-  - Combined throughput projection: 500-2,000 tok/s GPU T4
-  - Dependencies: R-041, R-077 results
+- R-079: MambaByte training feasibility update (research) ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07) — CONDITIONAL GO (from-scratch training)
+  - **Byteification adapter** (Nature Oct 2026): Mamba2 encoder validates SSM+byte synergy,
+    but full pipeline requires Transformer global model. NOT RECOMMENDED for Redukt.
+  - **MambaByte from-scratch** (ICLR 2024, Wang et al.): RECOMMENDED path
+    - Cost: $87-145 (130M params, 30-50B bytes, A100)
+    - Published: MambaByte-353M = 0.930 BPB PG19
+    - Projected: MambaByte-130M + CM = 0.85-1.05 BPB enwik8
+  - **Entropy gate unlocked**: vocab=256 → CM entropy ~5-6 bits → 40-70% skip viable
+  - **GPU T4 throughput**: 650-2,500 byte-tok/s with 70% gate (vs 119 B/s CPU)
+  - **Competitive**: Nacrith 0.9389 BPB, Redukt+MambaByte projected 0.85-1.05
+  - **Phased plan**: validate 50M ($34) → train 130M ($87-145) → integrate → gate → GPU
+  - Research: `docs/internal/research/mambabyte-feasibility-update.md` (7 sources)
 
 ---
 
@@ -2362,3 +2369,4 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 | 2026-11-07 | Fase 14 definida: R-077 → R-078 → R-079. Token reduction research (23 approaches, 21 NO-GO, 2 GO). Nacrith-style entropy gate = immediate next step. |
 | 2026-11-07 | R-077 COMPLETADO — entropy gate implemented, NOT VIABLE at BPE 50K/10KB. CM entropy 15.49-15.62 bits (near-uniform). Viable only with byte-level model. |
 | 2026-11-07 | R-078 COMPLETADO — Kaggle v3 analysis: enwik8 0.9633 BPB (+0.25% vs local), 72.4 tok/s (2.1x local), GPU FFI pipeline validated (81K-96K tok/s skeleton). |
+| 2026-11-07 | R-079 COMPLETADO — MambaByte feasibility update: from-scratch $87-145, Byteification NOT RECOMMENDED, entropy gate unlocked at vocab=256, T4 projected 650-2,500 B/s. |
