@@ -2114,8 +2114,8 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 > **Budget**: $0 (Kaggle TPU) para validación, $87 (A100) para producción
 > **Research**: `docs/internal/research/mambabyte-training-infrastructure.md`
 
-- R-080: MambaByte training notebook (PyTorch + TPU)
-  - **Estado**: PENDIENTE
+- R-080: MambaByte training notebook (PyTorch + TPU) ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07)
   - **Prioridad**: P1 — habilita todas las mejoras de throughput posteriores
   - **Deliverable**: `notebooks/mambabyte-train.py`
   - **Subtareas**:
@@ -2133,8 +2133,8 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
   - **Training**: 30B bytes, 8192-byte sequences, batch 48, ~76K steps
   - **Estimado**: 5 semanas Kaggle TPU (50M validación) o 2 días A100 ($87)
 
-- R-081: Weight conversion pipeline
-  - **Estado**: PENDIENTE
+- R-081: Weight conversion pipeline ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07)
   - **Deliverable**: `scripts/convert-mambabyte-weights.py`
   - **Subtareas**:
     - [ ] PyTorch checkpoint → SafeTensors with HuggingFace key naming
@@ -2144,8 +2144,8 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
     - [ ] MANIFEST.md entry for mambabyte-96m
   - **Dependencia**: R-080 (necesita checkpoint entrenado para test real)
 
-- R-082: Rust byte tokenizer + model loader integration
-  - **Estado**: PENDIENTE
+- R-082: Rust byte tokenizer + model loader integration ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07)
   - **Deliverables**: `src/infrastructure/mamba/byte_tokenizer.rs`, updates to model_loader/backbone
   - **Subtareas**:
     - [ ] ByteTokenizer impl BackendTokenizer (encode=identity, decode=identity, vocab=256)
@@ -2442,3 +2442,6 @@ R-082 (Rust byte tokenizer) ─────────────────�
 | 2026-11-07 | R-078 COMPLETADO — Kaggle v3 analysis: enwik8 0.9633 BPB (+0.25% vs local), 72.4 tok/s (2.1x local), GPU FFI pipeline validated (81K-96K tok/s skeleton). |
 | 2026-11-07 | R-079 COMPLETADO — MambaByte feasibility update: from-scratch $87-145, Byteification NOT RECOMMENDED, entropy gate unlocked at vocab=256, T4 projected 650-2,500 B/s. |
 | 2026-11-07 | Fase 15 definida: MambaByte Training Infrastructure (R-080 → R-083). Training notebook, weight conversion, Rust byte tokenizer, cross-framework validation. |
+| 2026-11-07 | R-082 COMPLETADO — ByteTokenizer (vocab=256), BackboneChoice::MambaByte, model_loader integration, 3 tests. |
+| 2026-11-07 | R-080 COMPLETADO — mambabyte-train.py (922 lines): MambaByte-96M PyTorch, TPU v5e-8 + GPU T4, checkpointing, byte streaming, SafeTensors export. |
+| 2026-11-07 | R-081 COMPLETADO — convert-mambabyte-weights.py (287 lines): PyTorch→SafeTensors, key mapping, shape validation, SHA-256 provenance. |
