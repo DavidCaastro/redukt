@@ -103,6 +103,47 @@ impl CmEnsemble {
         self.bias.update(probs, token);
     }
 
+    /// Compute CM-only logits (no backbone) into output buffer.
+    /// Must be called AFTER compute_biases().
+    pub fn cm_only_logits_into(&self, out: &mut [f32]) {
+        let bias_vec = self.bias.bias_vector();
+        let s = self.mixer.cm_scale();
+        for i in 0..out.len() {
+            out[i] = s * self.mixer.w_ngram * self.ng_buf[i]
+                + s * self.mixer.w_bias * bias_vec[i]
+                + s * self.mixer.w_match * self.match_buf[i]
+                + s * self.mixer.w_run * self.run_buf[i]
+                + s * self.mixer.w_word * self.word_buf[i]
+                + self.seg_buf[i];
+        }
+    }
+
+    /// Compute Shannon entropy (bits) of CM-only distribution.
+    /// Must be called AFTER compute_biases().
+    /// Writes CM-only logits into `scratch` as a side effect.
+    pub fn cm_only_entropy(&self, scratch: &mut [f32]) -> f32 {
+        self.cm_only_logits_into(scratch);
+        let n = scratch.len();
+        let mut max_val = f32::NEG_INFINITY;
+        for i in 0..n {
+            if scratch[i] > max_val { max_val = scratch[i]; }
+        }
+        let mut sum_exp = 0.0f64;
+        for i in 0..n {
+            sum_exp += ((scratch[i] - max_val) as f64).exp();
+        }
+        let log_sum = sum_exp.ln();
+        let mut entropy = 0.0f64;
+        for i in 0..n {
+            let log_p = (scratch[i] - max_val) as f64 - log_sum;
+            let p = log_p.exp();
+            if p > 1e-30 {
+                entropy -= p * log_p;
+            }
+        }
+        (entropy / core::f64::consts::LN_2) as f32
+    }
+
     /// Observe a token (advance all CM model histories).
     pub fn observe(&mut self, token: u32) {
         self.ngram.observe(token);
@@ -139,6 +180,31 @@ mod tests {
         // With biases, at least one element should be non-zero
         let sum: f32 = out.iter().map(|x| x.abs()).sum();
         assert!(sum >= 0.0);
+    }
+
+    #[test]
+    fn cm_only_entropy_near_uniform_then_decreases() {
+        let vocab = 256;
+        let mut cm = CmEnsemble::new(vocab, 0.3, 0.5, 0.01, false);
+        cm.compute_biases(None);
+        let mut scratch = vec![0.0f32; vocab];
+        let h = cm.cm_only_entropy(&mut scratch);
+        // Initial state: all biases ~zero -> near-uniform -> ~log2(256)=8
+        assert!(
+            h > 7.0 && h < 9.0,
+            "initial entropy should be near-uniform: {}", h
+        );
+
+        // After observing repeated tokens, entropy should decrease
+        for _ in 0..10 {
+            cm.observe(65); // 'A'
+        }
+        cm.compute_biases(None);
+        let h2 = cm.cm_only_entropy(&mut scratch);
+        assert!(
+            h2 < h,
+            "entropy should decrease after observations: {} vs {}", h2, h
+        );
     }
 
 }

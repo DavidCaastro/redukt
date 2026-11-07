@@ -51,6 +51,9 @@ impl AdaptiveMixer {
         self.entropy_scaling = enabled;
     }
 
+    /// Current CM scale factor (R-077: needed by entropy gate).
+    pub fn cm_scale(&self) -> f32 { self.cm_scale }
+
     /// Zero-alloc combine: RWKV logits + all CM components.
     /// When entropy_scaling is enabled, CM contributions are scaled by cm_scale.
     pub fn combine_with_match(

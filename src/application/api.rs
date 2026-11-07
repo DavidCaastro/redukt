@@ -225,6 +225,7 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
+    // R-077: API path has no entropy gate (skip_threshold=0)
     for t in 0..tokens.len() {
         let tok = tokens[t] as usize;
         if t == 0 {
@@ -246,10 +247,13 @@ fn compress_bytes<M: Backbone, T: BackendTokenizer>(
     let input_crc = crc32::crc32(input);
 
     let hdr = build_v4_header(
-        total_bytes as u32, bias_lr, ngram_scale, mix_eta, "", false, 0, 0, 0,
+        total_bytes as u32, bias_lr, ngram_scale, mix_eta,
+        "", false, 0, 0, 0,
         crate::domain::backbone::BackboneChoice::Rwkv, true,
     );
-    let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
+    let mut output = Vec::with_capacity(
+        hdr.len() + compressed.len() + CRC_SIZE,
+    );
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
     output.extend_from_slice(&input_crc.to_le_bytes());
@@ -272,11 +276,20 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
 ) -> Result<Vec<u8>, String> {
     validate_magic(data).map_err(|e| e.to_string())?;
     let hdr = parse_header(data).map_err(|e| e.to_string())?;
-    let (stream, stored_crc) = extract_stream_and_crc_v(data, hdr.header_size, hdr.version);
+    let (stream, stored_crc) = extract_stream_and_crc_v(
+        data, hdr.header_size, hdr.version,
+    );
 
     let v = model.vocab_size();
     let total_bytes = hdr.total_bytes;
-    let mut cm = CmEnsemble::new(v, hdr.ngram_scale, hdr.bias_lr, hdr.mix_eta, hdr.enhanced_cm);
+    let skip_threshold = hdr.skip_threshold;
+    let entropy_thr_f = skip_threshold as f32 * 0.1;
+    let mut consec_skips: usize = 0;
+    const MAX_CONSEC_SKIP: usize = 3;
+
+    let mut cm = CmEnsemble::new(
+        v, hdr.ngram_scale, hdr.bias_lr, hdr.mix_eta, hdr.enhanced_cm,
+    );
     let mut dec = RangeDecoder::new(stream);
     let mut state = model.create_state();
     let mut scratch = model.create_scratch();
@@ -287,7 +300,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let mut output = Vec::with_capacity(total_bytes);
 
     if let Some(token_count) = hdr.token_count {
-        // v2/v3: token-count driven
+        // v2/v3: token-count driven (no entropy gate)
         let mut decoded_tokens: Vec<u32> = Vec::with_capacity(token_count);
         for t in 0..token_count {
             let tok = if t == 0 {
@@ -303,20 +316,34 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             };
             decoded_tokens.push(tok);
             cm.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            model.forward_into(
+                tok as usize, &mut state, &mut scratch, &mut logits,
+            );
         }
         for &tok in &decoded_tokens {
             output.extend_from_slice(tokenizer.decode_token(tok));
         }
     } else {
-        // v4: byte-count driven, interleaved
+        // v4: byte-count driven, interleaved + R-077 entropy gate
         let mut t: usize = 0;
         loop {
+            let mut gated = false;
             let tok = if t == 0 {
                 decode_checked(&mut dec, &Cdf::uniform(v), v, t)?
             } else {
                 cm.compute_biases(None);
-                cm.combine_into(&mut ensemble_buf, &logits);
+
+                // R-077: entropy gate — identical to compress path
+                let cm_h = cm.cm_only_entropy(&mut ensemble_buf);
+                let do_gate = skip_threshold > 0
+                    && consec_skips < MAX_CONSEC_SKIP
+                    && cm_h < entropy_thr_f;
+
+                if do_gate {
+                    gated = true;
+                } else {
+                    cm.combine_into(&mut ensemble_buf, &logits);
+                }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -328,19 +355,30 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 break;
             }
             cm.observe(tok);
-            model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+            if gated {
+                consec_skips += 1;
+            } else {
+                model.forward_into(
+                    tok as usize, &mut state, &mut scratch, &mut logits,
+                );
+                consec_skips = 0;
+            }
             t += 1;
         }
     }
 
     if output.len() != total_bytes {
-        return Err(format!("size mismatch: decoded {} bytes, expected {}", output.len(), total_bytes));
+        return Err(format!(
+            "size mismatch: decoded {} bytes, expected {}",
+            output.len(), total_bytes
+        ));
     }
     if let Some(expected_crc) = stored_crc {
         let actual_crc = crc32::crc32(&output);
         if actual_crc != expected_crc {
             return Err(format!(
-                "CRC-32 mismatch: expected {:08X}, got {:08X}", expected_crc, actual_crc
+                "CRC-32 mismatch: expected {:08X}, got {:08X}",
+                expected_crc, actual_crc
             ));
         }
     }

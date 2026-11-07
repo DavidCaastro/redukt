@@ -512,7 +512,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--adaptive-skip" => { adaptive_skip = 95; }
             "--skip-threshold" => {
                 let val: u8 = parse_arg(next_arg(args, &mut i, "--skip-threshold")?, "--skip-threshold")?;
-                adaptive_skip = val.clamp(1, 99);
+                adaptive_skip = val.max(1);
             }
             "--gpu" => { gpu_requested = true; }
             "--tokenizer" => { tokenizer_mode = next_arg(args, &mut i, "--tokenizer")?.to_string(); }
@@ -716,12 +716,18 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut ensemble_buf = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
 
-    let skip_thr_f = adaptive_skip as f32 / 100.0;
+    let entropy_thr_f = adaptive_skip as f32 * 0.1;
     let mut skip_count: usize = 0;
     let mut consec_skips: usize = 0;
+    let mut entropy_min = f64::INFINITY;
+    let mut entropy_max = f64::NEG_INFINITY;
+    let mut entropy_sum = 0.0f64;
     const MAX_CONSEC_SKIP: usize = 3;
     if adaptive_skip > 0 {
-        eprintln!("[compress] adaptive-skip: enabled (threshold={}%)", adaptive_skip);
+        eprintln!(
+            "[compress] entropy-gate: enabled (thr={:.1} bits)",
+            entropy_thr_f
+        );
     }
 
     eprintln!("[compress] encoding ...");
@@ -787,9 +793,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             }
         }
     } else {
-        // Original path: RWKV or adaptive-skip enabled.
+        // Original path: RWKV or entropy-gate enabled (R-077).
         for t in 0..tokens.len() {
             let tok = tokens[t] as usize;
+            let mut gated = false;
 
             if t == 0 {
                 let cdf = Cdf::uniform(v);
@@ -798,7 +805,27 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
                 ce_bits += -prob.log2();
             } else {
                 cm.compute_biases(None);
-                cm.combine_into(&mut ensemble_buf, &logits);
+
+                // R-077: entropy gate — CM-only entropy decides skip.
+                // cm_only_entropy writes CM-only logits into ensemble_buf.
+                let cm_h = cm.cm_only_entropy(&mut ensemble_buf);
+                if adaptive_skip > 0 {
+                    let h64 = cm_h as f64;
+                    if h64 < entropy_min { entropy_min = h64; }
+                    if h64 > entropy_max { entropy_max = h64; }
+                    entropy_sum += h64;
+                }
+                let do_gate = adaptive_skip > 0
+                    && consec_skips < MAX_CONSEC_SKIP
+                    && cm_h < entropy_thr_f;
+
+                if do_gate {
+                    // CM-only logits already in ensemble_buf
+                    gated = true;
+                } else {
+                    // Full path: overwrite ensemble_buf with backbone+CM
+                    cm.combine_into(&mut ensemble_buf, &logits);
+                }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 enc.encode_symbol(tok, &cdf);
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -809,18 +836,13 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
             cm.observe(tok as u32);
 
-            // CM-selective backbone skip (R-056): skip forward when ensemble
-            // was confident about this token. K≤3 consecutive skips bounds
-            // state divergence to ≤2.85|b| (Mamba |a|≈0.95).
-            let do_skip = adaptive_skip > 0 && t > 0
-                && consec_skips < MAX_CONSEC_SKIP
-                && probs_buf[tok] > skip_thr_f;
-
-            if do_skip {
+            if gated {
                 skip_count += 1;
                 consec_skips += 1;
             } else {
-                model.forward_into(tok, &mut state, &mut scratch, &mut logits);
+                model.forward_into(
+                    tok, &mut state, &mut scratch, &mut logits,
+                );
                 consec_skips = 0;
             }
 
@@ -841,8 +863,16 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     if adaptive_skip > 0 {
         let skip_pct = 100.0 * skip_count as f64 / tokens.len().max(1) as f64;
-        eprintln!("\n[compress] skipped {} / {} forward passes ({:.1}%)",
-                  skip_count, tokens.len(), skip_pct);
+        eprintln!(
+            "\n[compress] entropy-gate skipped {} / {} forward passes ({:.1}%)",
+            skip_count, tokens.len(), skip_pct
+        );
+        eprintln!(
+            "[compress] CM entropy: min={:.2} max={:.2} mean={:.2} bits (thr={:.1})",
+            entropy_min, entropy_max,
+            entropy_sum / (tokens.len().max(1) - 1) as f64,
+            entropy_thr_f
+        );
     }
 
     // R-059: report activation sparsity
@@ -1242,12 +1272,15 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         eprintln!("[decompress] E8E9: will apply inverse transform after decode");
     }
     let skip_threshold = hdr.skip_threshold;
-    let skip_thr_f = skip_threshold as f32 / 100.0;
+    let entropy_thr_f = skip_threshold as f32 * 0.1;
     let mut skip_count: usize = 0;
     let mut consec_skips: usize = 0;
     const MAX_CONSEC_SKIP: usize = 3;
     if skip_threshold > 0 {
-        eprintln!("[decompress] adaptive-skip: enabled (threshold={}%)", skip_threshold);
+        eprintln!(
+            "[decompress] entropy-gate: enabled (thr={:.1} bits)",
+            entropy_thr_f
+        );
     }
     if let Some(crc) = stored_crc {
         eprintln!("[decompress] CRC-32: {:08X} (will verify)", crc);
@@ -1364,12 +1397,24 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     } else {
         // v4 path: byte-count driven, interleaved decode+detokenize
         loop {
+            let mut gated = false;
             let tok = if t == 0 {
                 let cdf = Cdf::uniform(v);
                 decode_checked(&mut dec, &cdf, v, t)?
             } else {
                 cm.compute_biases(None);
-                cm.combine_into(&mut ensemble_buf, &logits);
+
+                // R-077: entropy gate — identical to compress path.
+                let cm_h = cm.cm_only_entropy(&mut ensemble_buf);
+                let do_gate = skip_threshold > 0
+                    && consec_skips < MAX_CONSEC_SKIP
+                    && cm_h < entropy_thr_f;
+
+                if do_gate {
+                    gated = true;
+                } else {
+                    cm.combine_into(&mut ensemble_buf, &logits);
+                }
                 let cdf = cdf_from_logits(&ensemble_buf);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
@@ -1381,7 +1426,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             if let Some(ref mut w) = writer {
                 use std::io::Write;
                 w.write_all(token_bytes)
-                    .map_err(|e| AzError::Io { path: output_path.clone(), source: e })?;
+                    .map_err(|e| AzError::Io {
+                        path: output_path.clone(), source: e,
+                    })?;
             } else {
                 output_bytes.extend_from_slice(token_bytes);
             }
@@ -1395,17 +1442,13 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
             cm.observe(tok);
 
-            // CM-selective backbone skip (R-056): identical to compress path.
-            // Skip when ensemble was confident. K≤3 bounds state divergence.
-            let do_skip = skip_threshold > 0 && t > 0
-                && consec_skips < MAX_CONSEC_SKIP
-                && probs_buf[tok as usize] > skip_thr_f;
-
-            if do_skip {
+            if gated {
                 skip_count += 1;
                 consec_skips += 1;
             } else {
-                model.forward_into(tok as usize, &mut state, &mut scratch, &mut logits);
+                model.forward_into(
+                    tok as usize, &mut state, &mut scratch, &mut logits,
+                );
                 consec_skips = 0;
             }
             t += 1;
@@ -1417,8 +1460,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             if t % 1000 == 0 {
                 let elapsed = t_start.elapsed().as_secs_f64();
                 let pct = 100.0 * bytes_written as f64 / total_bytes as f64;
-                eprint!("\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
-                        pct, t, t as f64 / elapsed);
+                eprint!(
+                    "\r[decompress] {:.1}% | {} tokens | {:.1} tok/s   ",
+                    pct, t, t as f64 / elapsed
+                );
             }
         }
         eprintln!();
@@ -1426,8 +1471,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     if skip_threshold > 0 && t > 0 {
         let skip_pct = 100.0 * skip_count as f64 / t.max(1) as f64;
-        eprintln!("[decompress] skipped {} / {} forward passes ({:.1}%)",
-                  skip_count, t, skip_pct);
+        eprintln!(
+            "[decompress] entropy-gate skipped {} / {} forward passes ({:.1}%)",
+            skip_count, t, skip_pct
+        );
     }
 
     // R-059: report activation sparsity

@@ -2061,14 +2061,23 @@ Diagnosis: sequential token-by-token processing is the fundamental throughput bo
 23 approaches investigated across 4 tracks (multi-token prediction, tokenization, pattern caching, hybrid CM-backbone). 21 NO-GO, 2 CONDITIONAL GO.
 Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 
-- R-077: Nacrith-style CM entropy gate
-  - Compute CM-only Shannon entropy before backbone forward pass
-  - If H < threshold: skip backbone, use CM-only CDF for arithmetic coding
-  - Store threshold in AZTH v4 header (reuse FLAGS 0x20 adaptive-skip field)
-  - MAX_CONSEC_SKIP=3 bounds Mamba state divergence
-  - Evidence: Nacrith (2026) achieves 30-70% skip rate, -0.39 BPB on Transformers [SOURCED]
-  - Target: ≤+3% BPB regression, ≥15% skip rate, ≥1.15× throughput
-  - Dependencies: CmEnsemble (R-051), AZTH v4 (R-018)
+- R-077: Nacrith-style CM entropy gate ✅ COMPLETADO (2026-11-07)
+  - Implementation: `cm_only_entropy()` + `cm_only_logits_into()` in CmEnsemble
+  - Mechanism: compute CM-only Shannon entropy before backbone; skip if H < threshold
+  - Stored in AZTH v4 header via FLAG 0x20 (reuses adaptive-skip field)
+  - MAX_CONSEC_SKIP=3 bounds state divergence
+  - **RESULT: NOT VIABLE at BPE 50K vocab / 10KB files** [MEASURED]
+    - CM entropy range: 15.49-15.62 bits (near-uniform, log2(50280)=15.62)
+    - Threshold 15.5 bits: 31.5% skip rate, +50.5% BPB (catastrophic)
+    - Threshold ≤14.0 bits: 0% skip rate (CM never confident enough)
+    - No viable operating point exists between 0% skip and +50% BPB
+    - Confirms R-056 finding: "CM confidence NEVER >5% with BPE 50K vocab"
+  - Root cause: 50K vocabulary = 15.6 bits maximum entropy. CM biases are negligible
+    relative to the uniform distribution over 50K classes.
+  - Nacrith achieves 30-70% skip because it processes 100KB+ files (more n-gram data)
+    AND uses a specialized n-gram model with higher effective order
+  - **Viable ONLY with**: byte-level model (vocab=256, R-041) OR files >100KB
+  - Code preserved: `--skip-threshold N` CLI, roundtrip PASS (threshold=0 = disabled)
 
 - R-078: Kaggle GPU validation — benchmark analysis & documentation
   - Analyze Kaggle v3 results (18 benchmark entries, determinism PASS, roundtrip PASS)
@@ -2347,3 +2356,4 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 | 2026-11-06 | Fase 13 añadida: Portable GPU Backend Architecture (R-072 to R-076) |
 | 2026-11-06 | R-072 to R-076 COMPLETADOS — Fase 13 cerrada. Plugin GPU backend architecture. |
 | 2026-11-07 | Fase 14 definida: R-077 → R-078 → R-079. Token reduction research (23 approaches, 21 NO-GO, 2 GO). Nacrith-style entropy gate = immediate next step. |
+| 2026-11-07 | R-077 COMPLETADO — entropy gate implemented, NOT VIABLE at BPE 50K/10KB. CM entropy 15.49-15.62 bits (near-uniform). Viable only with byte-level model. |
