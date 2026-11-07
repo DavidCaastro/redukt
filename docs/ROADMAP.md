@@ -2176,6 +2176,47 @@ R-082 (Rust byte tokenizer) ─────────────────�
 
 ---
 
+## Fase 16: MambaByte Training Execution (R-084 → R-086)
+
+> **Objetivo**: Entrenar MambaByte y validar hipótesis de byte-level compression.
+> **Prerequisitos**: Fase 15 completa (R-080 → R-083)
+> **Budget**: $0 (Kaggle TPU free tier) para validación
+
+- R-084: MambaByte-50M validation training (Kaggle TPU v5e-8)
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P0 — valida hipótesis antes de invertir en modelo de producción
+  - **Deliverable**: Trained MambaByte-50M weights + BPB measurement
+  - **Plataforma**: Kaggle TPU v5e-8, 1 sesión de 9h (63-95% training)
+  - **Arquitectura**: d_model=512, d_inner=1024, n_layer=24, vocab=256, ~42M params
+  - **Training**: 10B bytes, 4096-byte sequences, batch 64, ~40K steps
+  - **Gate**: BPB < 1.40 enwik8 10KB → PASS (proceder a 96M)
+  - **Notebook**: `notebooks/mambabyte-50m-validate.py`
+  - **Push**: `scripts/kaggle-push-mambabyte.sh`
+  - **Subtareas**:
+    - [ ] Crear notebook 50M con config reducida
+    - [ ] Push a Kaggle TPU v5e-8
+    - [ ] Monitorear: loss convergence, BPB checkpoints
+    - [ ] Descargar resultados: checkpoint + logs
+    - [ ] Evaluar: BPB < 1.40 → GO / NO-GO para producción
+
+- R-085: MambaByte-96M production training
+  - **Estado**: BLOQUEADO (depende R-084 PASS)
+  - **Plataforma**: Kaggle TPU (3 sesiones × 9h) o A100 ($87, 2 días)
+  - **Deliverable**: Production MambaByte-96M weights in SafeTensors
+  - **Training**: 30B bytes, 8192-byte sequences, batch 48, 76K steps
+
+- R-086: MambaByte integration + entropy gate re-enablement
+  - **Estado**: BLOQUEADO (depende R-085)
+  - **Deliverable**: Redukt compressing with MambaByte + CM entropy gate active
+  - **Subtareas**:
+    - [ ] Convert weights (R-081 script)
+    - [ ] Load in Rust, verify BPB matches PyTorch (R-083 notebook)
+    - [ ] Re-enable entropy gate (R-077 code, threshold ~6.5 bits)
+    - [ ] Full benchmark: 12+ files, compare vs Mamba-130M BPE
+    - [ ] Roundtrip verification
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2447,3 +2488,4 @@ R-082 (Rust byte tokenizer) ─────────────────�
 | 2026-11-07 | R-081 COMPLETADO — convert-mambabyte-weights.py (287 lines): PyTorch→SafeTensors, key mapping, shape validation, SHA-256 provenance. |
 | 2026-11-07 | R-083 COMPLETADO — mambabyte-validate.py (1005 lines): cross-framework validation, 6 tests (BPB range, agreement, roundtrip, determinism, multi-file). |
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
+| 2026-11-07 | Fase 16 definida: MambaByte Training Execution (R-084 → R-086). 50M validation → 96M production → integration. |
