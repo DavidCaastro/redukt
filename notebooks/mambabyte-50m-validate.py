@@ -33,6 +33,27 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
+import subprocess
+
+# --- TPU/XLA bootstrap (must happen before torch import on Kaggle) ---
+def _bootstrap_tpu():
+    """Install torch_xla if on Kaggle TPU and set PJRT_DEVICE."""
+    if os.environ.get("TPU_NAME") or os.path.exists("/dev/accel0"):
+        os.environ["PJRT_DEVICE"] = "TPU"
+        try:
+            import torch_xla  # noqa: F401
+            print("[BOOTSTRAP] torch_xla already installed")
+        except ImportError:
+            print("[BOOTSTRAP] Installing torch_xla for TPU...")
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "-q", "install",
+                "torch_xla[tpu]",
+                "-f", "https://storage.googleapis.com/libtpu-releases/index.html",
+            ])
+            print("[BOOTSTRAP] torch_xla installed")
+
+_bootstrap_tpu()
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -395,36 +416,55 @@ class ByteDataset(IterableDataset):
 
     def _init_source(self):
         """Initialize data source (lazy, called on first iteration)."""
-        # Try PG19
+        # Try OpenWebText (no loading script, Parquet-native)
         try:
             from datasets import load_dataset
             ds = load_dataset(
-                "deepmind/pg19",
+                "Skylion007/openwebtext",
                 split="train",
                 streaming=True,
-                trust_remote_code=True,
             )
-            self._source = ("pg19", iter(ds))
-            print(f"[DATA] Using PG19 (streaming)")
+            self._source = ("openwebtext", iter(ds))
+            print("[DATA] Using OpenWebText (streaming)")
             return
         except Exception as e:
-            print(f"[DATA] PG19 not available: {e}")
+            print(f"[DATA] OpenWebText not available: {e}")
 
-        # Try Wikipedia
+        # Try C4 (also Parquet-native)
         try:
             from datasets import load_dataset
             ds = load_dataset(
-                "wikipedia",
-                "20220301.en",
+                "allenai/c4",
+                "en",
                 split="train",
                 streaming=True,
-                trust_remote_code=True,
             )
-            self._source = ("wiki", iter(ds))
-            print(f"[DATA] Using Wikipedia (streaming)")
+            self._source = ("c4", iter(ds))
+            print("[DATA] Using C4-en (streaming)")
             return
         except Exception as e:
-            print(f"[DATA] Wikipedia not available: {e}")
+            print(f"[DATA] C4 not available: {e}")
+
+        # Try downloading raw text directly (no HF datasets dependency)
+        try:
+            import urllib.request
+            url = "https://www.gutenberg.org/cache/epub/100/pg100.txt"
+            txt_path = f"{DATA_DIR}/shakespeare.txt"
+            os.makedirs(DATA_DIR, exist_ok=True)
+            if not os.path.exists(txt_path):
+                print("[DATA] Downloading Shakespeare complete works...")
+                urllib.request.urlretrieve(url, txt_path)
+            with open(txt_path, "rb") as f:
+                raw = f.read()
+            # Replicate to get ~10M+ bytes
+            while len(raw) < 50_000_000:
+                raw = raw + raw
+            self._source = ("gutenberg", raw)
+            self._buffer = bytearray(raw)
+            print(f"[DATA] Using Gutenberg text ({len(raw) / 1e6:.1f} MB)")
+            return
+        except Exception as e:
+            print(f"[DATA] Gutenberg not available: {e}")
 
         # Fallback: synthetic
         print("[DATA] WARNING: Using synthetic random bytes (for testing only)")
@@ -435,14 +475,22 @@ class ByteDataset(IterableDataset):
         if self._source is None:
             self._init_source()
 
-        source_name, source_iter = self._source
+        source_name, source_data = self._source
 
         if source_name == "synthetic":
-            # Generate random bytes
             self._buffer.extend(os.urandom(self.seq_len * 64))
             return
 
+        if source_name == "gutenberg":
+            # Raw bytes already loaded — cycle through
+            raw = source_data
+            offset = hash(time.time()) % max(1, len(raw) - self.seq_len * 64)
+            chunk = raw[offset:offset + self.seq_len * 64]
+            self._buffer.extend(chunk)
+            return
+
         # Stream text from HuggingFace dataset
+        source_iter = source_data
         attempts = 0
         while len(self._buffer) < self.seq_len and attempts < 1000:
             try:
@@ -452,12 +500,12 @@ class ByteDataset(IterableDataset):
                 self._buffer.extend(encoded)
                 attempts += 1
             except StopIteration:
-                # Re-initialize the iterator (loop dataset)
                 print("[DATA] Dataset exhausted, restarting...")
                 self._init_source()
-                _, source_iter = self._source
-                if source_iter is None:
+                _, source_data = self._source
+                if source_data is None:
                     break
+                source_iter = source_data
                 attempts += 1
 
     def __iter__(self):

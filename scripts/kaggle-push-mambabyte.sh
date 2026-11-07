@@ -23,7 +23,6 @@ KERNEL_SLUG="$USERNAME/mambabyte-50m-validate"
 echo "[kaggle-push] Preparing MambaByte 50M validation notebook..."
 
 # Copy notebook to kernel directory
-mkdir -p "$KERNEL_DIR"
 cp "$NB_DIR/mambabyte-50m-validate.py" "$KERNEL_DIR/mambabyte-50m-validate.py"
 
 # Update kernel-metadata.json with correct username
@@ -37,6 +36,7 @@ cat > "$KERNEL_DIR/kernel-metadata.json" << METADATA
     "is_private": true,
     "enable_gpu": false,
     "enable_tpu": true,
+    "machine_shape": "TpuV5E8",
     "enable_internet": true,
     "competition_sources": [],
     "dataset_sources": [],
@@ -54,4 +54,4 @@ echo "[kaggle-push] Or visit: https://www.kaggle.com/code/$KERNEL_SLUG"
 echo ""
 echo "[kaggle-push] TPU v5e-8 session limit: 9 hours"
 echo "[kaggle-push] Expected: ~63-95% of training in one session"
-echo "[kaggle-push] Checkpoints saved every 2000 steps"
+echo "[kaggle-push] Checkpoints saved every 2000 steps to /kaggle/working/checkpoints/"
