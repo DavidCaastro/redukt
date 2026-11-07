@@ -2183,7 +2183,7 @@ R-082 (Rust byte tokenizer) ─────────────────�
 > **Budget**: $0 (Kaggle TPU free tier) para validación
 
 - R-084: MambaByte-50M validation training (Kaggle TPU v5e-8)
-  - **Estado**: PENDIENTE
+  - **Estado**: EN EJECUCIÓN (2026-11-07, Kaggle kernel v1)
   - **Prioridad**: P0 — valida hipótesis antes de invertir en modelo de producción
   - **Deliverable**: Trained MambaByte-50M weights + BPB measurement
   - **Plataforma**: Kaggle TPU v5e-8, 1 sesión de 9h (63-95% training)
@@ -2489,3 +2489,4 @@ R-082 (Rust byte tokenizer) ─────────────────�
 | 2026-11-07 | R-083 COMPLETADO — mambabyte-validate.py (1005 lines): cross-framework validation, 6 tests (BPB range, agreement, roundtrip, determinism, multi-file). |
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
 | 2026-11-07 | Fase 16 definida: MambaByte Training Execution (R-084 → R-086). 50M validation → 96M production → integration. |
+| 2026-11-07 | R-084 LANZADO — MambaByte-50M en Kaggle TPU v5e-8. Slug: jdavidpcastro/mambabyte-50m-validation. |
