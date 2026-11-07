@@ -73,12 +73,12 @@ D_CONV = 4
 DT_RANK = 32         # ceil(512 / 16)
 N_LAYER = 24         # keep same depth, reduce width
 
-SEQ_LEN = 4096       # shorter sequences for faster iteration
-BATCH_SIZE = 64       # larger batch (smaller model fits more)
+SEQ_LEN = 4096       # bytes per sequence
+BATCH_SIZE = 32       # fits T4x2 (30GB) or TPU v5e-8
 LR = 6e-4
 MIN_LR = 6e-5
 WARMUP_STEPS = 1000
-TOTAL_STEPS = 40000   # ~10B bytes — sufficient for validation
+TOTAL_STEPS = 76000   # ~10B bytes (32 * 4096 * 76000 ≈ 9.95B)
 GRAD_CLIP = 1.0
 WEIGHT_DECAY = 0.1
 SAVE_EVERY = 2000
