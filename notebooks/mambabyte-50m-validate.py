@@ -74,11 +74,11 @@ DT_RANK = 32         # ceil(512 / 16)
 N_LAYER = 24         # keep same depth, reduce width
 
 SEQ_LEN = 4096       # bytes per sequence
-BATCH_SIZE = 32       # fits T4x2 (30GB) or TPU v5e-8
+BATCH_SIZE = 64       # TPU v5e-8 (128GB) or GPU T4x2 (30GB, reduce if OOM)
 LR = 6e-4
 MIN_LR = 6e-5
 WARMUP_STEPS = 1000
-TOTAL_STEPS = 76000   # ~10B bytes (32 * 4096 * 76000 ≈ 9.95B)
+TOTAL_STEPS = 40000   # ~10B bytes (64 * 4096 * 40000 ≈ 10.5B)
 GRAD_CLIP = 1.0
 WEIGHT_DECAY = 0.1
 SAVE_EVERY = 2000

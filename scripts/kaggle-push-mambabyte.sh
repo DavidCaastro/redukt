@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Push MambaByte 50M validation training to Kaggle GPU T4x2.
+# Push MambaByte 50M validation training to Kaggle TPU v5e-8.
 # Usage: scripts/kaggle-push-mambabyte.sh
+#
+# Metadata per official docs:
+#   https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels_metadata.md
+# TPU workaround per #1197:
+#   https://github.com/Kaggle/kaggle-cli/issues/1197
+#   - docker_image_pinning_type: "latest" prevents stale CPU image override
+#   - enable_tpu: "true" + machine_shape: "TpuV5E8"
+#   - enable_gpu: "false" (must be explicit)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,11 +34,11 @@ echo "[kaggle-push] Preparing MambaByte 50M validation notebook..."
 mkdir -p "$KERNEL_DIR"
 cp "$NB_DIR/mambabyte-50m-validate.py" "$KERNEL_DIR/mambabyte-50m-validation.py"
 
-# kernel-metadata.json per official docs:
-# https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels_metadata.md
+# kernel-metadata.json — TPU v5e-8 configuration
+# Per official docs + issue #1197 workaround:
 # - Boolean fields are STRINGS ("true"/"false")
-# - machine_shape: "NvidiaTeslaT4" = GPU T4 x2 (30GB VRAM)
-# - enable_gpu: "true" required alongside machine_shape
+# - docker_image_pinning_type: "latest" prevents stale CPU image pin
+# - No docker_image field (would override TPU VM)
 cat > "$KERNEL_DIR/kernel-metadata.json" << METADATA
 {
     "id": "$KERNEL_SLUG",
@@ -39,9 +47,10 @@ cat > "$KERNEL_DIR/kernel-metadata.json" << METADATA
     "language": "python",
     "kernel_type": "script",
     "is_private": "true",
-    "enable_gpu": "true",
-    "enable_tpu": "false",
-    "machine_shape": "NvidiaTeslaT4",
+    "enable_gpu": "false",
+    "enable_tpu": "true",
+    "machine_shape": "TpuV5E8",
+    "docker_image_pinning_type": "latest",
     "enable_internet": "true",
     "dataset_sources": [],
     "competition_sources": [],
@@ -49,7 +58,7 @@ cat > "$KERNEL_DIR/kernel-metadata.json" << METADATA
 }
 METADATA
 
-echo "[kaggle-push] Pushing to Kaggle GPU T4x2 (30GB VRAM)..."
+echo "[kaggle-push] Pushing to Kaggle TPU v5e-8..."
 python -m kaggle kernels push -p "$KERNEL_DIR"
 
 echo ""
@@ -57,5 +66,6 @@ echo "[kaggle-push] Notebook submitted: $KERNEL_SLUG"
 echo "[kaggle-push] Check status: kaggle kernels status $KERNEL_SLUG"
 echo "[kaggle-push] Or visit: https://www.kaggle.com/code/$KERNEL_SLUG"
 echo ""
-echo "[kaggle-push] GPU T4x2 session limit: 12 hours"
+echo "[kaggle-push] TPU v5e-8 session limit: 9 hours"
 echo "[kaggle-push] Checkpoints saved every 2000 steps"
+echo "[kaggle-push] NOTE: 1 active TPU session per user (batch mode)"
