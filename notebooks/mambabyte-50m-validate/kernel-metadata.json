@@ -1,7 +1,7 @@
 {
-    "id": "jdavidpcastro/mambabyte-50m-validate",
+    "id": "jdavidpcastro/mambabyte-50m-validation",
     "title": "MambaByte 50M Validation",
-    "code_file": "mambabyte-50m-validate.py",
+    "code_file": "mambabyte-50m-validation.py",
     "language": "python",
     "kernel_type": "script",
     "is_private": true,

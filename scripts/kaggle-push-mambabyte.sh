@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NB_DIR="$REPO_DIR/notebooks"
-KERNEL_DIR="$NB_DIR/mambabyte-50m-validate"
+KERNEL_DIR="$NB_DIR/mambabyte-50m-validation"
 
 # Find kaggle.json
 KAGGLE_JSON="$USERPROFILE/.kaggle/kaggle.json"
@@ -18,19 +18,20 @@ if [ ! -f "$KAGGLE_JSON" ]; then
     exit 1
 fi
 USERNAME=$(grep -o '"username":"[^"]*"' "$KAGGLE_JSON" | cut -d'"' -f4)
-KERNEL_SLUG="$USERNAME/mambabyte-50m-validate"
+KERNEL_SLUG="$USERNAME/mambabyte-50m-validation"
 
 echo "[kaggle-push] Preparing MambaByte 50M validation notebook..."
 
 # Copy notebook to kernel directory
-cp "$NB_DIR/mambabyte-50m-validate.py" "$KERNEL_DIR/mambabyte-50m-validate.py"
+mkdir -p "$KERNEL_DIR"
+cp "$NB_DIR/mambabyte-50m-validate.py" "$KERNEL_DIR/mambabyte-50m-validation.py"
 
 # Update kernel-metadata.json with correct username
 cat > "$KERNEL_DIR/kernel-metadata.json" << METADATA
 {
     "id": "$KERNEL_SLUG",
     "title": "MambaByte 50M Validation",
-    "code_file": "mambabyte-50m-validate.py",
+    "code_file": "mambabyte-50m-validation.py",
     "language": "python",
     "kernel_type": "script",
     "is_private": true,
