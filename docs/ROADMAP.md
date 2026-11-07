@@ -2105,6 +2105,77 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 
 ---
 
+## Fase 15: MambaByte Training Infrastructure (R-080 → R-083)
+
+> **Objetivo**: Construir todo el stack necesario para entrenar MambaByte (byte-level, vocab=256)
+> y integrarlo en Redukt. Desbloquea entropy gate (R-077) y throughput GPU viable.
+>
+> **Prerequisitos**: R-035 (Mamba backbone), R-072-R-076 (GPU plugin), R-079 (feasibility GO)
+> **Budget**: $0 (Kaggle TPU) para validación, $87 (A100) para producción
+> **Research**: `docs/internal/research/mambabyte-training-infrastructure.md`
+
+- R-080: MambaByte training notebook (PyTorch + TPU)
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P1 — habilita todas las mejoras de throughput posteriores
+  - **Deliverable**: `notebooks/mambabyte-train.py`
+  - **Subtareas**:
+    - [ ] MambaByte model definition (PyTorch): vocab=256, d_model=768, 24 layers, ~96M params
+    - [ ] Training loop: AdamW, cosine LR, BF16, gradient clipping, cross-entropy loss
+    - [ ] Dataset pipeline: byte-level streaming (PG19 + Wikipedia + SlimPajama)
+    - [ ] TPU v5e-8 adaptation: torch_xla, 8-way data parallel, xm.optimizer_step()
+    - [ ] Checkpointing: save/resume every 5K steps (9h session limit)
+    - [ ] Validation: BPB on enwik8 every 1K steps, 4-file suite every 5K
+    - [ ] Kaggle metadata: `notebooks/mambabyte-train/kernel-metadata.json`
+  - **Arquitectura MambaByte-96M**:
+    - vocab=256, d_model=768, d_inner=1536, d_state=16, d_conv=4, n_layer=24
+    - ~96M params (vs 130M — LM head 768×256 vs 768×50280)
+    - Tied embeddings (embedding.weight == lm_head.weight)
+  - **Training**: 30B bytes, 8192-byte sequences, batch 48, ~76K steps
+  - **Estimado**: 5 semanas Kaggle TPU (50M validación) o 2 días A100 ($87)
+
+- R-081: Weight conversion pipeline
+  - **Estado**: PENDIENTE
+  - **Deliverable**: `scripts/convert-mambabyte-weights.py`
+  - **Subtareas**:
+    - [ ] PyTorch checkpoint → SafeTensors with HuggingFace key naming
+    - [ ] Key mapping: layers.{i}.mixer.xxx → backbone.layers.{i}.mixer.xxx
+    - [ ] Tensor shape validation against MambaConfig
+    - [ ] SHA-256 provenance hash
+    - [ ] MANIFEST.md entry for mambabyte-96m
+  - **Dependencia**: R-080 (necesita checkpoint entrenado para test real)
+
+- R-082: Rust byte tokenizer + model loader integration
+  - **Estado**: PENDIENTE
+  - **Deliverables**: `src/infrastructure/mamba/byte_tokenizer.rs`, updates to model_loader/backbone
+  - **Subtareas**:
+    - [ ] ByteTokenizer impl BackendTokenizer (encode=identity, decode=identity, vocab=256)
+    - [ ] BackboneChoice::MambaByte variant (AZTH backbone byte: 2)
+    - [ ] model_loader.rs: detect MambaByte weights (vocab_size=256), load with ByteTokenizer
+    - [ ] CLI: `--backbone mambabyte` flag
+    - [ ] Unit tests: encode/decode roundtrip, vocab_size, edge cases (0x00, 0xFF)
+  - **Nota**: MambaModel no necesita cambios (ya parametrizado por config.vocab_size)
+  - **Ejecutable sin weights**: skeleton funcional, placeholder weights para tests
+
+- R-083: Cross-framework validation notebook
+  - **Estado**: PENDIENTE
+  - **Deliverable**: `notebooks/mambabyte-validate.py`
+  - **Subtareas**:
+    - [ ] Load same weights in PyTorch + Rust, compare logits (max diff <1e-5)
+    - [ ] Compress enwik8 10KB with MambaByte, verify BPB in expected range
+    - [ ] Roundtrip: compress → decompress → byte-identical
+    - [ ] Determinism: 2 runs SHA-256 identical
+  - **Dependencia**: R-080 + R-081 + R-082 (necesita weights entrenados + Rust integration)
+
+**Paralelización**: R-080 y R-082 son independientes (Python vs Rust). R-081 depende de R-080.
+R-083 depende de R-080 + R-081 + R-082.
+
+```
+R-080 (training notebook) ──→ R-081 (weight conversion) ──→ R-083 (validation)
+R-082 (Rust byte tokenizer) ─────────────────────────────/
+```
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2370,3 +2441,4 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 | 2026-11-07 | R-077 COMPLETADO — entropy gate implemented, NOT VIABLE at BPE 50K/10KB. CM entropy 15.49-15.62 bits (near-uniform). Viable only with byte-level model. |
 | 2026-11-07 | R-078 COMPLETADO — Kaggle v3 analysis: enwik8 0.9633 BPB (+0.25% vs local), 72.4 tok/s (2.1x local), GPU FFI pipeline validated (81K-96K tok/s skeleton). |
 | 2026-11-07 | R-079 COMPLETADO — MambaByte feasibility update: from-scratch $87-145, Byteification NOT RECOMMENDED, entropy gate unlocked at vocab=256, T4 projected 650-2,500 B/s. |
+| 2026-11-07 | Fase 15 definida: MambaByte Training Infrastructure (R-080 → R-083). Training notebook, weight conversion, Rust byte tokenizer, cross-framework validation. |

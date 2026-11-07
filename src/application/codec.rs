@@ -2499,17 +2499,20 @@ mod tests {
     fn backbone_choice_roundtrip() {
         assert_eq!(BackboneChoice::from_header_byte(0), Some(BackboneChoice::Rwkv));
         assert_eq!(BackboneChoice::from_header_byte(1), Some(BackboneChoice::Mamba));
-        assert_eq!(BackboneChoice::from_header_byte(2), Some(BackboneChoice::Plugin));
-        assert_eq!(BackboneChoice::from_header_byte(3), None);
+        assert_eq!(BackboneChoice::from_header_byte(2), Some(BackboneChoice::MambaByte));
+        assert_eq!(BackboneChoice::from_header_byte(3), Some(BackboneChoice::Plugin));
+        assert_eq!(BackboneChoice::from_header_byte(4), None);
         assert_eq!(BackboneChoice::Rwkv.header_byte(), 0);
         assert_eq!(BackboneChoice::Mamba.header_byte(), 1);
-        assert_eq!(BackboneChoice::Plugin.header_byte(), 2);
+        assert_eq!(BackboneChoice::MambaByte.header_byte(), 2);
+        assert_eq!(BackboneChoice::Plugin.header_byte(), 3);
     }
 
     #[test]
     fn backbone_choice_from_str() {
         assert_eq!(BackboneChoice::from_str_opt("rwkv"), Some(BackboneChoice::Rwkv));
         assert_eq!(BackboneChoice::from_str_opt("mamba"), Some(BackboneChoice::Mamba));
+        assert_eq!(BackboneChoice::from_str_opt("mambabyte"), Some(BackboneChoice::MambaByte));
         assert_eq!(BackboneChoice::from_str_opt("auto"), None);
         assert_eq!(BackboneChoice::from_str_opt(""), None);
     }

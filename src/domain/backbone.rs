@@ -1,25 +1,28 @@
 //! Backbone abstraction — zero-cost trait interface for neural language models.
 //!
 //! Decouples the compression pipeline from any specific model implementation.
-//! Implemented by RWKV-7 (byte-level) and Mamba (BPE). Router selects per content type.
+//! Implemented by RWKV-7 (byte-level), Mamba (BPE), and MambaByte (byte-level).
+//! Router selects per content type.
 
 use std::fmt;
 
-/// Which backbone to use for compression (R-039).
+/// Which backbone to use for compression (R-039, R-082).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackboneChoice {
     Rwkv,
     Mamba,
+    MambaByte,
     Plugin,
 }
 
 impl BackboneChoice {
-    /// Encode as header byte: 0=RWKV, 1=Mamba, 2=Plugin.
+    /// Encode as header byte: 0=RWKV, 1=Mamba, 2=MambaByte, 3=Plugin.
     pub fn header_byte(self) -> u8 {
         match self {
             Self::Rwkv => 0,
             Self::Mamba => 1,
-            Self::Plugin => 2,
+            Self::MambaByte => 2,
+            Self::Plugin => 3,
         }
     }
 
@@ -28,17 +31,19 @@ impl BackboneChoice {
         match b {
             0 => Some(Self::Rwkv),
             1 => Some(Self::Mamba),
-            2 => Some(Self::Plugin),
+            2 => Some(Self::MambaByte),
+            3 => Some(Self::Plugin),
             _ => None,
         }
     }
 
-    /// Parse CLI string ("rwkv", "mamba", "plugin", "auto").
+    /// Parse CLI string ("rwkv", "mamba", "mambabyte", "plugin", "auto").
     /// Returns None for "auto" (caller decides).
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "rwkv" => Some(Self::Rwkv),
             "mamba" => Some(Self::Mamba),
+            "mambabyte" => Some(Self::MambaByte),
             "plugin" => Some(Self::Plugin),
             _ => None,
         }
@@ -50,6 +55,7 @@ impl fmt::Display for BackboneChoice {
         match self {
             Self::Rwkv => write!(f, "rwkv"),
             Self::Mamba => write!(f, "mamba"),
+            Self::MambaByte => write!(f, "mambabyte"),
             Self::Plugin => write!(f, "plugin"),
         }
     }

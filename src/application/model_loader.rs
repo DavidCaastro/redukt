@@ -13,6 +13,7 @@ use crate::infrastructure::rwkv7::model::Rwkv7Model;
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
 use crate::infrastructure::mamba::model::{MambaModel, MambaState, MambaScratch};
 use crate::infrastructure::mamba::tokenizer::BpeTokenizer;
+use crate::infrastructure::mamba::byte_tokenizer::ByteTokenizer;
 use crate::infrastructure::plugin_backend::model::{
     PluginBackend, PluginState, PluginScratch, PluginTokenizer,
 };
@@ -36,6 +37,9 @@ pub fn resolve_vocab_path(weights_path: &Path) -> PathBuf {
 
 /// Default Mamba weights directory.
 const MAMBA_WEIGHTS_DIR: &str = "weights/mamba-130m";
+
+/// Default MambaByte weights directory (R-082).
+const MAMBABYTE_WEIGHTS_DIR: &str = "weights/mambabyte-96m";
 
 // --- RWKV loading ---
 
@@ -68,10 +72,11 @@ pub fn load_mamba_model_and_tokenizer(weights_dir: &str) -> (MambaModel, BpeToke
 
 // --- Unified dynamic dispatch (R-039) ---
 
-/// Dynamic model wrapper — dispatches Backbone trait to RWKV or Mamba.
+/// Dynamic model wrapper — dispatches Backbone trait to RWKV, Mamba, or MambaByte.
 pub enum DynModel {
     Rwkv(Rwkv7Model),
     Mamba(MambaModel),
+    MambaByte(MambaModel),
     Plugin(PluginBackend),
 }
 
@@ -79,6 +84,7 @@ pub enum DynModel {
 pub enum DynState {
     Rwkv(<Rwkv7Model as Backbone>::State),
     Mamba(MambaState),
+    MambaByte(MambaState),
     Plugin(PluginState),
 }
 
@@ -86,6 +92,7 @@ pub enum DynState {
 pub enum DynScratch {
     Rwkv(<Rwkv7Model as Backbone>::Scratch),
     Mamba(MambaScratch),
+    MambaByte(MambaScratch),
     Plugin(PluginScratch),
 }
 
@@ -93,6 +100,7 @@ pub enum DynScratch {
 pub enum DynTokenizer {
     World(WorldTokenizer),
     Bpe(BpeTokenizer),
+    Byte(ByteTokenizer),
     Plugin(PluginTokenizer),
 }
 
@@ -101,6 +109,7 @@ impl BackboneState for DynState {
         match self {
             Self::Rwkv(s) => s.reset(),
             Self::Mamba(s) => s.reset(),
+            Self::MambaByte(s) => s.reset(),
             Self::Plugin(s) => s.reset(),
         }
     }
@@ -111,6 +120,7 @@ impl BackboneScratch for DynScratch {
         match self {
             Self::Rwkv(s) => s.reset_perf(),
             Self::Mamba(s) => s.reset_perf(),
+            Self::MambaByte(s) => s.reset_perf(),
             Self::Plugin(s) => s.reset_perf(),
         }
     }
@@ -124,6 +134,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => m.vocab_size(),
             Self::Mamba(m) => m.vocab_size(),
+            Self::MambaByte(m) => m.vocab_size(),
             Self::Plugin(m) => m.vocab_size(),
         }
     }
@@ -132,6 +143,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => DynState::Rwkv(m.create_state()),
             Self::Mamba(m) => DynState::Mamba(m.create_state()),
+            Self::MambaByte(m) => DynState::MambaByte(m.create_state()),
             Self::Plugin(m) => DynState::Plugin(m.create_state()),
         }
     }
@@ -140,6 +152,7 @@ impl Backbone for DynModel {
         match self {
             Self::Rwkv(m) => DynScratch::Rwkv(m.create_scratch()),
             Self::Mamba(m) => DynScratch::Mamba(m.create_scratch()),
+            Self::MambaByte(m) => DynScratch::MambaByte(m.create_scratch()),
             Self::Plugin(m) => DynScratch::Plugin(m.create_scratch()),
         }
     }
@@ -155,6 +168,9 @@ impl Backbone for DynModel {
             (Self::Mamba(m), DynState::Mamba(s), DynScratch::Mamba(sc)) => {
                 m.forward_into(token, s, sc, out_logits);
             }
+            (Self::MambaByte(m), DynState::MambaByte(s), DynScratch::MambaByte(sc)) => {
+                m.forward_into(token, s, sc, out_logits);
+            }
             (Self::Plugin(m), DynState::Plugin(s), DynScratch::Plugin(sc)) => {
                 m.forward_into(token, s, sc, out_logits);
             }
@@ -168,6 +184,7 @@ impl BackendTokenizer for DynTokenizer {
         match self {
             Self::World(t) => t.encode(data),
             Self::Bpe(t) => t.encode(data),
+            Self::Byte(t) => t.encode(data),
             Self::Plugin(t) => t.encode(data),
         }
     }
@@ -176,6 +193,7 @@ impl BackendTokenizer for DynTokenizer {
         match self {
             Self::World(t) => t.decode_token(id),
             Self::Bpe(t) => t.decode_token(id),
+            Self::Byte(t) => t.decode_token(id),
             Self::Plugin(t) => t.decode_token(id),
         }
     }
@@ -184,7 +202,7 @@ impl BackendTokenizer for DynTokenizer {
 impl DynModel {
     /// Whether split-head pipeline is supported (R-060, Mamba only).
     pub fn supports_pipeline(&self) -> bool {
-        matches!(self, Self::Mamba(_))
+        matches!(self, Self::Mamba(_) | Self::MambaByte(_))
     }
 
     /// Hidden dimension for pipeline buffer allocation (R-060).
@@ -192,6 +210,7 @@ impl DynModel {
         match self {
             Self::Rwkv(m) => m.vocab_size(),
             Self::Mamba(m) => m.config.d_model,
+            Self::MambaByte(m) => m.config.d_model,
             Self::Plugin(m) => m.info().hidden_dim as usize,
         }
     }
@@ -207,20 +226,25 @@ impl DynModel {
                 m.forward_layers_normed(token, s, sc);
                 hidden_out.copy_from_slice(&sc.x);
             }
-            _ => panic!("pipeline only supported for Mamba"),
+            (Self::MambaByte(m), DynState::MambaByte(s), DynScratch::MambaByte(sc)) => {
+                m.forward_layers_normed(token, s, sc);
+                hidden_out.copy_from_slice(&sc.x);
+            }
+            _ => panic!("pipeline only supported for Mamba/MambaByte"),
         }
     }
 
     /// Compute LM head from a hidden buffer (R-060).
-    /// Mamba only — panics if called on RWKV.
+    /// Mamba/MambaByte only — panics if called on RWKV.
     pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
         match self {
             Self::Mamba(m) => m.compute_head_into(hidden, out_logits),
-            _ => panic!("pipeline only supported for Mamba"),
+            Self::MambaByte(m) => m.compute_head_into(hidden, out_logits),
+            _ => panic!("pipeline only supported for Mamba/MambaByte"),
         }
     }
 
-    /// Apply embedding surgery (RWKV-only, no-op for Mamba).
+    /// Apply embedding surgery (RWKV-only, no-op for Mamba/MambaByte/Plugin).
     pub fn embedding_surgery(&mut self, method: &str) {
         if let Self::Rwkv(m) = self {
             m.embedding_surgery(method);
@@ -238,10 +262,11 @@ impl DynModel {
 
     /// Mamba activation sparsity stats (R-059).
     pub fn mamba_sparsity(scratch: &DynScratch) -> Option<(u64, u64)> {
-        if let DynScratch::Mamba(s) = scratch {
-            Some((s.sparsity_total_channels, s.sparsity_near_zero))
-        } else {
-            None
+        match scratch {
+            DynScratch::Mamba(s) | DynScratch::MambaByte(s) => {
+                Some((s.sparsity_total_channels, s.sparsity_near_zero))
+            }
+            _ => None,
         }
     }
 }
@@ -265,6 +290,17 @@ pub fn load_dyn_model(
             };
             let (m, t) = load_mamba_model_and_tokenizer(mamba_dir);
             (DynModel::Mamba(m), DynTokenizer::Bpe(t))
+        }
+        BackboneChoice::MambaByte => {
+            let mb_dir = if Path::new(MAMBABYTE_WEIGHTS_DIR).exists() {
+                MAMBABYTE_WEIGHTS_DIR
+            } else {
+                rwkv_weights // fallback: user may pass path via --weights
+            };
+            let path = Path::new(mb_dir);
+            let model = MambaModel::load(path);
+            let tokenizer = ByteTokenizer::new();
+            (DynModel::MambaByte(model), DynTokenizer::Byte(tokenizer))
         }
         BackboneChoice::Plugin => {
             let pb = PluginBackend::try_new(rwkv_weights, 0)
