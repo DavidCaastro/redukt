@@ -2079,11 +2079,15 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
   - **Viable ONLY with**: byte-level model (vocab=256, R-041) OR files >100KB
   - Code preserved: `--skip-threshold N` CLI, roundtrip PASS (threshold=0 = disabled)
 
-- R-078: Kaggle GPU validation — benchmark analysis & documentation
-  - Analyze Kaggle v3 results (18 benchmark entries, determinism PASS, roundtrip PASS)
-  - Document CPU baseline (25.7 tok/s T4), plugin throughput (85K-100K tok/s placeholder)
-  - Cross-platform determinism: enwik8 0.9633 BPB Kaggle vs 0.9609 local
-  - Evidence: `data/benchmark/results/kaggle-v3/`
+- R-078: Kaggle GPU validation — benchmark analysis & documentation ✅ COMPLETADO
+  - **Estado**: COMPLETADO (2026-11-07)
+  - Kaggle v3 results: 18 benchmark entries, determinism PASS, roundtrip PASS
+  - CPU Mamba baseline (Kaggle Xeon): enwik8 0.9633 BPB, 72.4 tok/s (2.1x vs local DDR4)
+  - GPU plugin (skeleton/uniform logits): 81K-96K tok/s FFI overhead, pipeline validated
+  - Cross-platform: enwik8 0.9633 (Kaggle) vs 0.9609 (local) = +0.25% (FP rounding)
+  - FFI boundary, dlopen, PluginBackend dispatch all functional on Kaggle Linux T4
+  - Synthetic files: 0.10-0.11 BPB (SHA-256 periodic pattern, CM learns trivially)
+  - Evidence: `data/benchmark/results/kaggle-v3/analysis.md`, `gpu-benchmark.csv`
 
 - R-079: MambaByte training feasibility update (research)
   - Update R-041 with Byteification adapter path (Nature 2026)
@@ -2357,3 +2361,4 @@ Research: `docs/internal/research/token-reduction-strategies.md` (30+ sources).
 | 2026-11-06 | R-072 to R-076 COMPLETADOS — Fase 13 cerrada. Plugin GPU backend architecture. |
 | 2026-11-07 | Fase 14 definida: R-077 → R-078 → R-079. Token reduction research (23 approaches, 21 NO-GO, 2 GO). Nacrith-style entropy gate = immediate next step. |
 | 2026-11-07 | R-077 COMPLETADO — entropy gate implemented, NOT VIABLE at BPE 50K/10KB. CM entropy 15.49-15.62 bits (near-uniform). Viable only with byte-level model. |
+| 2026-11-07 | R-078 COMPLETADO — Kaggle v3 analysis: enwik8 0.9633 BPB (+0.25% vs local), 72.4 tok/s (2.1x local), GPU FFI pipeline validated (81K-96K tok/s skeleton). |
