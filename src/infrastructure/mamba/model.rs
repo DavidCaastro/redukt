@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use crate::domain::tensor::{
-    Tensor, mat_vec_mul_into, portable_softplus, rms_norm_into,
+    Tensor, mat_vec_mul_into, portable_softplus, rms_norm_into, layer_norm_into,
     silu_inplace, gated_silu_mul, ssm_recurrence_d16,
 };
 use crate::domain::ram_monitor::check_ram_or_abort;
@@ -42,6 +42,7 @@ impl MambaConfig {
 
 struct MambaLayerWeights {
     norm_w: Vec<f32>,          // (d_model,)
+    norm_b: Option<Vec<f32>>,  // (d_model,) — LayerNorm bias (R-088, None = RMSNorm)
     in_proj_w: Tensor,         // (2*d_inner, d_model)
     conv1d_w: Vec<f32>,        // (d_inner, d_conv) — flat, used element-wise
     conv1d_b: Vec<f32>,        // (d_inner,)
@@ -57,9 +58,11 @@ struct MambaLayerWeights {
 
 pub struct MambaModel {
     pub config: MambaConfig,
-    emb_w: Tensor,             // (vocab_size, d_model) — embedding + lm_head (tied)
+    emb_w: Tensor,             // (vocab_size, d_model) — embedding
+    lm_head_w: Option<Tensor>, // (vocab_size, d_model) — separate LM head (untied)
     layers: Vec<MambaLayerWeights>,
     norm_f_w: Vec<f32>,        // (d_model,)
+    norm_f_b: Option<Vec<f32>>, // (d_model,) — LayerNorm bias (R-088)
     // R-062: highway layer skip configuration
     pub highway_start: usize,   // first layer to check (0 = disabled)
     pub highway_thr: f32,       // ||result||/||x|| threshold
@@ -171,11 +174,24 @@ impl MambaModel {
         let dr = config.dt_rank;
 
         let norm_f = st.get_tensor("backbone.norm_f.weight");
+        // R-088: detect LayerNorm (has bias) vs RMSNorm (no bias)
+        let norm_f_b = if st.has_tensor("backbone.norm_f.bias") {
+            let b = st.get_tensor("backbone.norm_f.bias");
+            eprintln!("[mamba] LayerNorm detected (norm has bias) — using layer_norm");
+            Some(b.data)
+        } else {
+            None
+        };
 
         let mut layers = Vec::with_capacity(n_layer);
         for i in 0..n_layer {
             let p = format!("backbone.layers.{}", i);
             let norm = st.get_tensor(&format!("{}.norm.weight", p));
+            let norm_b = if st.has_tensor(&format!("{}.norm.bias", p)) {
+                Some(st.get_tensor(&format!("{}.norm.bias", p)).data)
+            } else {
+                None
+            };
             let in_proj = st.get_tensor(&format!("{}.mixer.in_proj.weight", p));
             let conv_w = st.get_tensor(&format!("{}.mixer.conv1d.weight", p));
             let conv_b = st.get_tensor(&format!("{}.mixer.conv1d.bias", p));
@@ -188,6 +204,7 @@ impl MambaModel {
 
             layers.push(MambaLayerWeights {
                 norm_w: norm.data,
+                norm_b,
                 in_proj_w: Tensor::from_data(in_proj.data, vec![2 * di, d_model]),
                 conv1d_w: conv_w.data, // flat (d_inner * d_conv)
                 conv1d_b: conv_b.data,
@@ -206,21 +223,36 @@ impl MambaModel {
 
         let emb_tensor = Tensor::from_data(emb.data, vec![vocab_size, d_model]);
 
-        let mem_mb = (emb_tensor.numel() * 4
+        // R-088: detect separate lm_head.weight (untied embeddings, e.g. MambaByte)
+        let lm_head_w = if st.has_tensor("lm_head.weight") {
+            let lm = st.get_tensor("lm_head.weight");
+            eprintln!("[mamba] separate lm_head.weight detected (untied embeddings)");
+            Some(Tensor::from_data(lm.data, vec![vocab_size, d_model]))
+        } else {
+            None
+        };
+
+        let mut total_bytes = emb_tensor.numel() * 4
             + norm_f.data.len() * 4
             + layers.iter().map(|l| {
                 (l.norm_w.len() + l.in_proj_w.numel() + l.conv1d_w.len()
                     + l.conv1d_b.len() + l.x_proj_w.numel() + l.dt_proj_w.numel()
                     + l.dt_proj_b.len() + l.a_log.len() + l.d_vec.len()
                     + l.out_proj_w.numel()) * 4
-            }).sum::<usize>()) as f64 / 1024.0 / 1024.0;
+            }).sum::<usize>();
+        if let Some(ref lm) = lm_head_w {
+            total_bytes += lm.numel() * 4;
+        }
+        let mem_mb = total_bytes as f64 / 1024.0 / 1024.0;
         eprintln!("[mamba] model loaded: {:.1} MB", mem_mb);
 
         Self {
             config,
             emb_w: emb_tensor,
+            lm_head_w,
             layers,
             norm_f_w: norm_f.data,
+            norm_f_b,
             highway_start: 0,     // disabled by default
             highway_thr: 0.01,
             resync_interval: 32,
@@ -371,9 +403,13 @@ impl MambaModel {
         for layer_idx in 0..self.config.n_layer {
             let lw = &self.layers[layer_idx];
 
-            // RMSNorm
-            scratch.normed.copy_from_slice(&scratch.x);
-            rms_norm_into(&mut scratch.normed, &lw.norm_w, 1e-5);
+            // Norm: LayerNorm (with bias) or RMSNorm (without)
+            if let Some(ref bias) = lw.norm_b {
+                layer_norm_into(&mut scratch.normed, &scratch.x, &lw.norm_w, bias, 1e-5);
+            } else {
+                scratch.normed.copy_from_slice(&scratch.x);
+                rms_norm_into(&mut scratch.normed, &lw.norm_w, 1e-5);
+            }
 
             // in_proj: (2*d_inner, d_model) @ normed → xz
             mat_vec_mul_into(&mut scratch.xz, &lw.in_proj_w, &scratch.normed);
@@ -467,14 +503,21 @@ impl MambaModel {
 
         scratch.highway_token_count += 1;
 
-        // Final RMSNorm
-        rms_norm_into(&mut scratch.x, &self.norm_f_w, 1e-5);
+        // Final norm: LayerNorm or RMSNorm
+        if let Some(ref bias) = self.norm_f_b {
+            let tmp: Vec<f32> = scratch.x.clone();
+            layer_norm_into(&mut scratch.x, &tmp, &self.norm_f_w, bias, 1e-5);
+        } else {
+            rms_norm_into(&mut scratch.x, &self.norm_f_w, 1e-5);
+        }
     }
 
     /// Compute LM head from a pre-normed hidden vector (R-060).
     /// `hidden` must be a slice of length `d_model` (e.g. a copy of `scratch.x`).
+    /// Uses separate lm_head weights if untied (R-088), otherwise embedding weights.
     pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
-        mat_vec_mul_into(out_logits, &self.emb_w, hidden);
+        let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
+        mat_vec_mul_into(out_logits, head, hidden);
     }
 
     /// Single-step forward pass (RNN mode).
@@ -483,7 +526,8 @@ impl MambaModel {
         scratch: &mut MambaScratch, out_logits: &mut [f32],
     ) {
         self.forward_layers_normed(token, state, scratch);
-        mat_vec_mul_into(out_logits, &self.emb_w, &scratch.x);
+        let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
+        mat_vec_mul_into(out_logits, head, &scratch.x);
     }
 }
 

@@ -2181,10 +2181,17 @@ R-082 (Rust byte tokenizer) ─────────────────�
 > **Objetivo**: Entrenar MambaByte y validar hipótesis de byte-level compression.
 > **Prerequisitos**: Fase 15 completa (R-080 → R-083)
 > **Budget**: $0 (Kaggle TPU free tier) para validación
+>
+> **⚠️ BLOCKER (2026-11-09)**: Kaggle TPU v5e-8 no disponible — quota saturada
+> persistentemente. Las sesiones TPU no inician ("TPU is currently busy" /
+> "No TPU available"). Afecta R-084 y R-085. GPU T4x2 es alternativa pero
+> el notebook requiere adaptación (torch_xla → CUDA). R-088 (pesos pre-entrenados
+> 353M) se convierte en el path prioritario mientras TPU permanezca inaccesible.
 
 - R-084: MambaByte-50M validation training (Kaggle TPU v5e-8)
-  - **Estado**: EN EJECUCIÓN (2026-11-07, Kaggle kernel v1)
-  - **Prioridad**: P0 — valida hipótesis antes de invertir en modelo de producción
+  - **Estado**: ⚠️ BLOQUEADO — Kaggle TPU saturado (2026-11-09)
+  - **Estado anterior**: EN EJECUCIÓN (2026-11-07, push exitoso pero sesión no inicia)
+  - **Prioridad**: P0 → P1 (degradada mientras R-088 es P0)
   - **Deliverable**: Trained MambaByte-50M weights + BPB measurement
   - **Plataforma**: Kaggle TPU v5e-8, 1 sesión de 9h (63-95% training)
   - **Arquitectura**: d_model=512, d_inner=1024, n_layer=24, vocab=256, ~42M params
@@ -2192,16 +2199,28 @@ R-082 (Rust byte tokenizer) ─────────────────�
   - **Gate**: BPB < 1.40 enwik8 10KB → PASS (proceder a 96M)
   - **Notebook**: `notebooks/mambabyte-50m-validate.py`
   - **Push**: `scripts/kaggle-push-mambabyte.sh`
+  - **Historial de intentos**:
+    - v1 (2026-11-07): Push a TPU v5e-8, corregido slug + mkdir (`0477e06`, `1b2da7c`)
+    - v2 (2026-11-07): Switch a GPU T4x2 por TPU push roto (`1e42605`)
+    - v3 (2026-11-07): Revert a TPU v5e-8 + docker_image_pinning workaround (`18e6dd8`)
+    - v4 (2026-11-09): **TPU quota saturada** — sesiones no inician
   - **Subtareas**:
-    - [ ] Crear notebook 50M con config reducida
-    - [ ] Push a Kaggle TPU v5e-8
-    - [ ] Monitorear: loss convergence, BPB checkpoints
+    - [x] Crear notebook 50M con config reducida
+    - [x] Push a Kaggle TPU v5e-8 (push exitoso, ejecución bloqueada)
+    - [ ] ~~Monitorear: loss convergence~~ → BLOQUEADO (TPU no inicia)
     - [ ] Descargar resultados: checkpoint + logs
     - [ ] Evaluar: BPB < 1.40 → GO / NO-GO para producción
+  - **Alternativas si TPU sigue saturado**:
+    - **Alt A (recomendada)**: R-088 — usar pesos pre-entrenados 353M ($0, inmediato)
+    - **Alt B**: Adaptar notebook a GPU T4x2 (30GB VRAM, ~3-5x más lento que TPU)
+    - **Alt C**: Colab Pro TPU v2 (~$10/mes, disponibilidad más estable)
+    - **Alt D**: Esperar ventana TPU libre (madrugada UTC, fines de semana)
 
 - R-085: MambaByte-96M production training
-  - **Estado**: BLOQUEADO (depende R-084 PASS)
+  - **Estado**: BLOQUEADO (depende R-084 PASS + TPU disponible)
   - **Plataforma**: Kaggle TPU (3 sesiones × 9h) o A100 ($87, 2 días)
+  - **Nota**: Si R-088 confirma pesos 353M compatibles, R-085 podría cancelarse
+    o reenfocarse como fine-tuning del modelo pre-entrenado
   - **Deliverable**: Production MambaByte-96M weights in SafeTensors
   - **Training**: 30B bytes, 8192-byte sequences, batch 48, 76K steps
 
@@ -2244,21 +2263,27 @@ R-082 (Rust byte tokenizer) ─────────────────�
     - L3TC (Alipay): valida RWKV+AC para compresión (4.35 MB/s)
 
 - R-088: Evaluate pre-trained MambaByte 353M weights
-  - **Estado**: PENDIENTE
-  - **Prioridad**: P0 — potencialmente elimina necesidad de R-084/R-085 ($87-145)
-  - **Deliverable**: Compatibility report + benchmark (if compatible)
-  - **Fuente**: `JunxiongWang/MambaByte_Arxiv` (353M, 30B bytes, Mamba-1)
+  - **Estado**: COMPLETADO (2026-11-09)
+  - **Prioridad**: P0 — evaluar si elimina necesidad de training
+  - **Deliverable**: Compatibility report + benchmark [MEASURED]
+  - **Fuente**: `JunxiongWang/MambaByte_Arxiv` (353M, 30B bytes arXiv, Mamba-1)
   - **Subtareas**:
-    - [ ] Descargar pesos MambaByte_Arxiv desde HuggingFace
-    - [ ] Analizar arquitectura: Mamba-1 vs Mamba-2 (nuestro runtime)
-    - [ ] Mapear config keys: d_model, d_inner, d_state, d_conv, n_layer, vocab_size
-    - [ ] Verificar compatibilidad de forward pass con `MambaModel` Rust
-    - [ ] Si compatible: convertir con `scripts/convert-mambabyte-weights.py`
-    - [ ] Si compatible: benchmark BPB en enwik8 10KB
-    - [ ] Si incompatible: documentar diferencias, estimar esfuerzo de adaptación
-  - **BPB proyectado**: ~0.42 BPB (CE 0.396 × coder efficiency ~95%)
-  - **Riesgo**: Mamba-1 podría tener SSM params diferentes (dt_rank, etc.)
-  - **Caveat**: 353M params → ~11 tok/s CPU (aceptable si GPU path avanza)
+    - [x] Descargar pesos MambaByte_Arxiv desde HuggingFace (1.5 GB)
+    - [x] Analizar arquitectura: Mamba-1 ✅ compatible
+    - [x] Mapear config: d_model=1024, d_inner=2048, d_state=16, d_conv=4, dt_rank=64, n_layer=56
+    - [x] Resolver: untied embeddings (lm_head_w separado), LayerNorm (no RMSNorm)
+    - [x] Convertir con `scripts/convert-mambabyte-weights.py --preset 353m`
+    - [x] Benchmark BPB en enwik8 10KB: **1.3156 BPB** [MEASURED]
+  - **Resultados [MEASURED: 2026-11-09]**:
+    - enwik8 10KB: **1.3156 BPB** (vs 0.9609 Mamba-130M BPE = +37% peor)
+    - CE BPB: 1.1975, coder efficiency: 91.02%
+    - Throughput: 4.8 tok/s (353M params en DDR4, DRAM-bound)
+    - Sin LayerNorm fix: 1.7531 BPB (+82% peor) — norm bug confirmado
+  - **Diagnóstico**: Domain mismatch (arXiv vs Wikipedia). Modelo no generaliza.
+  - **Conclusión**: Pesos pre-entrenados **NO reemplazan training propio**.
+    R-084/R-085 siguen siendo necesarios para modelo domain-general.
+  - **Código aportado**: untied embeddings (model.rs), LayerNorm (tensor.rs),
+    convert --preset 353m, HF key stripping, norm bias auto-detect
 
 - R-089: Formal benchmark vs Nacrith
   - **Estado**: BLOQUEADO (depende R-088 o R-086)
@@ -2289,9 +2314,203 @@ R-087 (research) ✅ ──→ R-088 (eval 353M) ──→ R-089 (benchmark vs N
 ```
 
 **Impacto en Fase 16**: Si R-088 confirma compatibilidad de pesos 353M:
-- R-084 (50M training) → podría cancelarse o reducirse a validación
-- R-085 (96M training) → podría reemplazarse por fine-tuning de 353M
+- R-084 (50M training) → CANCELAR (validación innecesaria con 353M disponible)
+- R-085 (96M training) → CANCELAR o reenfocarse como fine-tuning de 353M
 - R-086 (integration) → se adelanta con pesos pre-entrenados
+
+**Contexto TPU (2026-11-09)**: Kaggle TPU v5e-8 persistentemente saturado.
+R-084 lleva bloqueado desde 2026-11-07 (push exitoso, sesión no inicia).
+Esto eleva R-088 a path CRÍTICO: los pesos pre-entrenados eliminan la
+dependencia de TPU completamente ($0, disponibilidad inmediata).
+
+---
+
+## Fase 18: CPU Throughput Reformulation (R-091 → R-097)
+
+> **Objetivo**: Reformular la asignación de responsabilidades por componente hardware para
+> maximizar throughput CPU-only. Aprovecha los cambios de régimen que MambaByte introduce
+> (vocab=256, LM head insignificante, entropy gate funcional) para re-habilitar técnicas
+> que fracasaron en Fases 10-12 bajo condiciones diferentes.
+>
+> **Prerequisitos**: MambaByte integrado (R-088 compatible, o R-086 trained)
+> **Budget**: $0 (optimizaciones de código puro)
+> **Research**: `docs/internal/research/cpu-throughput-reformulation.md`
+> **Research previa**: `docs/internal/research/pim-ndp-bandwidth-research.md`
+
+### Contexto: Por qué Fases 10-12 fracasaron y Fase 18 es diferente
+
+Las 12 técnicas de Fases 10-12 operaban bajo Mamba-130M BPE (493 MB F32, 127 MB Q8,
+LM head 38.6 MB, entropy gate inactivo). **Tres condiciones cambian con MambaByte**:
+
+| Condición | Mamba-130M BPE | MambaByte |
+|---|---|---|
+| LM head DRAM/token | 38.6 MB (30.4%) | 0.19 MB (0.2%) |
+| Entropy gate | Inactivo (15.5 bits) | **Activo ~70% skip** |
+| DRAM effective/token | 127 MB (100% tokens) | ~89 MB (30% tokens) |
+| Effective DRAM/file 10KB | 1.27 TB | ~267 GB (gate) o 89 MB (parallel scan) |
+
+Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
+
+### Tier 1: Optimizaciones quirúrgicas (zero BPB risk, <100 líneas)
+
+- R-091: NTA Prefetch para MambaByte weight streaming
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P1 — zero risk, +10-20% throughput
+  - **Dependencia**: MambaByte integrado (R-088 o R-086)
+  - **Archivos**: `src/domain/tensor.rs`
+  - **Subtareas**:
+    - [ ] Cambiar `_mm_prefetch(ptr, _MM_HINT_T0)` → `_MM_HINT_NTA` en weight matmul paths
+    - [ ] Mantener `_MM_HINT_T0` para SSM state access (debe quedarse en L1)
+    - [ ] Añadir env var `REDUKT_NO_NTA=1` para A/B testing
+    - [ ] Benchmark controlado: 3+ rounds, multi-file, vs sin NTA
+    - [ ] Verificar BPB idéntico (0.000 delta)
+  - **Justificación vs R-065 (fracasó)**:
+    R-065 falló con Mamba-130M F32 (493 MB >> 12 MB L3, pollution irrelevante).
+    Con MambaByte Q8 + entropy gate, el effective DRAM per backbone-token es ~89 MB,
+    y los tokens que ejecutan backbone están espaciados (70% gateados). El L3 tiene
+    tiempo de enfriar entre backbone calls. NTA mantiene SSM state (48 KB) caliente
+    en L1 mientras pesos pasan solo por L2.
+  - **Proyección**: +10-20% throughput en tokens que ejecutan backbone
+
+- R-092: L2-tile weight layout para MambaByte
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P1 — zero risk, +12-20% GEMV
+  - **Dependencia**: MambaByte integrado (R-088 o R-086)
+  - **Archivos**: `src/application/model_loader.rs`, `src/infrastructure/mamba/model.rs`
+  - **Subtareas**:
+    - [ ] Reordenar pesos a tiles 256×512 Q8 (~128 KB, cabe en L2 1.25 MB) durante carga
+    - [ ] Adaptar inner loop en matmul para consumir tiles en orden
+    - [ ] LM head 256×768 = 0.19 MB → cabe COMPLETO en L2 (no requiere tiling)
+    - [ ] Benchmark controlado: A/B, 3+ rounds
+    - [ ] Verificar BPB idéntico y roundtrip byte-identical
+  - **Justificación vs R-067 (fracasó)**:
+    R-067 falló porque GEMV streaming continuo no se beneficia de tiling cuando 100% de
+    tokens son backbone-bound. Con entropy gate, los backbone-tokens están espaciados:
+    el tile puede sobrevivir en L2 entre invocaciones. Además, el LM head ahora es
+    0.19 MB (cabe completo en L2, antes era 38.6 MB).
+  - **Proyección**: +12-20% en projection layers, +0% en LM head (ya en L2)
+
+### Tier 2: Cambio arquitectónico CPU (zero GPU requerido)
+
+- R-093: Parallel scan para compresión batch (CPU)
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P0 — mayor impacto individual (10-50× compress throughput)
+  - **Dependencia**: MambaByte integrado, R-052 (parallel_scan.rs ya existe)
+  - **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
+  - **Subtareas**:
+    - [ ] Implementar `forward_batch(&self, tokens: &[u32], states_out: &mut [...])` en MambaModel
+    - [ ] Reformular SSM recurrence como parallel associative scan usando R-052
+    - [ ] Buffer de estados intermedios: N × d_model × 4 bytes (~30 MB para N=10K)
+    - [ ] Adaptar codec.rs compress path: batch backbone → sequential CM+encode
+    - [ ] Nuevo flag AZTH v4 (0x100 o bit libre) para indicar batch compression mode
+    - [ ] Verificar roundtrip: batch compress → sequential decompress → byte-identical
+    - [ ] Benchmark: throughput compress vs RNN, multi-file
+  - **Diseño**: Opción A (backbone always-on, gate solo en mixing)
+    - Backbone procesa TODOS los tokens (parallel scan)
+    - Gate decide mixing weight, no compute skip
+    - Descompresión en RNN produce resultados idénticos (misma secuencia de tokens)
+    - Pro: determinismo garantizado, bandwidth amortizado
+    - Con: descompresión ejecuta backbone 100% (sin gate savings a nivel compute)
+  - **Constraint de roundtrip**: Compress (parallel scan, all tokens) y decompress
+    (RNN, all tokens) DEBEN producir distribuciones idénticas. Opción A lo garantiza
+    porque ambos ven exactamente los mismos tokens en el mismo orden.
+  - **Proyección**: DRAM compresión 10KB: 89 MB (1 vez) vs 890 GB (per-token)
+    Throughput compresión: ~400-1500 tok/s (CPU-only, modelo 96M-353M)
+
+- R-094: CM pre-scan separado del backbone loop
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P1 — complementa R-093
+  - **Dependencia**: R-093
+  - **Archivos**: `src/application/codec.rs`, `src/domain/cm_ensemble.rs`
+  - **Subtareas**:
+    - [ ] Refactor compress path: Fase 1 (backbone batch) + Fase 2 (CM+encode sequential)
+    - [ ] En Fase 2: backbone logits pre-computados, CM+mixer en loop secuencial
+    - [ ] Gate en mixing: `if cm_entropy < thr { usar CM-only } else { combinar con logits[t] }`
+    - [ ] Verificar BPB idéntico a Opción A de R-093
+  - **Proyección**: Organización limpia de pipeline, prepara terreno para GPU offload
+
+### Tier 3: Extensiones edge/deployment
+
+- R-095: HugePages para Linux deployment
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P2 — solo Linux, +5-24% en weight streaming
+  - **Dependencia**: ninguna (independiente)
+  - **Archivos**: `src/application/model_loader.rs` (conditional compilation `#[cfg(target_os = "linux")]`)
+  - **Subtareas**:
+    - [ ] `madvise(ptr, size, MADV_HUGEPAGE)` después de mmap de pesos
+    - [ ] Feature flag o detección automática (fallback silencioso si no disponible)
+    - [ ] Test en Kaggle Linux (ya tenemos acceso)
+    - [ ] NO implementar en Windows (requiere SeLockMemoryPrivilege)
+  - **Proyección**: -5-24% TLB miss overhead en streaming de pesos
+
+### Tier 4: FFI v2 para GPU batch (preparación futura)
+
+- R-096: BackendVTable v2 — batch forward API
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P2 — prepara GPU para parallel scan
+  - **Dependencia**: R-093 (validar parallel scan en CPU primero)
+  - **Archivos**: `src/domain/backend_ffi.rs`, `src/infrastructure/plugin_backend/`
+  - **Subtareas**:
+    - [ ] Añadir `BackendForwardBatchFn` al vtable (symbol: `redukt_backend_forward_batch`)
+    - [ ] Bump `BACKEND_FFI_VERSION` a 2
+    - [ ] Backward-compatible: si plugin no exporta batch symbol, fallback a per-token
+    - [ ] Actualizar PluginBackend para detectar y usar batch API si disponible
+    - [ ] Documentar FFI v2 en FORMAT-SPEC.md
+  - **Interfaz propuesta**:
+    ```
+    extern "C" fn redukt_backend_forward_batch(
+        tokens: *const u32,      // N tokens
+        n_tokens: u32,
+        out_logits: *mut f32,    // N × vocab_size contiguous
+        vocab_size: u32,
+    ) -> BackendResult;
+    ```
+
+- R-097: Q4 selective para MambaByte (re-evaluación)
+  - **Estado**: PENDIENTE (investigación)
+  - **Prioridad**: P2 — re-evaluar Q4 bajo condiciones MambaByte
+  - **Dependencia**: MambaByte integrado
+  - **Archivos**: `src/domain/quant.rs`, `src/domain/tensor.rs`
+  - **Subtareas**:
+    - [ ] Benchmark Q4 con MambaByte (diferente modelo, diferente sensibilidad)
+    - [ ] Si BPB < +5%: adoptar Q4 selectivo (projection weights only, SSM en Q8)
+    - [ ] Si BPB > +5%: documentar resultado y cerrar (como R-024/R-066)
+    - [ ] Si adoptado: AVX-VNNI repacking (VPDPBUSD en Alder Lake)
+  - **Contexto**: Q4 falló con Mamba-130M (+12.7% BPB). MambaByte tiene distribuciones
+    de pesos diferentes (byte-level training, LM head 256 vs 50280). Re-evaluación justificada.
+  - **Gate**: BPB < +5% → ADOPT, BPB > +5% → CLOSE
+
+**Paralelización**: R-091 y R-092 son independientes entre sí. R-093 depende de MambaByte.
+R-094 depende de R-093. R-095 es independiente de todo. R-096 depende de R-093.
+R-097 es independiente (investigación).
+
+```
+MambaByte integrado (R-088 o R-086)
+    │
+    ├── R-091 (NTA prefetch) ── independiente
+    ├── R-092 (L2 tiling) ── independiente
+    ├── R-097 (Q4 re-eval) ── independiente (investigación)
+    │
+    └── R-093 (parallel scan compress) ──→ R-094 (CM pre-scan)
+                                      └──→ R-096 (FFI v2 batch)
+
+R-095 (HugePages Linux) ── independiente de todo
+```
+
+**Proyección de throughput combinado (CPU-only)**:
+
+| Escenario | Compress | Decompress | BPB estimado |
+|---|---|---|---|
+| Actual (Mamba-130M BPE) | 34 tok/s | 34 tok/s | 0.961 |
+| MambaByte-96M + gate | 173 tok/s | 173 tok/s | ~0.85-1.05 |
+| + R-091/R-092 (NTA+tile) | 237 tok/s | 237 tok/s | ~0.85-1.05 |
+| + R-093 (parallel scan) | **800-1500 tok/s** | 237 tok/s | ~0.85-1.05 |
+| MambaByte-353M pre-trained | 66 tok/s | 66 tok/s | ~0.42 |
+| + R-093 (parallel scan) | **200-400 tok/s** | 66 tok/s | ~0.42 |
+
+**Nota**: Descompresión con R-093 Opción A NO se beneficia del gate (backbone always-on).
+Descompresión sin R-093 (gate actual) sí se beneficia. La elección de Opción A vs gate
+actual se resolverá empíricamente en R-093.
 
 ---
 
@@ -2572,6 +2791,21 @@ R-087 (research) ✅ ──→ R-088 (eval 353M) ──→ R-089 (benchmark vs N
 | 2026-11-09 | Hallazgo: strata-inference = PTX-as-string patrón adoptable para GPU plugin Redukt |
 | 2026-11-09 | R-088 definido: evaluar pesos pre-entrenados MambaByte 353M — P0, potencialmente elimina R-084/R-085 |
 | 2026-11-09 | docs: strata-competitive-landscape.md — investigación completa, 15 fuentes, 5 secciones |
+| 2026-11-09 | R-088 COMPLETADO — MambaByte 353M pre-trained weights evaluated on enwik8 10KB |
+| 2026-11-09 | R-088: enwik8 1.3156 BPB (+37% vs Mamba-130M BPE 0.9609). Domain mismatch (arXiv→Wikipedia) |
+| 2026-11-09 | R-088: LayerNorm bug found and fixed (RMSNorm→LayerNorm): 1.7531→1.3156 BPB (-25%) |
+| 2026-11-09 | R-088: untied embeddings support added (lm_head_w), convert --preset 353m/972m, HF key stripping |
+| 2026-11-09 | Conclusión R-088: pesos pre-entrenados NO reemplazan training propio. R-084/R-085 siguen necesarios. |
+| 2026-11-09 | Fase 18 definida: CPU Throughput Reformulation (R-091 → R-097). Hardware-aware execution pipeline. |
+| 2026-11-09 | R-091 (NTA prefetch MambaByte), R-092 (L2 tiling MambaByte) — re-evaluación bajo nuevo régimen |
+| 2026-11-09 | R-093 (parallel scan compress CPU) — P0, mayor impacto: 10-50× compress throughput |
+| 2026-11-09 | R-094 (CM pre-scan), R-095 (HugePages Linux), R-096 (FFI v2 batch), R-097 (Q4 re-eval) |
+| 2026-11-09 | Análisis: Fases 10-12 fracasaron bajo condiciones Mamba-130M; MambaByte cambia 3 condiciones simultáneamente |
+| 2026-11-09 | docs: cpu-throughput-reformulation.md — auditoría código + reformulación hardware-aware, 10 fuentes |
+| 2026-11-09 | Proyección CPU-only: 96M+gate 237 tok/s decompress, 800-1500 tok/s compress (parallel scan) |
+| 2026-11-09 | ⚠️ Kaggle TPU v5e-8 saturado — R-084 bloqueado (push OK, sesión no inicia) |
+| 2026-11-09 | R-084 degradado P0→P1. R-088 (pesos pre-entrenados 353M) elevado a path crítico |
+| 2026-11-09 | R-085 nota: si R-088 confirma 353M, R-085 se cancela o reenfoca como fine-tuning |
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
 | 2026-11-07 | Fase 16 definida: MambaByte Training Execution (R-084 → R-086). 50M validation → 96M production → integration. |
 | 2026-11-07 | R-084 LANZADO — MambaByte-50M en Kaggle TPU v5e-8. Slug: jdavidpcastro/mambabyte-50m-validation. |

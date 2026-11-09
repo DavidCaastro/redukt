@@ -30,43 +30,73 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Default MambaByte-96M configuration
+# Model configurations
 # ---------------------------------------------------------------------------
 
-DEFAULT_CONFIG = {
-    "vocab_size": 256,
-    "d_model": 768,
-    "d_inner": 1536,
-    "d_state": 16,
-    "d_conv": 4,
-    "dt_rank": 48,
-    "n_layer": 24,
+CONFIGS = {
+    "96m": {
+        "vocab_size": 256,
+        "d_model": 768,
+        "d_inner": 1536,
+        "d_state": 16,
+        "d_conv": 4,
+        "dt_rank": 48,
+        "n_layer": 24,
+    },
+    "353m": {
+        "vocab_size": 256,
+        "d_model": 1024,
+        "d_inner": 2048,
+        "d_state": 16,
+        "d_conv": 4,
+        "dt_rank": 64,
+        "n_layer": 56,
+    },
+    "972m": {
+        "vocab_size": 256,
+        "d_model": 1792,
+        "d_inner": 3584,
+        "d_state": 16,
+        "d_conv": 4,
+        "dt_rank": 112,
+        "n_layer": 48,
+    },
 }
+
+DEFAULT_CONFIG = CONFIGS["96m"]
 
 
 # ---------------------------------------------------------------------------
 # Key mapping: training checkpoint -> Redukt SafeTensors
 # ---------------------------------------------------------------------------
 
-def build_key_map(n_layer: int) -> dict[str, str]:
-    """Return {training_key: redukt_key} for all expected parameters."""
+def build_key_map(n_layer: int, hf_format: bool = False) -> dict[str, str]:
+    """Return {training_key: redukt_key} for all expected parameters.
+
+    hf_format: if True, source keys use 'layers.{i}.mixer.xxx' (HuggingFace).
+               if False, source keys use 'layers.{i}.xxx' (our training).
+    """
     km = {
         "embedding.weight": "backbone.embeddings.weight",
         "norm_f.weight": "backbone.norm_f.weight",
+        "norm_f.bias": "backbone.norm_f.bias",
         "lm_head.weight": "lm_head.weight",
     }
+    # HuggingFace has mixer. prefix on per-layer SSM keys; our training doesn't
+    mx = "mixer." if hf_format else ""
     for i in range(n_layer):
         layer_pairs = [
-            ("norm.weight",     "norm.weight"),
-            ("in_proj.weight",  "mixer.in_proj.weight"),
-            ("conv1d.weight",   "mixer.conv1d.weight"),
-            ("conv1d.bias",     "mixer.conv1d.bias"),
-            ("x_proj.weight",   "mixer.x_proj.weight"),
-            ("dt_proj.weight",  "mixer.dt_proj.weight"),
-            ("dt_proj.bias",    "mixer.dt_proj.bias"),
-            ("A_log",           "mixer.A_log"),
-            ("D",               "mixer.D"),
-            ("out_proj.weight", "mixer.out_proj.weight"),
+            ("norm.weight",          "norm.weight"),
+            ("norm.bias",            "norm.bias"),
+            (f"{mx}in_proj.weight",  "mixer.in_proj.weight"),
+            (f"{mx}conv1d.weight",   "mixer.conv1d.weight"),
+            (f"{mx}conv1d.bias",     "mixer.conv1d.bias"),
+            (f"{mx}x_proj.weight",   "mixer.x_proj.weight"),
+            (f"{mx}dt_proj.weight",  "mixer.dt_proj.weight"),
+            (f"{mx}dt_proj.bias",    "mixer.dt_proj.bias"),
+            (f"{mx}A_log",           "mixer.A_log"),
+            (f"{mx}D",               "mixer.D"),
+            (f"{mx}out_proj.weight", "mixer.out_proj.weight"),
         ]
         for src_suffix, dst_suffix in layer_pairs:
             src = f"layers.{i}.{src_suffix}"
@@ -91,12 +121,14 @@ def expected_shapes(cfg: dict) -> dict[str, tuple]:
     shapes = {
         "backbone.embeddings.weight": (v, d),
         "backbone.norm_f.weight": (d,),
+        "backbone.norm_f.bias": (d,),
         "lm_head.weight": (v, d),
     }
     for i in range(cfg["n_layer"]):
         p = f"backbone.layers.{i}"
         shapes.update({
             f"{p}.norm.weight":            (d,),
+            f"{p}.norm.bias":              (d,),
             f"{p}.mixer.in_proj.weight":   (2 * di, d),
             f"{p}.mixer.conv1d.weight":    (di, 1, dc),
             f"{p}.mixer.conv1d.bias":      (di,),
@@ -114,6 +146,34 @@ def expected_shapes(cfg: dict) -> dict[str, tuple]:
 # Conversion
 # ---------------------------------------------------------------------------
 
+def strip_backbone_prefix(ckpt: dict) -> dict:
+    """Strip 'backbone.' prefix from HuggingFace MambaByte checkpoints.
+
+    HuggingFace format uses keys like:
+        backbone.embedding.weight, backbone.layers.0.mixer.in_proj.weight
+    Our training format uses:
+        embedding.weight, layers.0.mixer.in_proj.weight
+
+    Also normalizes 'backbone.embedding.weight' (singular, HF) to
+    'embedding.weight' for compatibility with key_map.
+    """
+    has_prefix = any(k.startswith("backbone.") for k in ckpt if k != "lm_head.weight")
+    if not has_prefix:
+        return ckpt
+
+    print("  Detected HuggingFace key prefix 'backbone.' — stripping...")
+    new_ckpt = {}
+    for k, v in ckpt.items():
+        new_key = k
+        if k.startswith("backbone."):
+            new_key = k[len("backbone."):]
+        # Normalize singular 'embedding' to match our key_map
+        if new_key == "embedding.weight":
+            new_key = "embedding.weight"  # already correct
+        new_ckpt[new_key] = v
+    return new_ckpt
+
+
 def convert(input_path: str, output_path: str, cfg: dict) -> None:
     print(f"Loading checkpoint: {input_path}")
     ckpt = torch.load(input_path, map_location="cpu", weights_only=False)
@@ -130,8 +190,22 @@ def convert(input_path: str, output_path: str, cfg: dict) -> None:
         print("ERROR: checkpoint is not a state_dict (dict). Cannot proceed.", file=sys.stderr)
         sys.exit(1)
 
+    # Strip HuggingFace 'backbone.' prefix if present
+    ckpt = strip_backbone_prefix(ckpt)
+
+    # R-088: Keep LayerNorm bias keys (Redukt now supports both LayerNorm and RMSNorm)
+    has_norm_bias = any(k.endswith(".bias") and (".norm." in k or k == "norm_f.bias") for k in ckpt)
+    if has_norm_bias:
+        print("  LayerNorm bias detected — will be preserved in SafeTensors")
+
     n_layer = cfg["n_layer"]
-    key_map = build_key_map(n_layer)
+
+    # Auto-detect HuggingFace format (keys have 'mixer.' in layer paths)
+    hf_format = any("mixer." in k for k in ckpt if k.startswith("layers."))
+    if hf_format:
+        print("  Detected HuggingFace key format (layers.{i}.mixer.xxx)")
+
+    key_map = build_key_map(n_layer, hf_format=hf_format)
     shapes  = expected_shapes(cfg)
 
     # --- Detect available keys and resolve lm_head tying ---
@@ -172,13 +246,27 @@ def convert(input_path: str, output_path: str, cfg: dict) -> None:
         # Was in key_map but missing from ckpt (already caught above)
         pass
 
-    # --- Report errors ---
-    if missing_src:
-        print(f"\nERROR: {len(missing_src)} expected key(s) missing from checkpoint:",
+    # --- Count skipped keys (extras in checkpoint not in our map) ---
+    mapped_src = set(key_map.keys())
+    extra_keys = [k for k in ckpt if k not in mapped_src]
+    if extra_keys:
+        print(f"  Skipping {len(extra_keys)} extra key(s) not in Redukt format:")
+        for k in extra_keys[:10]:
+            print(f"    - {k}  {tuple(ckpt[k].shape)}")
+        if len(extra_keys) > 10:
+            print(f"    ... and {len(extra_keys) - 10} more")
+
+    # --- Report errors (bias keys are optional) ---
+    optional_suffixes = (".norm.bias", "norm_f.bias")
+    required_missing = [k for k in missing_src if not any(k.endswith(s) for s in optional_suffixes)]
+    optional_missing = [k for k in missing_src if any(k.endswith(s) for s in optional_suffixes)]
+    if optional_missing:
+        print(f"  {len(optional_missing)} optional bias key(s) absent (RMSNorm mode)")
+    if required_missing:
+        print(f"\nERROR: {len(required_missing)} required key(s) missing from checkpoint:",
               file=sys.stderr)
-        for k in missing_src:
+        for k in required_missing:
             print(f"  - {k}", file=sys.stderr)
-        # List what IS in the checkpoint for debugging
         print(f"\nCheckpoint contains {len(ckpt)} keys. First 30:", file=sys.stderr)
         for i, k in enumerate(sorted(ckpt.keys())):
             if i >= 30:
@@ -247,15 +335,19 @@ def main():
     )
     parser.add_argument(
         "--input", required=True,
-        help="Path to PyTorch checkpoint (.pt or .pth)"
+        help="Path to PyTorch checkpoint (.pt, .pth, or pytorch_model.bin)"
     )
     parser.add_argument(
         "--output", required=True,
         help="Output path for model.safetensors"
     )
     parser.add_argument(
+        "--preset", default=None, choices=list(CONFIGS.keys()),
+        help="Model preset: 96m (default), 353m (HuggingFace MambaByte_Arxiv), 972m"
+    )
+    parser.add_argument(
         "--config", default=None,
-        help="Optional JSON config file overriding default MambaByte-96M config"
+        help="Optional JSON config file overriding default config"
     )
     args = parser.parse_args()
 
@@ -263,7 +355,10 @@ def main():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    cfg = dict(DEFAULT_CONFIG)
+    # Select base config from preset or default
+    base = args.preset or "96m"
+    cfg = dict(CONFIGS[base])
+
     if args.config:
         if not os.path.isfile(args.config):
             print(f"ERROR: config file not found: {args.config}", file=sys.stderr)
@@ -275,7 +370,7 @@ def main():
                 cfg[k] = int(overrides[k])
         print(f"Config overrides from {args.config}: { {k: overrides[k] for k in overrides if k in cfg} }")
 
-    print("MambaByte-96M config:")
+    print(f"MambaByte config (preset={base}):")
     for k, v in cfg.items():
         print(f"  {k}: {v}")
     print()
