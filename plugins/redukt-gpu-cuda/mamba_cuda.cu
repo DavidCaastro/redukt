@@ -433,6 +433,9 @@ static int load_weights(const char* path) {
     }
 
     RbinHeader hdr;
+    int has_nb, has_uh;
+    uint32_t d, di, ds, dc, dr, nl, vs;
+
     if (fread(&hdr, sizeof(RbinHeader), 1, f) != 1) goto fail;
     if (hdr.magic != RBIN_MAGIC || hdr.version != RBIN_VERSION) {
         fprintf(stderr, "[redukt-gpu-cuda] bad magic/version in %s\n", path);
@@ -440,15 +443,15 @@ static int load_weights(const char* path) {
     }
 
     G.cfg = hdr;
-    int has_nb = (hdr.flags & FLAG_NORM_BIAS) != 0;
-    int has_uh = (hdr.flags & FLAG_UNTIED_HEAD) != 0;
-    uint32_t d  = hdr.d_model;
-    uint32_t di = hdr.d_inner;
-    uint32_t ds = hdr.d_state;
-    uint32_t dc = hdr.d_conv;
-    uint32_t dr = hdr.dt_rank;
-    uint32_t nl = hdr.n_layer;
-    uint32_t vs = hdr.vocab_size;
+    has_nb = (hdr.flags & FLAG_NORM_BIAS) != 0;
+    has_uh = (hdr.flags & FLAG_UNTIED_HEAD) != 0;
+    d  = hdr.d_model;
+    di = hdr.d_inner;
+    ds = hdr.d_state;
+    dc = hdr.d_conv;
+    dr = hdr.dt_rank;
+    nl = hdr.n_layer;
+    vs = hdr.vocab_size;
 
     fprintf(stderr, "[redukt-gpu-cuda] loading: d=%u di=%u ds=%u dc=%u "
             "dr=%u nl=%u vs=%u flags=0x%02x\n",
@@ -525,12 +528,14 @@ static int load_weights(const char* path) {
     fclose(f);
 
     /* Report GPU memory usage */
+    {
     size_t free_mem, total_mem;
     cudaMemGetInfo(&free_mem, &total_mem);
     fprintf(stderr, "[redukt-gpu-cuda] GPU memory: %.0f MB used, "
             "%.0f MB free / %.0f MB total\n",
             (total_mem - free_mem) / 1048576.0,
             free_mem / 1048576.0, total_mem / 1048576.0);
+    }
 
     return 0;
 
