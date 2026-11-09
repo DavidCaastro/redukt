@@ -168,7 +168,8 @@ Provenance documented in `weights/MANIFEST.md`.
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
 All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
 Dual backbone: Mamba-130M (default) + RWKV-7 0.1B (GenericBinary only).
-Quantization: auto-selected Q8. F32 vs Q8 difference: <2.5% on all files.
+Quantization: auto-selected Q8 applies to RWKV only (F32 vs Q8 difference: <2.5% on all files).
+Mamba runs F32 in the hot path (verified 2026-11-09); weight-only Q8 for Mamba is in progress (R-098).
 Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
 ### Reference BPB (enwik8 10KB)
@@ -219,6 +220,15 @@ Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 
 Advantage grows with file size. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s.
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
+
+### Fase 19 — CPU Limit & Market Viability (2026-11-09)
+Audit (`docs/internal/research/throughput-properties-audit.md`) refuted three premises behind "34 tok/s = DRAM ceiling":
+1. Mamba runs F32 in the hot path, not Q8 (R-064 PTQ was reverted; weight-only Q8 in progress, R-098).
+2. Dev laptop is 2×16 GB DDR4-2667 dual channel = 42.7 GB/s (~44 GB/s measured on identical laptops), not 21.3 GB/s;
+   34 tok/s × 516 MB/token = 17.5 GB/s = 41% of the bus.
+3. in_proj/out_proj (70% of bytes/token) run single-threaded (R-099 fixes this); the limit is per-core bandwidth.
+Economics: ~$47/GB raw today (spot, 130 B/s); 7-year break-even is 18-100 KB/s per vCPU (enwik8 to apache, S3 Standard).
+Open blocker: cross-machine determinism (R-104). Plan and gates: ROADMAP Fase 19 (R-098 → R-105).
 
 ## Process Safety (Windows)
 

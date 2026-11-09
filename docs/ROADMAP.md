@@ -1486,7 +1486,7 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 #### R-052: Parallel Scan — Generic Blelloch algorithm
 - **Estado**: COMPLETADO (ad62291, 2026-11-01)
 - **Impacto**: Infraestructura para GPU parallel scan futuro
-- **Archivos**: `src/domain/parallel_scan.rs` (nuevo)
+- **Archivos**: `src/domain/parallel_scan.rs` (nuevo) — **borrado en 1dc6402, nunca medido; rehacer a nivel byte tras MambaByte**
 - **Descripción**: Algoritmo genérico de Blelloch scan (prefix sum) sobre
   operaciones asociativas. O(N) trabajo, O(log N) profundidad secuencial.
   Incluye `SsmScanPair` (escalar) y `SsmScanVec` (vectorial d_state)
@@ -1497,7 +1497,7 @@ con ≤2% BPB overhead. Hit rate ≥50% en batch mode para archivos del mismo do
 #### R-053: Speculative Execution — CM-draft with backbone verify
 - **Estado**: COMPLETADO (ad62291, 2026-11-01)
 - **Impacto**: Infraestructura para speculative compression
-- **Archivos**: `src/domain/speculative.rs` (nuevo)
+- **Archivos**: `src/domain/speculative.rs` (nuevo) — **borrado en 1dc6402, nunca medido; rehacer a nivel byte tras MambaByte**
 - **Descripción**: Usa CmEnsemble (0.3% del costo) para predecir K tokens ahead.
   `SpeculativeTracker` adapta K basado en rolling acceptance rate (EMA).
   `draft_tokens()` genera draft, `verify_draft()` compara contra tokens reales.
@@ -1512,7 +1512,7 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
          └──→ R-053 (speculative) ──→ FUTURO: codec integration (--speculative K)
 ```
 
-**Estado Fase 8**: R-051 ✅ R-052 ✅ R-053 ✅ (módulos listos, integración futura)
+**Estado Fase 8**: R-051 ✅ R-052 ✅ R-053 ✅ (módulos listos, integración futura) — R-052/R-053 borrados en 1dc6402, nunca medidos; rehacer a nivel byte tras MambaByte
 
 ---
 
@@ -1545,7 +1545,7 @@ R-051 (CmEnsemble) ──→ R-052 (parallel scan) ──→ FUTURO: GPU wiring
 - **Factible solo con**: (a) fixed-point arithmetic, (b) format batch-only
   (descompresor también batch, requiere todos los tokens — chicken-and-egg),
   (c) double-pass (parallel + sequential) que no ahorra tiempo.
-- **Dependencias**: R-052 (parallel_scan.rs) — módulo listo, no wirable
+- **Dependencias**: R-052 (parallel_scan.rs) — módulo listo, no wirable (borrado en 1dc6402, nunca medido; rehacer a nivel byte tras MambaByte)
 
 #### R-056: CM-selective backbone skip ❌ NO VIABLE
 - **Estado**: INVESTIGADO + DESCARTADO (2026-11-01)
@@ -1726,7 +1726,7 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
 **Investigación base**: PIM/NDP survey (2026), MVDRAM, T-MAC, roofline analysis.
 
 #### R-064: Mamba Q8 quantization at load time
-- **Estado**: ❌ NO VIABLE (2026-11-02) [MEASURED]
+- **Estado**: ❌ NO VIABLE (2026-11-02) [MEASURED] — forense reabierta en R-098 (Fase 19)
 - **Impacto esperado**: 4x menos tráfico DRAM
 - **Resultado**: +16.6% BPB (inaceptable, presupuesto ≤3%)
 - **Descripción**: Implementado y medido en 3 configuraciones:
@@ -1772,7 +1772,7 @@ Las técnicas de esta fase reducen el tráfico DRAM desde software.
   - Software prefetch → next row-block pre-staged in L2
   Reordenar en tiles solo añadiría overhead de indexación sin reducir
   DRAM traffic ni mejorar hit rate (ya ~95%+ en current layout).
-  El bottleneck fundamental es DRAM bandwidth (21.3 GB/s), no cache misses.
+  El bottleneck fundamental es DRAM bandwidth (21.3 GB/s), no cache misses. **[Corregido 2026-11-09, Fase 19: dual channel = 42.7 GB/s]**
 
 #### Secuencia Fase 11
 
@@ -1790,7 +1790,7 @@ Estado: R-064 ❌ R-065 ❌ R-066 ❌ R-067 ❌. **FASE 11 CERRADA.**
 - NTA prefetch irrelevante cuando modelo >> L3 cache
 - Mixed Q4/Q8 bloqueado por Q8 ya inaceptable
 - L2-tiling no aplica a GEMV (streaming, no blocked)
-DRAM bandwidth (21.3 GB/s DDR4-2667 single-channel) es un hard ceiling.
+DRAM bandwidth (21.3 GB/s DDR4-2667 single-channel) es un hard ceiling. **[Obsoleto 2026-11-09: el portátil es dual channel, 42.7 GB/s; 34 tok/s = 41% del bus. Ver Fase 19]**
 Throughput actual de 27-34 tok/s está al 70-85% del techo teórico.
 Para superar esto se necesita: DDR5, dual-channel, o modelo más pequeño (MambaByte).
 
@@ -1929,7 +1929,7 @@ Las 5 GEMV por capa + LM head saturan el bus de memoria DDR4-2667 single-channel
 (21.3 GB/s teórico, 70-85% utilización medida). NINGUNA optimización de CPU
 (SIMD, PGO, fusion, code layout) puede superar este hard ceiling.
 Para throughput >34 tok/s se necesita: DDR5, dual-channel, modelo más pequeño
-(MambaByte ~50M), o cuantización QAT (no PTQ).
+(MambaByte ~50M), o cuantización QAT (no PTQ). **[Superado 2026-11-09, Fase 19: Mamba corre F32 en un hilo en in_proj/out_proj; ver R-098/R-099]**
 
 ---
 
@@ -2405,11 +2405,11 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
 - R-093: Parallel scan para compresión batch (CPU)
   - **Estado**: PENDIENTE
   - **Prioridad**: P0 — mayor impacto individual (10-50× compress throughput)
-  - **Dependencia**: MambaByte integrado, R-052 (parallel_scan.rs ya existe)
+  - **Dependencia**: MambaByte integrado, R-052 (parallel_scan.rs ya existe) (borrado en 1dc6402, nunca medido; rehacer a nivel byte tras MambaByte)
   - **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
   - **Subtareas**:
     - [ ] Implementar `forward_batch(&self, tokens: &[u32], states_out: &mut [...])` en MambaModel
-    - [ ] Reformular SSM recurrence como parallel associative scan usando R-052
+    - [ ] Reformular SSM recurrence como parallel associative scan usando R-052 (módulo borrado en 1dc6402: rehacer)
     - [ ] Buffer de estados intermedios: N × d_model × 4 bytes (~30 MB para N=10K)
     - [ ] Adaptar codec.rs compress path: batch backbone → sequential CM+encode
     - [ ] Nuevo flag AZTH v4 (0x100 o bit libre) para indicar batch compression mode
@@ -2521,6 +2521,267 @@ R-095 (HugePages Linux) ── independiente de todo
 **Nota**: Descompresión con R-093 Opción A NO se beneficia del gate (backbone always-on).
 Descompresión sin R-093 (gate actual) sí se beneficia. La elección de Opción A vs gate
 actual se resolverá empíricamente en R-093.
+
+---
+
+## Fase 19: CPU Limit & Market Viability (R-098 → R-105)
+
+> **Objetivo**: Hacer el producto viable y competitivo en el mercado real. Ejecutar las palancas L1-L4
+> sobre el backbone actual (sin entrenar nada), cerrar el determinismo cross-máquina como bloqueante de
+> producto, decidir el tier rápido con una medida (no una proyección) y desplegar en cloud (GCP).
+>
+> **Prerequisitos**: ninguno para R-098/R-099/R-104 (operan sobre Mamba-130M BPE 50K actual).
+> R-100 depende de R-098 y R-099. R-101 depende de R-098.
+> **Budget**: $0 en código (R-098 → R-101, R-104); cloud (R-102, R-103) según uso medido;
+> R-105 requiere entrenamiento (presupuesto a definir con la medida).
+> **Research**: `docs/internal/research/throughput-properties-audit.md` (§6 = mandato de producto)
+> **Cálculo económico**: `scripts/breakeven.py`
+> **Research previa**: `docs/internal/research/cpu-throughput-reformulation.md`,
+> `docs/internal/research/throughput-paradigm-shift.md`
+> **Hardware dev**: i5-1235U (2P+8E), 2×16 GB DDR4-2667 dual channel = 42.7 GB/s teórico
+
+### Contexto: tres premisas refutadas (2026-11-09)
+
+La auditoría de la Fase 19 (ROADMAP Fases 8-18, 10 docs de research, hot path en código, 4 investigaciones
+web) refutó tres premisas que sostenían el "hard ceiling" de las Fases 10-12:
+
+| Premisa escrita | Realidad verificada | Consecuencia |
+|---|---|---|
+| Mamba corre en Q8 ("auto-selected Q8") | Mamba corre **F32** en el hot path (`Tensor { data: Vec<f32> }`, GEMV f32 AVX2 sin FMA). `Q8Tensor` solo existe para RWKV. R-064 (+14.5/+16.6% BPB, 31-34 tok/s sin mejora) fue revertido | 516 MB de pesos leídos por token; Q8 weight-only bajaría a ~130 MB |
+| "21.3 GB/s peak DRAM" | 2 DIMM a 2667 MT/s = **dual channel, 42.7 GB/s** (~44 GB/s medido en portátiles i5-1235U). 34 tok/s × 516 MB = 17.5 GB/s = **41% del bus** | El bus no está saturado |
+| "DRAM-bound, 34 tok/s es el techo" | in_proj y out_proj (**70% de los bytes/token**) corren en **un solo hilo**; solo la LM head usa ≤4 hilos. Un P-core Golden Cove topa en ~29 GB/s | El cuello es ancho de banda **por core**, no DRAM |
+
+**Conclusión**: los 34 tok/s no son un techo físico; son F32 en un hilo. El "hard ceiling" de las
+Fases 10-12 (21.3 GB/s single-channel) se apoyaba en estas premisas y queda reabierto.
+
+Otros hallazgos de la auditoría:
+- `speculative.rs` y `parallel_scan.rs` (R-052/R-053) fueron borrados en 1dc6402 como código muerto: nunca se
+  integraron ni se midieron. R-093 y los docs de research que los citan están anotados en consecuencia.
+- Batch mode (R-012) = N hilos independientes, cada uno con su GEMV completo (1.36× con 2 jobs, 1.64× con 3:
+  compiten por el mismo bus). **Lockstep (compartir cada fetch de pesos entre streams) no existía en ningún
+  documento ni código** → R-100.
+- Determinismo cross-máquina: Kaggle 0.9633 vs local 0.9609 → bitstreams distintos; roundtrip entre máquinas
+  distintas **no probado** (`determinism-audit.md` L157-165) → R-104.
+
+### Contexto económico: umbrales de viabilidad
+
+Coste actual: **≈$47 por GB raw procesado** (spot $0.022/vCPU-h a 130 B/s); $14.5 en Hetzner dedicado.
+Punto de equilibrio a 7 años (R* = bytes/s por vCPU para que el cómputo de comprimir 1 GB cueste menos que el
+ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro adicional de Redukt):
+
+| Dato | S3 Standard (7 años) | Deep Archive (7 años) |
+|---|---|---|
+| enwik8 (b=0.29, S=59%) | 18 KB/s | 424 KB/s |
+| Facturae (b=0.11, S=56%) | 51 KB/s | 1.2 MB/s |
+| apache (b=0.058, S=54%) | 101 KB/s | 2.3 MB/s |
+
+- No existe precedente comercial de un compresor <1 MB/s con clientes de pago (PetaGene cobra % del ahorro a
+  290 MB/s; AtomBeam monetiza ancho de banda satelital; ts_zip y Nacrith no son productos).
+- Referencia externa: **L3TC** (AAAI 2025) logra ≈1.10 bpb en enwik8 (Redukt 0.96) con un RWKV de 3.2M
+  parámetros a 27 KB/s en CPU móvil. Un modelo ~40× más pequeño pierde ~15% de ratio y gana ~200× throughput.
+
+### Tier 1: Palancas L1-L4 (sin entrenar, riesgo BPB cero o acotado)
+
+- R-098: Q8 weight-only para Mamba (L1)
+  - **Estado**: EN CURSO
+  - **Prioridad**: P0 — ×3-4 en bytes leídos por token, BPB ≈ 0 esperado
+  - **Dependencia**: perfil numérico en header AZTH v5 (coordinar con R-104)
+  - **Archivos**: `src/domain/tensor.rs`, `src/domain/quant.rs`, `src/infrastructure/mamba/model.rs`,
+    `src/application/model_loader.rs`, `src/application/codec.rs`
+  - **Diseño**: pesos int8 por fila (escala f32 por fila) solo en `in_proj`, `out_proj` y LM head, consumidos
+    en registro por el GEMV (sin dequantizar a buffer F32). Activaciones F32. Se mantiene F32 en `A_log`,
+    `dt_proj`, `x_proj`, `conv1d` y normas.
+  - **Subtareas**:
+    - [ ] Forense de R-064: qué se cuantizó en cada configuración (all-Q8 +16.6%, hybrid +16.2%, LM-head-only
+      +14.5%) y si el kernel leía int8 (31-34 tok/s "sin mejora" sugiere que los bytes leídos no bajaron)
+    - [ ] Cuantización int8 por fila para `in_proj`, `out_proj` y LM head
+    - [ ] Mantener F32 en `A_log`, `dt_proj`, `x_proj`, `conv1d` y normas
+    - [ ] Kernel GEMV AVX2 que consume int8 en registro (activaciones F32)
+    - [ ] Perfil numérico en el header AZTH v5; el decoder rechaza perfiles desconocidos
+    - [ ] Medir bytes/token (516 MB → ~130 MB) y tok/s
+    - [ ] Roundtrip byte-identical + compatibilidad de decodificación v2/v3/v4
+  - **Justificación**: el +16% de R-064 es anómalo. MambaQuant W8A8 en Mamba-130M pierde 0.8 puntos de accuracy
+    media (44.7 → 43.9); Quamba W8A8 pierde 22% de perplejidad **porque cuantiza activaciones**. Weight-only por
+    fila con activaciones F32 debe ser casi lossless. Si el delta vuelve a ser ~+15%, el defecto está en qué se
+    cuantiza, no en Q8.
+  - **Criterios de aceptación**:
+    - Δ BPB < +2.5% en enwik8 10KB + 2 archivos adicionales (presupuesto máximo del proyecto: +5%)
+    - Roundtrip PASS (CRC-32 verified OK) en los 3 archivos
+    - Bytes/token ≈ 130 MB y tok/s > 100 en single-stream
+
+- R-099: Multihilo en in_proj/out_proj (L2)
+  - **Estado**: EN CURSO
+  - **Prioridad**: P0 — ×1.5-2 por stream, BPB 0
+  - **Dependencia**: ninguna (se combina con R-098)
+  - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
+  - **Diseño**: hoy el 70% de los bytes/token (in_proj/out_proj) corre en un hilo y solo la LM head usa ≤4.
+    Partición por filas: cada fila es un producto punto completo con el mismo orden de acumulación que en
+    single-thread, por lo que el resultado es bit-idéntico. Techo ~38-40 GB/s → F32 ~75 tok/s.
+  - **Subtareas**:
+    - [ ] Pool de hilos persistente (sin crear hilos por llamada)
+    - [ ] Partición por filas bit-idéntica al single-thread
+    - [ ] Work-stealing con balanceo P:E (≈3:1; Intel arXiv 2411.19542: +19% en GEMV con balanceo dinámico)
+    - [ ] Variable de entorno `REDUKT_THREADS=N` (por defecto, hilos físicos)
+    - [ ] Benchmark controlado A/B: 3+ rounds, multi-file
+  - **Nota**: huge pages (0-10%) y NTA prefetch (±0, R-065) ya medidos: no invertir tiempo ahí.
+  - **Criterios de aceptación**:
+    - `.azth` idéntico byte a byte al baseline single-thread en los archivos de referencia
+    - tok/s ≥ 1.8× el baseline (34 tok/s → ≥ 61 tok/s)
+
+- R-100: Lockstep multi-stream, GEMV → GEMM (L3)
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P0 — ×3-6 agregado, BPB 0; mayor palanca no explorada
+  - **Dependencia**: R-098, R-099
+  - **Archivos**: `src/domain/tensor.rs` (kernels GEMM), `src/infrastructure/mamba/model.rs`,
+    `src/application/codec.rs` (scheduler multi-stream)
+  - **Diseño**: N archivos independientes avanzan un token cada uno en el mismo paso. Cada tile de pesos se
+    carga de DRAM una vez y se multiplica por N vectores de activación desde registros (intensidad aritmética
+    ×N). Aplica a compresión **y** descompresión: cada stream conserva su estado SSM (~48 KB), su CM y su coder.
+    Distinto de R-012 (N hilos independientes, cada uno con su GEMV completo).
+  - **Subtareas**:
+    - [ ] Kernel GEMM AVX2 con N configurable; conserva por stream el orden de acumulación del GEMV
+      (lección de R-055: FP no asociativo rompe el roundtrip)
+    - [ ] Scheduler con continuous batching: un stream que termina se reemplaza por el siguiente archivo
+    - [ ] Compress y decompress en lockstep
+    - [ ] Verificar bit-identidad: batched-compress ↔ single-decompress y single-compress ↔ batched-decompress
+    - [ ] Curva tok/s agregados vs N ∈ {1, 2, 4, 8, 16, 32}
+    - [ ] Archivos grandes: trocear en chunks independientes (~+1-3% BPB) o arranque caliente con el checkpoint
+      de estado de R-063
+  - **Evidencia externa**: llama-batched-bench (3.8B Q4, CPU): b=1 25.7 → b=8 86.3 → b=32 147.7 t/s agregados
+    (5.8×), meseta en 64. Cruce memory → compute-bound en DDR4 portátil con Q8: N ≈ 12-24.
+  - **Criterios de aceptación**:
+    - Salida bit-idéntica al single-stream (mismo `.azth`) y roundtrip cruzado batched ↔ single PASS
+    - Objetivo: 3-6× tok/s agregados sobre single-stream (tras R-098 + R-099); meseta esperada en N = 16-32
+    - BPB idéntico al baseline (Δ = 0)
+
+- R-101: Q6 weight-only (L4)
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P1 — ×1.3 adicional; solo si R-098 pasa su gate
+  - **Dependencia**: R-098 (gate superado)
+  - **Archivos**: `src/domain/quant.rs`, `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
+  - **Diseño**: pesos de 6 bits por fila en `in_proj`/`out_proj`. **Nunca por debajo de Q8 en embedding ni
+    LM head.** Estimación: +1-3% BPB (en transformers de 0.5B: Q6_K +0.05%, Q5_K_M +0.3%, Q4_0 +2.7%; Mamba es
+    4-5× más sensible). Q5 queda como arriesgado.
+  - **Subtareas**:
+    - [ ] Empaquetado 6-bit por fila y kernel GEMV/GEMM
+    - [ ] Perfil numérico en el header AZTH v5 (junto con R-098)
+    - [ ] Medir Δ BPB sobre enwik8 10KB + 2 archivos adicionales
+  - **Criterios de aceptación**:
+    - Δ BPB acumulado vs baseline F32 < +5% (presupuesto del proyecto; estimado +1-3%)
+    - Si excede el presupuesto: opt-in o revertir
+    - Roundtrip PASS
+
+### Tier 2: Bloqueante de producto y despliegue cloud
+
+- R-102: Despliegue GCP CPU
+  - **Estado**: EN CURSO
+  - **Prioridad**: P0 — necesario para ofrecer el producto
+  - **Dependencia**: R-104 para clientes externos (determinismo); técnicamente independiente
+  - **Archivos**: `Dockerfile`, `deploy/` (Cloud Build, Cloud Run, Cloud Batch), `infra/terraform/` (provider google)
+  - **Subtareas**:
+    - [ ] Dockerfile CPU endurecido (multi-stage; pesos no horneados en la imagen)
+    - [ ] Cloud Build → Artifact Registry
+    - [ ] Cloud Run para el comando `api`
+    - [ ] Cloud Batch para compresión masiva (`--input-dir` / `--output-dir`)
+    - [ ] Pesos en GCS, verificados contra `weights/MANIFEST.md`
+    - [ ] Restringir a x86 con AVX2 (determinismo); excluir ARM
+    - [ ] Medir $/GB raw real y compararlo con la proyección
+  - **Criterios de aceptación**:
+    - Roundtrip PASS (CRC-32 verified OK) en Cloud Run y en Cloud Batch
+    - BPB enwik8 10KB medido en cloud y comparado con la referencia 0.9609 (la igualdad bit a bit se exige en R-104)
+    - Coste $/GB raw medido y documentado
+
+- R-103: Despliegue CUDA
+  - **Estado**: EN CURSO
+  - **Prioridad**: P1 — habilita el tier GPU
+  - **Dependencia**: R-090 (plugin CUDA implementado; validación en T4 pendiente)
+  - **Archivos**: `Dockerfile.cuda`, `plugins/redukt-gpu-cuda/`, `deploy/`
+  - **Subtareas**:
+    - [ ] `Dockerfile.cuda` con nvcc para compilar `plugins/redukt-gpu-cuda`
+    - [ ] Conversión de pesos a `.rbin` (`scripts/convert-weights-gpu.py`)
+    - [ ] GCE `g2` (L4) o `n1` + T4
+    - [ ] Carga del plugin (dlopen, fallback automático a Mamba CPU)
+    - [ ] Verificar si un `.azth` comprimido con GPU descomprime en CPU y viceversa (coordinar con R-104)
+    - [ ] Medir tok/s reales vs la proyección de R-090 (~500 tok/s)
+  - **Criterios de aceptación**:
+    - El plugin carga en GCE T4/L4 y el roundtrip pasa (CRC-32 verified OK)
+    - tok/s y $/GB medidos en GCE, documentados
+
+- R-104: Determinismo cross-máquina — BLOQUEANTE de producto
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P0 — ningún cliente externo antes de cerrarlo
+  - **Dependencia**: ninguna; condiciona el diseño de R-098/R-099/R-100 y la entrega de R-102/R-103
+  - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`, `src/domain/mixer.rs`,
+    `src/application/codec.rs`
+  - **Contexto**: el mismo archivo produce 0.9633 BPB en Kaggle y 0.9609 en local → bitstreams distintos. El
+    roundtrip comprimir en una máquina y descomprimir en otra **no está probado** (`determinism-audit.md`
+    L157-165). Con aritmética en coma flotante, cualquier diferencia de orden de acumulación, ISA o función
+    transcendental cambia la CDF y rompe la decodificación.
+  - **Opciones**: (A) orden de acumulación canónico, independiente de ISA y de hilos; (B) aritmética entera /
+    punto fijo en las rutas que alimentan la CDF.
+  - **Subtareas**:
+    - [ ] Reproducir: comprimir en la máquina A y descomprimir en la B (y viceversa); registrar el resultado
+    - [ ] Bisectar la divergencia: primer token cuyos logits/probabilidades difieren entre máquinas
+    - [ ] Elegir opción (A o B) con coste medido en tok/s y BPB
+    - [ ] Golden `.azth` versionado con SHA-256, verificado en ≥2 CPUs x86 distintas
+    - [ ] Documentar el contrato de determinismo (coordinar con `docs/api/FORMAT-SPEC.md`)
+  - **Criterios de aceptación**:
+    - Compress en A → decompress en B byte-identical, y B → A, sobre ≥3 archivos de referencia
+    - Mismo `.azth` (SHA-256) en ambas máquinas
+    - Δ BPB y Δ tok/s de la solución medidos y dentro del presupuesto (+5% BPB)
+
+### Tier 3: Decisión de producto (investigación)
+
+- R-105: Tier rápido (backbone pequeño + receta CM)
+  - **Estado**: PENDIENTE (investigación)
+  - **Prioridad**: P1 — única vía CPU-only que cruza el umbral económico
+  - **Dependencia**: ninguna técnica; puede reutilizar la infraestructura de entrenamiento de la Fase 15
+  - **Archivos**: `src/infrastructure/` (backbone adicional), `docs/internal/research/` (informe de decisión)
+  - **Contexto**: L3TC (AAAI 2025) logra ≈1.10 bpb en enwik8 con RWKV de 3.2M parámetros y vocab 16K a 27 KB/s en
+    CPU móvil (batch 1) y 633 KB/s batcheado en ANE. La receta de Redukt (CM + mixer adaptativo + preprocesado
+    binario + routing) es independiente del tamaño del backbone. `token-reduction-strategies.md` §5.6 marcó la
+    destilación como NO-GO por una **proyección** (+5-15% BPB); L3TC es una **medida**.
+  - **Subtareas**:
+    - [ ] Definir 1-2 candidatos (rango 3-30M parámetros; vocab 256 vs 16K)
+    - [ ] Entrenar u obtener el backbone (presupuesto por definir)
+    - [ ] Integrarlo como backbone adicional con la receta CM completa
+    - [ ] Medir BPB y KB/s (single-stream y lockstep) sobre los 12 archivos del benchmark vs Mamba-130M
+    - [ ] Decisión GO/NO-GO frente al umbral R* (18-100 KB/s por vCPU; `scripts/breakeven.py`)
+    - [ ] Revisar y documentar el NO-GO previo de destilación con la medida
+  - **Criterios de aceptación**:
+    - Informe con BPB y KB/s medidos (no proyectados) por archivo
+    - Decisión GO/NO-GO documentada con el umbral económico explícito
+
+**Paralelización**: R-098 y R-099 son independientes entre sí. R-100 requiere ambos. R-101 requiere R-098.
+R-102 y R-105 son independientes del resto. R-103 depende de R-090. R-104 es transversal y bloquea la entrega
+a clientes externos.
+
+```
+R-104 (determinismo) ── P0 transversal: condiciona R-098/R-099/R-100 y la entrega de R-102/R-103
+
+R-098 (Q8 Mamba) ──┬──→ R-100 (lockstep) ←── R-099 (multihilo)
+                   └──→ R-101 (Q6)
+
+R-102 (GCP CPU) ── independiente
+R-103 (CUDA) ── depende de R-090
+R-105 (tier rápido) ── independiente (investigación)
+```
+
+**Proyección de throughput combinado (CPU-only, Mamba-130M BPE, i5-1235U, 10 cores)**:
+
+| Escenario | tok/s por stream | tok/s agregados | B/s agregados | Coste ≈ $/GB raw (spot) |
+|---|---|---|---|---|
+| Hoy (F32, in/out_proj en 1 hilo) | 34 | 34 | ~130 | ≈$47 |
+| + R-099 | ~70 | ~70 | ~270 | — |
+| + R-098 (con R-099) | ~250-300 | ~280 | ~1.1 KB/s | — |
+| + R-100 (N ≈ 16) | ~250 | ~700-1,500 | 3-6 KB/s | ≈$12 |
+
+**Nota**: estas cifras son proyecciones, no medidas; cada fila se reemplaza por la medida al cerrar su
+ítem. El coste solo se estima en los extremos (`scripts/breakeven.py`, ~0.5 KB/s por vCPU en el escenario final).
+Con ≈$12/GB el sistema sigue 30-200× por encima del umbral económico (18-100 KB/s por vCPU): R-105 (tier
+rápido) y/o GPU (R-103) son necesarios, no opcionales.
+
+**Estado de la fase**: EN CURSO — R-098, R-099, R-102, R-103 en curso; R-100, R-101, R-104, R-105 pendientes.
 
 ---
 
@@ -2823,3 +3084,11 @@ actual se resolverá empíricamente en R-093.
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
 | 2026-11-07 | Fase 16 definida: MambaByte Training Execution (R-084 → R-086). 50M validation → 96M production → integration. |
 | 2026-11-07 | R-084 LANZADO — MambaByte-50M en Kaggle TPU v5e-8. Slug: jdavidpcastro/mambabyte-50m-validation. |
+| 2026-11-09 | Auditoría de throughput por propiedades: 3 premisas refutadas (Mamba F32 en hot path; DRAM dual channel 42.7 GB/s con 41% usado; in_proj/out_proj en un solo hilo). Doc: throughput-properties-audit.md |
+| 2026-11-09 | Fase 19 definida: CPU Limit & Market Viability (R-098 → R-105). Mandato: producto viable y competitivo en el mercado real |
+| 2026-11-09 | R-098 (Q8 weight-only Mamba) y R-099 (multihilo in_proj/out_proj) EN CURSO; R-100 (lockstep multi-stream) y R-101 (Q6) PENDIENTES |
+| 2026-11-09 | R-102 (despliegue GCP CPU) y R-103 (despliegue CUDA) EN CURSO |
+| 2026-11-09 | R-104 determinismo cross-máquina — P0 bloqueante de producto (Kaggle 0.9633 vs local 0.9609, roundtrip entre máquinas no probado) |
+| 2026-11-09 | R-105 tier rápido (backbone 3-30M, referencia L3TC) — investigación; decisión con medida, no proyección |
+| 2026-11-09 | Economía: coste hoy ≈$47/GB raw (spot, 130 B/s); equilibrio a 7 años enwik8 en S3 Standard 18 KB/s por vCPU (scripts/breakeven.py) |
+| 2026-11-09 | docs: CLAUDE.md corregido (Q8 solo RWKV; 42.7 GB/s dual channel); speculative.rs y parallel_scan.rs anotados como borrados en 1dc6402 (nunca medidos) |
