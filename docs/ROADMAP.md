@@ -2217,6 +2217,84 @@ R-082 (Rust byte tokenizer) ─────────────────�
 
 ---
 
+## Fase 17: Pre-trained MambaByte + Competitive Intelligence (R-087 → R-090)
+
+> **Objetivo**: Evaluar pesos MambaByte pre-entrenados de HuggingFace (potencialmente
+> eliminando la necesidad de entrenar from-scratch), documentar panorama competitivo,
+> y adoptar técnicas de GPU de strata-inference.
+>
+> **Prerequisitos**: Fase 15 (Rust byte tokenizer R-082), R-081 (weight conversion)
+> **Budget**: $0 (pesos gratuitos en HuggingFace)
+> **Research**: `docs/internal/research/strata-competitive-landscape.md`
+
+- R-087: Competitive landscape research + Strata evaluation
+  - **Estado**: COMPLETADO (2026-11-09)
+  - **Prioridad**: P1 — informa decisiones de roadmap
+  - **Deliverable**: `docs/internal/research/strata-competitive-landscape.md`
+  - **Subtareas**:
+    - [x] Investigar 8 proyectos "Strata" — solo stratalab/strata-inference relevante
+    - [x] Analizar 15 compresores neurales en HuggingFace/Kaggle
+    - [x] Identificar MambaByte 353M pre-entrenado (JunxiongWang) — hallazgo crítico
+    - [x] Mapear limitaciones Redukt → soluciones encontradas
+    - [x] Documentar técnicas adoptables: PTX-as-string, fused dequant, M=1 fast path
+  - **Hallazgos clave**:
+    - MambaByte 353M ya entrenado en HuggingFace (0.396 BPB CE enwik8)
+    - Nacrith: competidor más cercano (0.9389 BPB, GPU-only, solo texto)
+    - strata-inference: patrón PTX-as-string adoptable para GPU plugin
+    - L3TC (Alipay): valida RWKV+AC para compresión (4.35 MB/s)
+
+- R-088: Evaluate pre-trained MambaByte 353M weights
+  - **Estado**: PENDIENTE
+  - **Prioridad**: P0 — potencialmente elimina necesidad de R-084/R-085 ($87-145)
+  - **Deliverable**: Compatibility report + benchmark (if compatible)
+  - **Fuente**: `JunxiongWang/MambaByte_Arxiv` (353M, 30B bytes, Mamba-1)
+  - **Subtareas**:
+    - [ ] Descargar pesos MambaByte_Arxiv desde HuggingFace
+    - [ ] Analizar arquitectura: Mamba-1 vs Mamba-2 (nuestro runtime)
+    - [ ] Mapear config keys: d_model, d_inner, d_state, d_conv, n_layer, vocab_size
+    - [ ] Verificar compatibilidad de forward pass con `MambaModel` Rust
+    - [ ] Si compatible: convertir con `scripts/convert-mambabyte-weights.py`
+    - [ ] Si compatible: benchmark BPB en enwik8 10KB
+    - [ ] Si incompatible: documentar diferencias, estimar esfuerzo de adaptación
+  - **BPB proyectado**: ~0.42 BPB (CE 0.396 × coder efficiency ~95%)
+  - **Riesgo**: Mamba-1 podría tener SSM params diferentes (dt_rank, etc.)
+  - **Caveat**: 353M params → ~11 tok/s CPU (aceptable si GPU path avanza)
+
+- R-089: Formal benchmark vs Nacrith
+  - **Estado**: BLOQUEADO (depende R-088 o R-086)
+  - **Prioridad**: P2 — posicionamiento competitivo
+  - **Deliverable**: Benchmark comparativo en datasets compartidos
+  - **Subtareas**:
+    - [ ] Benchmark Redukt (actual + MambaByte si disponible) en enwik8 completo
+    - [ ] Comparar: alice29.txt, enwik8, OOD text
+    - [ ] Documentar fortalezas (archivos estructurados, CPU-only, zero-dep)
+    - [ ] Publicar resultados en `data/benchmark/results/`
+
+- R-090: PTX-as-string GPU kernels (from strata-inference pattern)
+  - **Estado**: BLOQUEADO (depende R-072 → R-076 GPU plugin architecture)
+  - **Prioridad**: P2 — siguiente paso para GPU offload
+  - **Deliverable**: SSM GEMV kernels como PTX inline en plugin GPU
+  - **Subtareas**:
+    - [ ] Escribir GEMV kernel PTX para Q8 matmul (M=1 fast path)
+    - [ ] Escribir SSM recurrence kernel PTX
+    - [ ] Integrar con BackendVTable FFI (cuModuleLoadData)
+    - [ ] Benchmark vs CPU: throughput en T4
+
+**Paralelización**: R-088 es independiente y ejecutable inmediatamente.
+R-089 depende de R-088 (o R-086). R-090 es independiente pero P2.
+
+```
+R-087 (research) ✅ ──→ R-088 (eval 353M) ──→ R-089 (benchmark vs Nacrith)
+                        R-090 (PTX kernels) ── independiente
+```
+
+**Impacto en Fase 16**: Si R-088 confirma compatibilidad de pesos 353M:
+- R-084 (50M training) → podría cancelarse o reducirse a validación
+- R-085 (96M training) → podría reemplazarse por fine-tuning de 353M
+- R-086 (integration) → se adelanta con pesos pre-entrenados
+
+---
+
 ## Bugs conocidos
 
 #### BUG-001: Mamba BPE tokenizer roundtrip fails on binary+delta data
@@ -2487,6 +2565,13 @@ R-082 (Rust byte tokenizer) ─────────────────�
 | 2026-11-07 | R-080 COMPLETADO — mambabyte-train.py (922 lines): MambaByte-96M PyTorch, TPU v5e-8 + GPU T4, checkpointing, byte streaming, SafeTensors export. |
 | 2026-11-07 | R-081 COMPLETADO — convert-mambabyte-weights.py (287 lines): PyTorch→SafeTensors, key mapping, shape validation, SHA-256 provenance. |
 | 2026-11-07 | R-083 COMPLETADO — mambabyte-validate.py (1005 lines): cross-framework validation, 6 tests (BPB range, agreement, roundtrip, determinism, multi-file). |
+| 2026-11-09 | Fase 17 definida: Pre-trained MambaByte + Competitive Intelligence (R-087 → R-090) |
+| 2026-11-09 | R-087 COMPLETADO — Strata + competitive landscape research. 8 Strata projects, 15 neural compressors. |
+| 2026-11-09 | Hallazgo: MambaByte 353M pre-entrenado en HuggingFace (JunxiongWang), 0.396 BPB CE enwik8 |
+| 2026-11-09 | Hallazgo: Nacrith = competidor más cercano (0.9389 BPB, GPU-only, solo texto) |
+| 2026-11-09 | Hallazgo: strata-inference = PTX-as-string patrón adoptable para GPU plugin Redukt |
+| 2026-11-09 | R-088 definido: evaluar pesos pre-entrenados MambaByte 353M — P0, potencialmente elimina R-084/R-085 |
+| 2026-11-09 | docs: strata-competitive-landscape.md — investigación completa, 15 fuentes, 5 secciones |
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
 | 2026-11-07 | Fase 16 definida: MambaByte Training Execution (R-084 → R-086). 50M validation → 96M production → integration. |
 | 2026-11-07 | R-084 LANZADO — MambaByte-50M en Kaggle TPU v5e-8. Slug: jdavidpcastro/mambabyte-50m-validation. |
