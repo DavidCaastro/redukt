@@ -1,11 +1,42 @@
+# Build context for deploy/gcp/Dockerfile, deploy/gcp/Dockerfile.cuda and ./Dockerfile
+# Only Cargo.toml, Cargo.lock, src/, plugins/redukt-gpu-cuda/ and deploy/gcp/entrypoint.sh are needed.
+
+# Build artifacts (never ship a host-built binary; the image compiles its own)
 target/
+**/target/
+*.exe
+*.pdb
+*.so
+*.dll
+*.dylib
+
+# Host cargo config pins `-C target-cpu=native` (NOT deterministic across CPUs).
+# The images set RUSTFLAGS explicitly instead.
+.cargo/
+
+# VCS / CI / infra
 .git/
+.gitignore
+.github/
+infra/
+
+# Weights are mounted at /weights or fetched at start-up (see deploy/gcp/entrypoint.sh).
+# Only the provenance manifest is kept.
+weights/*
+!weights/MANIFEST.md
+*.safetensors
+*.rbin
+*.gguf
+*.pth
+
+# Data, research, notebooks, docs, helper scripts
 data/
+notebooks/
 docs/
 scripts/
+pgo-data/
+
+# Outputs / logs
 *.azth
 *.log
 *.jsonl
-*.pdb
-.github/
-infra/

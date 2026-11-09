@@ -1,0 +1,86 @@
+# Cloud Run service: Redukt HTTP API (`redukt api`), served by deploy/gcp/entrypoint.sh.
+#
+# References (consulted 2026-11-09):
+#   https://docs.cloud.google.com/run/docs/reference/yaml/v1                                   (Service YAML, annotations)
+#   https://docs.cloud.google.com/run/docs/configuring/services/cloud-storage-volume-mounts    (csi gcsfuse.run.googleapis.com)
+#   https://docs.cloud.google.com/run/docs/configuring/healthchecks                            (startupProbe ranges)
+#   https://docs.cloud.google.com/run/docs/configuring/cpu-allocation                          (cpu-throttling: 'false')
+#   https://docs.cloud.google.com/run/docs/configuring/concurrency                             (containerConcurrency)
+#   https://docs.cloud.google.com/run/docs/quotas                                              (32 MiB HTTP/1 request/response, 60 min timeout)
+#
+# Placeholders ${PROJECT_ID} ${REGION} ${REPO} ${IMAGE_TAG} ${WEIGHTS_BUCKET} ${RUNTIME_SA} are filled in by
+# deploy.sh with `envsubst`.  Manual use:
+#   envsubst < deploy/gcp/cloudrun-service.yaml > /tmp/svc.yaml
+#   gcloud run services replace /tmp/svc.yaml --region=${REGION} [--dry-run]
+#
+# What this service really is (see api.rs):
+#   * single-threaded accept loop: ONE request at a time per instance  -> containerConcurrency: 1
+#   * loads the RWKV-7 model (weights/rwkv7-0.1b) BEFORE binding the port -> startupProbe on GET /v1/status
+#   * compress path is RWKV-only and has no entropy gate; at ~60 tok/s a 60-min request (the Cloud Run
+#     maximum) handles only a few hundred KB.  Use Cloud Batch (batch-job.json) for volume.
+#   * Cloud Run HTTP/1 request AND response are capped at 32 MiB (api.rs speaks HTTP/1.1 only).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: redukt-api
+  labels:
+    app: redukt
+  annotations:
+    run.googleapis.com/ingress: all           # restrict with `internal` / `internal-and-cloud-load-balancing` for private use
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2     # GCS FUSE volume mounts need the 2nd-gen environment
+        run.googleapis.com/cpu-throttling: 'false'         # CPU always allocated (instance-based billing)
+        run.googleapis.com/startup-cpu-boost: 'true'
+        autoscaling.knative.dev/minScale: '0'              # '1' keeps a warm instance (cold start = model load + FUSE mount)
+        autoscaling.knative.dev/maxScale: '5'
+    spec:
+      containerConcurrency: 1                              # single-threaded server: see header (Cloud Run default is 80)
+      timeoutSeconds: 3600                                 # Cloud Run maximum for services (60 min)
+      serviceAccountName: ${RUNTIME_SA}                    # needs roles/storage.objectViewer on the weights bucket
+      containers:
+        - name: redukt
+          image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/redukt:${IMAGE_TAG}
+          command: ['/usr/local/bin/redukt-entrypoint.sh']
+          args: ['api']
+          ports:
+            - containerPort: 8080                          # entrypoint passes $PORT (=8080) to `redukt api --port`
+          env:
+            - name: REDUKT_WEIGHTS_DIR
+              value: /weights
+            - name: WEIGHTS_SET
+              value: rwkv                                  # api.rs only loads weights/rwkv7-0.1b today
+            # Fallback when /weights is NOT mounted: download from GCS at start-up (entrypoint.sh).
+            # Cloud Run's rootfs/tmp is in-memory, so the 382 MB then count against the 4 GiB.
+            # - name: WEIGHTS_BUCKET
+            #   value: ${WEIGHTS_BUCKET}
+          resources:
+            limits:
+              cpu: '4'
+              memory: 4Gi                                  # RWKV Q8 ~130 MB resident + CM tables + request buffers (MAX_BODY 256 MB)
+          volumeMounts:
+            - name: weights
+              mountPath: /weights
+          startupProbe:                                    # up to 60 x 10 s = 600 s (documented maximum)
+            httpGet:
+              path: /v1/status                             # GET /v1/status -> {"status":"ok",...} (api.rs)
+              port: 8080
+            initialDelaySeconds: 0
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 60
+          # No livenessProbe on purpose: the single-threaded server cannot answer /v1/status while it
+          # is compressing, so a liveness probe would kill instances in the middle of a job.
+      volumes:
+        - name: weights
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            readOnly: true
+            volumeAttributes:
+              bucketName: ${WEIGHTS_BUCKET}                # layout: rwkv7-0.1b/{model.safetensors,rwkv_vocab_v20230424.txt}
+              mountOptions: uid=10001,gid=10001            # image user is 10001 (volumes are root-owned by default)
+  traffic:
+    - percent: 100
+      latestRevision: true

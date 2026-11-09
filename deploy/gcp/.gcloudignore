@@ -1,0 +1,29 @@
+# Used by deploy.sh via `gcloud builds submit --ignore-file=deploy/gcp/.gcloudignore`.
+# `gcloud builds submit` does NOT read .dockerignore (it reads .gcloudignore / .gitignore), and the repo's
+# .gitignore does not exclude data/ or weights/**/*.rbin, so the upload filter is spelled out here.
+# Keep in sync with /.dockerignore.
+target/
+**/target/
+*.exe
+*.pdb
+*.so
+*.dll
+*.dylib
+.cargo/
+.git/
+.github/
+infra/
+weights/*
+!weights/MANIFEST.md
+*.safetensors
+*.rbin
+*.gguf
+*.pth
+data/
+notebooks/
+docs/
+scripts/
+pgo-data/
+*.azth
+*.log
+*.jsonl

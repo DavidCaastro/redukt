@@ -1,0 +1,68 @@
+# Cloud Build config: builds the Redukt CPU image (always) and the CUDA image (optional) and
+# pushes them to Artifact Registry.
+#
+# References (consulted 2026-11-09):
+#   https://docs.cloud.google.com/build/docs/build-config-file-schema
+#   https://docs.cloud.google.com/build/docs/configuring-builds/substitute-variable-values
+#   https://docs.cloud.google.com/build/docs/api/reference/rest/v1/projects.builds   (BuildOptions.MachineType, LoggingMode enums)
+#
+# Manual run (from the repo root):
+#   gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --region=europe-southwest1 \
+#     --substitutions=_REGION=europe-southwest1,_TAG=$(git rev-parse --short HEAD),_BUILD_CUDA=true .
+#
+# Tags pushed:  <img>:cpu-<TAG>  <img>:latest            (CPU image)
+#               <img>:cuda-<TAG> <img>:cuda-latest       (only when _BUILD_CUDA=true)
+# <TAG> = $_TAG.  Default is the build id; pass the git short SHA explicitly (`--substitutions=_TAG=...`)
+# or, in a trigger, set _TAG=$SHORT_SHA.  SHORT_SHA is documented as an empty string in manual builds,
+# so it is NOT used as a default here.
+#
+# NOTE: the CPU image goes through the `images:` field (the build FAILS if it is not produced, which is
+# what we want).  The CUDA image is optional, so it is pushed inside its own step; listing it under
+# `images:` would fail every build that skips it.
+
+substitutions:
+  _REGION: europe-southwest1      # Madrid (EU data residency); must match the Artifact Registry repo
+  _REPO: redukt                   # Artifact Registry repository (format docker)
+  _IMAGE: redukt
+  _BUILD_CUDA: 'false'            # 'true' to also build deploy/gcp/Dockerfile.cuda
+  _TAG: '${BUILD_ID}'             # override with the git short SHA (see above); expanded thanks to dynamicSubstitutions
+
+options:
+  machineType: E2_HIGHCPU_32      # valid BuildOptions.MachineType; `lto = "fat"` + 1 codegen unit is CPU/RAM hungry
+  logging: CLOUD_LOGGING_ONLY     # valid LoggingMode enum value (logs to Cloud Logging only)
+  dynamicSubstitutions: true      # required for bash parameter expansion in manual builds
+  env:
+    - DOCKER_BUILDKIT=1
+
+timeout: 3600s
+
+steps:
+  - id: build-cpu
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMG='${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}'
+        docker build -f deploy/gcp/Dockerfile -t "$$IMG:cpu-${_TAG}" -t "$$IMG:latest" .
+    waitFor: ['-']
+
+  - id: build-cuda
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ '${_BUILD_CUDA}' != 'true' ]; then echo 'skipping CUDA image (_BUILD_CUDA != true)'; exit 0; fi
+        IMG='${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}'
+        docker build -f deploy/gcp/Dockerfile.cuda -t "$$IMG:cuda-${_TAG}" -t "$$IMG:cuda-latest" .
+        docker push "$$IMG:cuda-${_TAG}"
+        docker push "$$IMG:cuda-latest"
+    waitFor: ['-']
+
+# CPU image: pushed by Cloud Build after all steps succeed.
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:cpu-${_TAG}'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest'

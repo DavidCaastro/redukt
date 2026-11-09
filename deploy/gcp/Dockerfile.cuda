@@ -1,0 +1,100 @@
+# syntax=docker/dockerfile:1
+#
+# Redukt — CUDA image: CPU binary + GPU plugin (libredukt_gpu.so).
+#
+# References (consulted 2026-11-09):
+#   nvidia/cuda tags        https://hub.docker.com/r/nvidia/cuda  (12.4.1-{devel,runtime}-ubuntu22.04 verified with `docker manifest inspect`)
+#   nvcc -gencode/-arch     https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/
+#   compute capability      https://developer.nvidia.com/cuda-gpus   (T4 = 7.5 -> sm_75, L4 = 8.9 -> sm_89)
+#   Container Toolkit       https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+#
+# Build (repo root as context; no GPU needed, nvcc only compiles):
+#   docker build -f deploy/gcp/Dockerfile.cuda -t redukt:cuda .
+# Run (host needs NVIDIA driver + NVIDIA Container Toolkit):
+#   docker run --rm --gpus all -v /srv/weights:/weights:ro -v "$PWD:/data" redukt:cuda \
+#       compress --backbone plugin --weights /weights/mambabyte-353m --input /data/f --output /data/f.azth
+#
+# HOW THE PLUGIN IS ACTIVATED (src/infrastructure/plugin_backend/loader.rs + model_loader.rs):
+#   * loader.rs looks for `libredukt_gpu.so` in the SAME DIRECTORY AS THE REAL redukt EXECUTABLE
+#     (std::env::current_exe().parent()).  No env var, no flag with a path.  Hence both files live in
+#     /usr/local/bin.  (current_exe() resolves symlinks: do not symlink redukt into another directory
+#     without also moving the plugin.)
+#   * It is only used with `--backbone plugin`; `--weights` is passed to the plugin as the directory
+#     that contains `model.rbin` (mamba_cuda.cu appends /model.rbin).  `--gpu` is a stub that
+#     returns an error in codec.rs, do not use it.
+#   * If the .so is missing/fails to init, model_loader.rs panics with "[plugin] GPU backend not found".
+#   * `decompress` picks the plugin automatically from the AZTH header (backbone byte 3) but still
+#     needs `--weights <dir with model.rbin>` (its default is weights/rwkv7-0.1b).
+#
+# DETERMINISM: a stream produced by the plugin must be decoded by the same plugin build on the same
+# GPU architecture (float logits from GPU kernels).  Use ONE gpu model (T4 xor L4) per archive set
+# until cross-arch bit-exactness is verified.  NOT VERIFIED.
+
+ARG CUDA_VERSION=12.4.1
+ARG UBUNTU_RELEASE=ubuntu22.04
+ARG RUST_VERSION=1.98.1
+# `runtime` (default, ~3.8 GB image) or `base` (cudart only; enough because the plugin links cudart
+# statically -- `ldd` shows only libc -- and libcuda.so.1 is injected by the NVIDIA runtime).
+ARG RUNTIME_FLAVOR=runtime
+
+# ---------------------------------------------------------------- builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-${UBUNTU_RELEASE} AS builder
+ARG RUST_VERSION
+ARG PROFILE=maxperf
+ARG TARGET_CPU=x86-64-v3
+# sm_75 = T4, sm_89 = L4.  PTX for compute_89 is embedded as forward-compatible fallback.
+ARG NVCC_GENCODE="--generate-code=arch=compute_75,code=sm_75 --generate-code=arch=compute_89,code=sm_89 --generate-code=arch=compute_89,code=compute_89"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+# Same toolchain version as the CPU image (rust:1.98 == rustc 1.98.1).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH=/root/.cargo/bin:${PATH}
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+RUN RUSTFLAGS="-C target-cpu=${TARGET_CPU}" cargo build --profile "${PROFILE}" --locked \
+ && install -D "target/${PROFILE}/redukt" /out/redukt \
+ && strip /out/redukt
+
+# GPU plugin.  The Makefile in plugins/redukt-gpu-cuda only takes a single -arch, so nvcc is
+# invoked directly with one -gencode per architecture (same -O3/-fPIC/-Wall flags as the Makefile).
+COPY plugins/redukt-gpu-cuda/mamba_cuda.cu plugins/redukt-gpu-cuda/mamba_cuda.cu
+RUN nvcc -shared -O3 ${NVCC_GENCODE} --compiler-options=-fPIC,-Wall \
+      -o /out/libredukt_gpu.so plugins/redukt-gpu-cuda/mamba_cuda.cu \
+ && ldd /out/libredukt_gpu.so \
+ && cuobjdump --list-elf /out/libredukt_gpu.so \
+ && cuobjdump --list-ptx /out/libredukt_gpu.so
+
+# ---------------------------------------------------------------- runtime
+FROM nvidia/cuda:${CUDA_VERSION}-${RUNTIME_FLAVOR}-${UBUNTU_RELEASE}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 redukt \
+ && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin redukt \
+ && mkdir -p /app /weights \
+ && chown redukt:redukt /app /weights
+
+# redukt and libredukt_gpu.so MUST be in the same directory (see header).
+COPY --from=builder /out/redukt /out/libredukt_gpu.so /usr/local/bin/
+COPY deploy/gcp/entrypoint.sh /usr/local/bin/redukt-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/redukt-entrypoint.sh
+
+WORKDIR /app
+RUN ln -s /weights /app/weights && chown -h redukt:redukt /app/weights
+
+USER 10001:10001
+
+# NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES are already set by the nvidia/cuda base image.
+ENV REDUKT_WEIGHTS_DIR=/weights \
+    PORT=8080
+
+EXPOSE 8080
+ENTRYPOINT ["redukt"]
+CMD ["--help"]

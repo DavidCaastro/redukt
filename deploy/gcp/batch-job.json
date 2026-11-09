@@ -1,0 +1,70 @@
+{
+  "taskGroups": [
+    {
+      "taskCount": "${TASK_COUNT}",
+      "parallelism": "${PARALLELISM}",
+      "taskCountPerNode": "1",
+      "taskSpec": {
+        "runnables": [
+          {
+            "container": {
+              "imageUri": "${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/redukt:${IMAGE_TAG}",
+              "entrypoint": "/usr/local/bin/redukt-entrypoint.sh",
+              "commands": ["batch-compress"],
+              "volumes": [
+                "/mnt/disks/weights:/weights:ro",
+                "/mnt/disks/in:/mnt/in:ro",
+                "/mnt/disks/out:/mnt/out"
+              ],
+              "options": "--user=0"
+            },
+            "environment": {
+              "variables": {
+                "REDUKT_WEIGHTS_DIR": "/weights",
+                "WEIGHTS_SET": "${WEIGHTS_SET}",
+                "IN_DIR": "/mnt/in",
+                "OUT_DIR": "/mnt/out",
+                "JOBS": "${JOBS}",
+                "SHARD_COUNT": "${TASK_COUNT}",
+                "SKIP_EXISTING": "1",
+                "REDUKT_EXTRA_ARGS": "${REDUKT_EXTRA_ARGS}"
+              }
+            }
+          }
+        ],
+        "computeResource": {
+          "cpuMilli": "${CPU_MILLI}",
+          "memoryMib": "${MEMORY_MIB}"
+        },
+        "maxRetryCount": 3,
+        "maxRunDuration": "${MAX_RUN_DURATION}",
+        "lifecyclePolicies": [
+          {
+            "action": "RETRY_TASK",
+            "actionCondition": { "exitCodes": [50001] }
+          }
+        ],
+        "volumes": [
+          { "gcs": { "remotePath": "${WEIGHTS_BUCKET}" }, "mountPath": "/mnt/disks/weights" },
+          { "gcs": { "remotePath": "${IN_BUCKET}" },      "mountPath": "/mnt/disks/in" },
+          { "gcs": { "remotePath": "${OUT_BUCKET}" },     "mountPath": "/mnt/disks/out" }
+        ]
+      }
+    }
+  ],
+  "allocationPolicy": {
+    "location": { "allowedLocations": ["regions/${REGION}"] },
+    "serviceAccount": { "email": "${RUNTIME_SA}" },
+    "instances": [
+      {
+        "policy": {
+          "machineType": "${MACHINE_TYPE}",
+          "provisioningModel": "${PROVISIONING_MODEL}",
+          "bootDisk": { "type": "${BOOT_DISK_TYPE}", "sizeGb": "50" }
+        }
+      }
+    ]
+  },
+  "labels": { "app": "redukt", "mode": "batch-compress" },
+  "logsPolicy": { "destination": "CLOUD_LOGGING" }
+}
