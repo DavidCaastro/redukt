@@ -9,11 +9,19 @@ Usage:
 The .rbin format is a flat binary with a 44-byte header followed by all weight
 tensors in sequential f32 layout. Designed for trivial GPU loading (no JSON parsing).
 
+Header versions (the plugin and the Rust host accept both):
+  v1: word 10 = reserved (0); tokenizer implied by vocab (256 -> bytes, else BPE).
+  v2: word 10 = tokenizer kind (0 = byte-level identity, 1 = GPT-NeoX BPE of
+      mamba-130m, loaded from tokenizer.json).  Default since R-096.
+For BPE models the source tokenizer.json is copied next to the output .rbin so
+`--weights <dir>` finds both (the host also falls back to weights/mamba-130m).
+
 Copyright 2026 Redukt Contributors. Apache-2.0 License.
 """
 import argparse
 import hashlib
 import os
+import shutil
 import struct
 import sys
 
@@ -33,7 +41,11 @@ except ImportError:
 # --- Binary format constants ---
 
 RBIN_MAGIC   = 0x55504752  # "RGPU" little-endian
-RBIN_VERSION = 1
+RBIN_VERSION_V1 = 1
+RBIN_VERSION_V2 = 2
+TOK_BYTE = 0
+TOK_BPE  = 1
+TOKENIZER_KINDS = {"byte": TOK_BYTE, "bpe": TOK_BPE}
 FLAG_NORM_BIAS   = 1 << 0
 FLAG_UNTIED_HEAD = 1 << 1
 
@@ -75,7 +87,34 @@ def detect_config(st):
     }
 
 
-def convert(input_path, output_path):
+def resolve_tokenizer(choice, vocab_size):
+    """Pick the tokenizer kind: explicit choice, or auto from vocab size."""
+    if choice == "auto":
+        return TOK_BYTE if vocab_size == 256 else TOK_BPE
+    kind = TOKENIZER_KINDS[choice]
+    if kind == TOK_BYTE and vocab_size != 256:
+        raise ValueError(f"byte tokenizer requires vocab 256, model has {vocab_size}")
+    if kind == TOK_BPE and vocab_size <= 256:
+        raise ValueError(f"bpe tokenizer requires vocab > 256, model has {vocab_size}")
+    return kind
+
+
+def copy_tokenizer_json(input_path, output_path):
+    """Copy tokenizer.json from the safetensors dir next to the .rbin (BPE only)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(input_path)), "tokenizer.json")
+    dst = os.path.join(os.path.dirname(os.path.abspath(output_path)), "tokenizer.json")
+    if os.path.abspath(src) == os.path.abspath(dst):
+        print(f"  tokenizer.json already next to output: {dst}")
+        return
+    if not os.path.isfile(src):
+        print(f"  WARNING: {src} not found; the host will fall back to "
+              f"weights/mamba-130m/tokenizer.json", file=sys.stderr)
+        return
+    shutil.copyfile(src, dst)
+    print(f"  tokenizer.json copied -> {dst}")
+
+
+def convert(input_path, output_path, rbin_version=RBIN_VERSION_V2, tokenizer="auto"):
     print(f"Loading: {input_path}")
     st = safe_open(input_path, framework="numpy")
 
@@ -90,6 +129,10 @@ def convert(input_path, output_path):
 
     print(f"Config: vocab={vs} d_model={d} d_inner={di} d_state={ds} "
           f"d_conv={dc} dt_rank={dr} n_layer={nl}")
+    tok_kind = resolve_tokenizer(tokenizer, vs)
+    word10 = tok_kind if rbin_version == RBIN_VERSION_V2 else 0
+    print(f"Header: rbin v{rbin_version}, tokenizer={'bpe' if tok_kind == TOK_BPE else 'byte'}"
+          f"{'' if rbin_version == RBIN_VERSION_V2 else ' (implied by vocab, v1)'}")
 
     # Detect features
     has_norm_bias = "backbone.norm_f.bias" in st.keys()
@@ -109,8 +152,8 @@ def convert(input_path, output_path):
     with open(output_path, "wb") as f:
         # Header
         header = struct.pack(HEADER_FMT,
-                             RBIN_MAGIC, RBIN_VERSION,
-                             vs, d, di, ds, dc, dr, nl, flags, 0)
+                             RBIN_MAGIC, rbin_version,
+                             vs, d, di, ds, dc, dr, nl, flags, word10)
         f.write(header)
 
         def write_tensor(name, expected_numel=None):
@@ -164,6 +207,8 @@ def convert(input_path, output_path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             sha.update(chunk)
     print(f"  SHA-256: {sha.hexdigest()}")
+    if tok_kind == TOK_BPE:
+        copy_tokenizer_json(input_path, output_path)
     print("Done.")
 
 
@@ -175,13 +220,21 @@ def main():
                         help="Path to model.safetensors")
     parser.add_argument("--output", required=True,
                         help="Output .rbin path")
+    parser.add_argument("--rbin-version", type=int, choices=[1, 2], default=RBIN_VERSION_V2,
+                        help="Header version (2 = with tokenizer field, default; 1 = legacy)")
+    parser.add_argument("--tokenizer", choices=["auto", "byte", "bpe"], default="auto",
+                        help="Tokenizer kind recorded in a v2 header (auto: 256 -> byte, else bpe)")
     args = parser.parse_args()
 
     if not os.path.isfile(args.input):
         print(f"ERROR: input not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    convert(args.input, args.output)
+    try:
+        convert(args.input, args.output, args.rbin_version, args.tokenizer)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

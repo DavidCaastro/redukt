@@ -4,12 +4,19 @@
 //! `libredukt_gpu.dylib` (macOS) next to the executable.  If found, loads
 //! the 4 FFI symbols and builds a `BackendVTable`.  If not found, returns
 //! `None`.  Uses raw OS FFI (LoadLibrary/dlopen) — zero crate dependencies.
+//!
+//! FFI v2 (R-096): if the library also exports `redukt_backend_abi_version`
+//! returning >= 2 and all batch symbols, `vtable_v2` is `Some`; otherwise the
+//! plugin is used through v1 only (no behavioural change for v1 plugins).
 
 use crate::domain::backend_ffi::{
     BackendVTable, BackendInitFn, BackendForwardFn,
     BackendResetFn, BackendFreeFn,
     BACKEND_FFI_VERSION, BackendInfo, BackendResult,
     SYM_INIT, SYM_FORWARD, SYM_RESET, SYM_FREE,
+    BackendVTableV2, BackendAbiVersionFn, BackendBatchInitFn,
+    BackendBatchResetFn, BackendForwardBatchFn, BACKEND_ABI_V2,
+    SYM_ABI_VERSION, SYM_BATCH_INIT, SYM_BATCH_RESET, SYM_FORWARD_BATCH,
 };
 
 // ---------------------------------------------------------------------------
@@ -121,6 +128,8 @@ const PLUGIN_FILENAME: &str = "libredukt_gpu.dylib";
 pub struct PluginLibrary {
     handle: platform::LibHandle,
     pub vtable: BackendVTable,
+    /// Optional FFI v2 batch table (R-096); `None` for v1-only plugins.
+    pub vtable_v2: Option<BackendVTableV2>,
 }
 
 // SAFETY: The plugin library handle is process-global and the vtable
@@ -178,7 +187,32 @@ impl PluginLibrary {
             >(p_free),
         };
 
-        Some(Self { handle, vtable })
+        let vtable_v2 = Self::resolve_v2(handle);
+        Some(Self { handle, vtable, vtable_v2 })
+    }
+
+    /// Resolve the optional v2 symbols.  Every symbol must be present and the
+    /// reported ABI revision must be >= `BACKEND_ABI_V2`, else v1 only.
+    unsafe fn resolve_v2(handle: platform::LibHandle) -> Option<BackendVTableV2> {
+        type Raw = *mut std::ffi::c_void;
+        let p_abi = platform::get_symbol(handle, SYM_ABI_VERSION);
+        let p_init = platform::get_symbol(handle, SYM_BATCH_INIT);
+        let p_rst = platform::get_symbol(handle, SYM_BATCH_RESET);
+        let p_fwd = platform::get_symbol(handle, SYM_FORWARD_BATCH);
+        if [p_abi, p_init, p_rst, p_fwd].iter().any(|p| p.is_null()) {
+            return None;
+        }
+        let abi_fn = std::mem::transmute::<Raw, BackendAbiVersionFn>(p_abi);
+        let abi_version = abi_fn();
+        if abi_version < BACKEND_ABI_V2 {
+            return None;
+        }
+        Some(BackendVTableV2 {
+            abi_version,
+            batch_init: std::mem::transmute::<Raw, BackendBatchInitFn>(p_init),
+            batch_reset: std::mem::transmute::<Raw, BackendBatchResetFn>(p_rst),
+            forward_batch: std::mem::transmute::<Raw, BackendForwardBatchFn>(p_fwd),
+        })
     }
 
     /// Initialize the backend.  Returns `BackendInfo` on success.
