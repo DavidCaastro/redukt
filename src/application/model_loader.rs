@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::domain::backbone::{
-    Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice,
+    Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice, WeightProfile,
 };
 use crate::domain::quant::{QuantLevel, QuantPolicy};
 use crate::infrastructure::rwkv7::model::Rwkv7Model;
@@ -62,10 +62,12 @@ pub fn load_model_and_tokenizer_with_quant(
 
 // --- Mamba loading ---
 
-/// Load Mamba model and BPE tokenizer.
-pub fn load_mamba_model_and_tokenizer(weights_dir: &str) -> (MambaModel, BpeTokenizer) {
+/// Load Mamba model (given weight profile, R-099) and BPE tokenizer.
+pub fn load_mamba_model_and_tokenizer(
+    weights_dir: &str, profile: WeightProfile,
+) -> (MambaModel, BpeTokenizer) {
     let path = Path::new(weights_dir);
-    let model = MambaModel::load(path);
+    let model = MambaModel::load_with_profile(path, profile);
     let tokenizer = BpeTokenizer::load(path);
     (model, tokenizer)
 }
@@ -260,6 +262,15 @@ impl DynModel {
         }
     }
 
+    /// Weight profile of the loaded backbone (R-099). RWKV/Plugin report F32:
+    /// their quantization is not part of the AZTH profile.
+    pub fn weight_profile(&self) -> WeightProfile {
+        match self {
+            Self::Mamba(m) | Self::MambaByte(m) => m.profile(),
+            Self::Rwkv(_) | Self::Plugin(_) => WeightProfile::F32,
+        }
+    }
+
     /// Mamba activation sparsity stats (R-059).
     pub fn mamba_sparsity(scratch: &DynScratch) -> Option<(u64, u64)> {
         match scratch {
@@ -272,10 +283,12 @@ impl DynModel {
 }
 
 /// Load a DynModel + DynTokenizer for the given backbone choice.
+/// `quant_override` applies to RWKV only; `mamba_profile` to Mamba/MambaByte (R-099).
 pub fn load_dyn_model(
     backbone: BackboneChoice,
     rwkv_weights: &str,
     quant_override: Option<QuantPolicy>,
+    mamba_profile: WeightProfile,
 ) -> (DynModel, DynTokenizer) {
     match backbone {
         BackboneChoice::Rwkv => {
@@ -288,7 +301,7 @@ pub fn load_dyn_model(
             } else {
                 rwkv_weights // fallback: user may pass mamba path via --weights
             };
-            let (m, t) = load_mamba_model_and_tokenizer(mamba_dir);
+            let (m, t) = load_mamba_model_and_tokenizer(mamba_dir, mamba_profile);
             (DynModel::Mamba(m), DynTokenizer::Bpe(t))
         }
         BackboneChoice::MambaByte => {
@@ -298,7 +311,7 @@ pub fn load_dyn_model(
                 rwkv_weights // fallback: user may pass path via --weights
             };
             let path = Path::new(mb_dir);
-            let model = MambaModel::load(path);
+            let model = MambaModel::load_with_profile(path, mamba_profile);
             let tokenizer = ByteTokenizer::new();
             (DynModel::MambaByte(model), DynTokenizer::Byte(tokenizer))
         }

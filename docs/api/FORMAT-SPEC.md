@@ -6,7 +6,11 @@ AZTH is a lossless compression format that encodes data using neural network
 probability predictions combined with arithmetic coding. Decompression requires
 the identical model and weights; hyperparameters are stored in the header.
 
-## Format Layout (v4 — current)
+## Format Layout (v4 — current default)
+
+v4 is still what the encoder writes for the default **F32** weight profile.
+Archives using another weight profile (R-099, Mamba Q8) are written as **v5**
+(see below): identical layout plus one PROFILE byte after FLAGS.
 
 ```
 Offset  Size  Field          Description
@@ -27,8 +31,9 @@ var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of original uncompressed data
 ```
 
-Header size: **13 bytes** (default), +12 (custom HP), +5 (emb-surgery), +1 (shuffle), +1 (delta), +1 (backbone).
-Max header: 33 bytes (all flags set). CRC-32 trailer: 4 bytes.
+Header size: **13 bytes** (default), +12 (custom HP), +5 (emb-surgery), +1 (shuffle), +1 (delta),
++1 (adaptive-skip), +1 (backbone). Max header: 34 bytes (all flags set). CRC-32 trailer: 4 bytes.
+Optional fields always appear in this order: HP, EMB, SHUFFLE, DELTA, SKIP, BACKBONE.
 
 ### FLAGS byte
 
@@ -41,7 +46,9 @@ Max header: 33 bytes (all flags set). CRC-32 trailer: 4 bytes.
 | 4   | `0x10` | DELTA           | Delta coding was applied (R-030, 1B stride follows) |
 | 5   | `0x20` | ADAPTIVE_SKIP   | Adaptive RWKV skip threshold follows (1B, R-033) |
 | 6   | `0x40` | BACKBONE        | Backbone ID follows (1 byte)               |
-| 7   | `0x80` | (reserved)      | Must be 0; decoder rejects unknown flags   |
+| 7   | `0x80` | ENHANCED_CM     | Entropy-adaptive mixer + SegmentModel (R-043/R-044); no payload |
+
+All 8 FLAGS bits are assigned — new header fields need a new version (see v5).
 
 When CUSTOM_HP is clear (FLAGS = 0x00), the decoder uses built-in defaults:
 - BIAS_LR = 0.30
@@ -114,7 +121,9 @@ used during compression:
 |--------|----------|-------------------------------------------|
 | `0x00` | RWKV-7   | Default backbone, backward compatible     |
 | `0x01` | Mamba    | Mamba SSM backbone (R-035)                |
-| `0x02`–`0xFF` | (reserved) | Decoder rejects unknown IDs      |
+| `0x02` | MambaByte | Byte-level Mamba (R-082)                 |
+| `0x03` | Plugin   | External GPU plugin backend (R-090)       |
+| `0x04`–`0xFF` | (reserved) | Decoder rejects unknown IDs      |
 
 When the flag is not set, RWKV-7 is assumed. This maintains full backward
 compatibility with existing v4 files — all files produced before this flag
@@ -146,6 +155,74 @@ with `--e8e9 on` (force) or `--e8e9 off` (disable).
 arithmetic coder), NOT the original input. The decompressor verifies CRC before
 applying the inverse transform.
 
+## Format Layout (v5 — weight profile, R-099)
+
+v5 is v4 plus a 1-byte **PROFILE** immediately after FLAGS. It records the
+numeric weight profile of the Mamba-family backbone, which changes the logits
+and therefore the coded stream. The encoder writes v5 **only** when the profile
+is not F32, so default (F32) archives stay byte-identical v4 and remain
+readable by v4-only decoders; a v4-only decoder fed a v5 file fails up front
+with `unsupported AZTH version 5` (never with a CRC mismatch).
+
+```
+Offset  Size  Field          Description
+------  ----  -----          -----------
+0x00    8B    MAGIC          "AZTH\x05\x00\x00\x00" (version 5)
+0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
+0x0C    1B    FLAGS          Same bits and semantics as v4
+0x0D    1B    PROFILE        Weight profile (see below)
+0x0E    var   [optional]     Exactly the v4 optional fields, same order:
+                             [HP 12B] [EMB 5B] [SHUFFLE 1B] [DELTA 1B] [SKIP 1B] [BACKBONE 1B]
+var     var   STREAM         Arithmetic coded probability stream
+EOF-4   4B    CRC32          CRC-32 (IEEE) of the bytes that entered the coder
+```
+
+Header size: **14 bytes** minimum (15 for a Mamba archive: +1 BACKBONE), 35 bytes maximum.
+
+### PROFILE byte
+
+| Bits | Field  | Values |
+|------|--------|--------|
+| 0–3  | QUANT  | `0` = F32, `1` = Q8 (recipe below), `2` = Q6 (reserved, rejected), `3`–`15` reserved (rejected) |
+| 4–7  | —      | Reserved, must be 0 (decoder rejects) |
+
+`QUANT = 0` in a v5 header is valid (equivalent to v4) but the encoder never
+writes it. A non-F32 profile is only valid for the Mamba / MambaByte backbones;
+the decoder rejects it for RWKV (RWKV's own `--quant` is not part of the format).
+
+### Q8 profile recipe (QUANT = 1)
+
+Part of the format contract — any change needs a new QUANT code.
+
+- **Quantized** (weight-only, W8A32): every layer's `in_proj` and `out_proj`, and
+  the embedding / LM head (tied in Mamba-130M: one int8 matrix; the embedding
+  lookup dequantizes its row). Untied heads (MambaByte) quantize both.
+- **Scheme**: symmetric int8, one f32 scale per 64 consecutive columns of a row
+  (whole row if 64 does not divide the row length):
+  `scale = max|w| / 127` (1.0 for an all-zero group),
+  `q = clamp(round(w * (1/scale)), -127, 127)`.
+- **Kept f32**: `A_log`, `D`, `dt_proj` (weight and bias), `x_proj`, `conv1d`,
+  all norms. Activations are never quantized.
+- **GEMV order**: per (row, group), 8 f32 lanes (lane `l` takes columns
+  `c ≡ l mod 8`) accumulate `f32(q) * x` with separate multiply and add (no FMA),
+  then horizontal sum `((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7))`, then a sequential
+  tail; the row result is `0 + Σ_groups dot_g * scale_g` in group order. The
+  AVX2 and scalar Q8 GEMV kernels implement this order exactly (bit-identical).
+  The archive as a whole still needs the same SIMD tier on both sides, because
+  the f32 parts (x_proj/dt_proj GEMV, SSM `exp`, SiLU) keep the F32 tier rule.
+
+Measured (Mamba-130M, 10 KB, vs F32): enwik8 +0.6%, facturae XML +1.2%,
+apache log +1.1% BPB; weight traffic 516.5 → 153.6 MB/token.
+
+### Decoder rules (v5)
+
+1. `validate_magic` accepts v2–v5 (v5 minimum 14 bytes).
+2. PROFILE is validated (reserved bits, reserved/unknown codes) while parsing.
+3. The header profile is authoritative. `decompress --quant` is optional; if
+   given and different from the header (e.g. `--quant f32` on a Q8 archive) the
+   decoder stops with `weight profile mismatch ...` **before** loading the model
+   or decoding — no output file is written.
+
 ### Key change from v3: TOKEN_COUNT removed
 
 v4 eliminates TOKEN_COUNT from the header. The decoder terminates by byte count:
@@ -160,14 +237,19 @@ means byte count implies token count).
 |---------|-------------|-------------|---------|
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
-| v4      | `\x04`      | 13–33       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, backbone) |
+| v4      | `\x04`      | 13–34       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, skip, backbone, CM) |
+| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099) |
 
-The decoder accepts v2, v3, and v4 files:
+The decoder accepts v2, v3, v4 and v5 files:
 - **v2**: no CRC check (backward compatible)
 - **v3**: CRC-32 verified after decompression
 - **v4**: CRC-32 verified, compact header, byte-count termination
+- **v5**: as v4, plus the weight profile is taken from PROFILE
 
-The encoder always writes **v4**.
+The encoder writes **v4** for the F32 profile (default) and **v5** otherwise
+(`compress --backbone mamba --quant q8`). `--quant auto` / unspecified selects
+F32 for Mamba: a timing-based auto-selection would make the bitstream
+machine-dependent.
 
 ## Format Layout (v3 — legacy)
 
@@ -259,8 +341,9 @@ This detects:
 ### v4 (byte-count driven)
 
 ```
-1. Read AZTH file, validate MAGIC (accept v2, v3, or v4)
-2. Parse header (TOTAL_BYTES, FLAGS, optional HP, optional emb-surgery)
+1. Read AZTH file, validate MAGIC (accept v2, v3, v4 or v5)
+2. Parse header (TOTAL_BYTES, FLAGS, [v5: PROFILE], optional HP, optional emb-surgery, ...)
+2a. Resolve weight profile from the header (reject a conflicting `--quant`)
 2b. If emb-surgery stored in header: apply matching surgery to model
 3. Validate hyperparameters if custom (reject NaN/Inf)
 4. Extract STREAM and CRC32
@@ -306,6 +389,15 @@ Decompression produces byte-identical output if and only if:
 3. Same hyperparameters (stored in header; ngram order=4 is fixed)
 4. Same forward pass implementation (floating-point order matters)
 5. Same embedding surgery method (stored in v4 header since R-010)
+6. Same weight profile (stored in the v5 PROFILE byte since R-099; v2–v4 imply F32)
+7. Same SIMD tier (`REDUKT_NO_SIMD=1` must match on both sides), for every
+   profile: the AVX2 (no-FMA) and scalar f32 kernels (GEMV accumulation order,
+   SSM `exp`, SiLU) are NOT bit-compatible. In the Q8 profile the int8 GEMV
+   itself is tier-invariant, but x_proj/dt_proj/SSM remain f32 and tier-bound.
+
+The number of GEMV threads (`REDUKT_THREADS`) never affects the output: work is
+partitioned by output rows / SSM channels and every row or channel is computed
+by the same single-thread kernel (R-098).
 
 This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 
@@ -325,6 +417,7 @@ This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 - TOTAL_BYTES capped at u32 prevents memory exhaustion
 - Hyperparameter validation rejects NaN/Inf (prevents numeric corruption)
 - FLAGS validation rejects unknown bits (forward compatibility)
+- PROFILE validation rejects reserved bits and unknown/reserved quant codes (v5)
 - RAM monitor aborts if available memory is insufficient for model
 
 ## MIME Type (Proposed)

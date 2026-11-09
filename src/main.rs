@@ -68,7 +68,8 @@ fn print_usage() {
     eprintln!("  --tau <F>            Surprise-modulated lr decay (0 = static, default: 0)");
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
-    eprintln!("  --quant <LEVEL>      Force quantization: f32, q8, q4, auto (default: auto)");
+    eprintln!("  --quant <LEVEL>      RWKV: f32, q8, q4, auto (default: auto)");
+    eprintln!("                       Mamba: f32 (default) or q8 (weight-only Q8 profile, AZTH v5)");
     eprintln!("  --streaming          Decompress: write output progressively (lower memory)");
     eprintln!("  --e8e9 <MODE>        E8E9 x86 preprocessing: auto (default), on, off");
     eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
@@ -78,4 +79,9 @@ fn print_usage() {
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
+    eprintln!();
+    eprintln!("Environment:");
+    eprintln!("  REDUKT_THREADS=N     Mamba GEMV/SSM worker threads incl. caller (default: all logical CPUs)");
+    eprintln!("  REDUKT_SPIN_US=N     Worker spin before parking, microseconds (default: 100)");
+    eprintln!("  REDUKT_NO_SIMD=1     Force scalar kernels (must match between compress and decompress)");
 }

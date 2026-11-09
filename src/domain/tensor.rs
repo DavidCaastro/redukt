@@ -1559,7 +1559,7 @@ fn mat_vec_mul_parallel_into(
 }
 
 /// Scalar f32 mat-vec on raw slice: 4-row ILP. Used by parallel dispatch.
-fn mat_vec_mul_scalar_raw(
+pub(crate) fn mat_vec_mul_scalar_raw(
     out: &mut [f32], m: &[f32], v: &[f32], rows: usize, cols: usize,
 ) {
     let rows_4 = rows / 4 * 4;
@@ -1587,7 +1587,7 @@ fn mat_vec_mul_scalar_raw(
 /// AVX2 noFMA f32 mat-vec on raw slice. Used by parallel dispatch.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn mat_vec_mul_avx2_nofma_raw(
+pub(crate) unsafe fn mat_vec_mul_avx2_nofma_raw(
     out: &mut [f32], m: &[f32], v: &[f32], rows: usize, cols: usize,
 ) {
     let mp = m.as_ptr();
@@ -1680,13 +1680,17 @@ pub fn quantize_vec_i8_into(v: &[f32], q: &mut [i8]) -> f32 {
 }
 
 /// Returns true if REDUKT_NO_SIMD env var is set (forces scalar fallback).
+/// Read once per process (R-098): hot kernels call this per invocation.
 fn no_simd_override() -> bool {
-    std::env::var("REDUKT_NO_SIMD").map(|v| v == "1").unwrap_or(false)
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("REDUKT_NO_SIMD").map(|v| v == "1").unwrap_or(false))
 }
 
 /// Returns true if REDUKT_NO_PREFETCH env var is set (disables software prefetch).
+/// Read once per process (R-098).
 fn no_prefetch_override() -> bool {
-    std::env::var("REDUKT_NO_PREFETCH").map(|v| v == "1").unwrap_or(false)
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("REDUKT_NO_PREFETCH").map(|v| v == "1").unwrap_or(false))
 }
 
 /// Q8 mat-vec into pre-allocated output + reusable v_q buffer.

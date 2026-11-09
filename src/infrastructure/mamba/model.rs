@@ -4,11 +4,15 @@
 //! Model: state-spaces/mamba-130m-hf (d_model=768, n_layer=24, vocab=50280)
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::domain::tensor::{
-    Tensor, mat_vec_mul_into, portable_softplus, rms_norm_into, layer_norm_into,
+    Tensor, portable_softplus, rms_norm_into, layer_norm_into,
     silu_inplace, gated_silu_mul, ssm_recurrence_d16,
 };
+use crate::domain::gemv::{f32_rows, gemv_f32_into, gemv_q8w_into, Q8wMatrix};
+use crate::domain::par_pool;
+use crate::domain::backbone::WeightProfile;
 use crate::domain::ram_monitor::check_ram_or_abort;
 use crate::infrastructure::rwkv7::safetensors::SafeTensorsFile;
 
@@ -38,12 +42,137 @@ impl MambaConfig {
     }
 }
 
+// --- Weight matrices (R-099) ---
+
+/// Q8 profile recipe (AZTH v5 profile code 1) — part of the format contract:
+/// changing it changes the logits, so it would need a new profile code.
+/// in_proj, out_proj and the (tied) embedding/LM head are int8 with one f32
+/// scale per 64 columns. Measured at 10 KB (Mamba-130M): a per-row scale costs
+/// +6.6-7.0% BPB on enwik8/facturae (outlier columns of the tied embedding
+/// dominate each row's max|w|); 64-column groups keep every file < +1.3%.
+const Q8_GROUP: usize = 64;
+
+/// A large weight matrix in the active numeric profile.
+/// F32: dense f32. Q8: symmetric int8, f32 scale per group, weight-only.
+enum MambaMatrix {
+    F32(Tensor),
+    Q8(Q8wMatrix),
+}
+
+impl MambaMatrix {
+    fn new(t: Tensor, profile: WeightProfile) -> Self {
+        match profile {
+            WeightProfile::F32 => Self::F32(t),
+            WeightProfile::Q8 => Self::Q8(Q8wMatrix::quantize(&t, Q8_GROUP)),
+        }
+    }
+
+    /// out = W @ v (pooled, row-partitioned, bit-identical for any thread count).
+    #[inline]
+    fn gemv(&self, out: &mut [f32], v: &[f32]) {
+        match self {
+            Self::F32(t) => gemv_f32_into(out, t, v),
+            Self::Q8(q) => gemv_q8w_into(out, q, v),
+        }
+    }
+
+    /// Copy (dequantize) row `row` into `out`.
+    fn row_into(&self, out: &mut [f32], row: usize) {
+        match self {
+            Self::F32(t) => {
+                let d = t.shape[1];
+                out[..d].copy_from_slice(&t.data[row * d..(row + 1) * d]);
+            }
+            Self::Q8(q) => q.dequant_row_into(out, row),
+        }
+    }
+
+    /// Resident bytes (== bytes streamed by one GEMV).
+    fn bytes(&self) -> usize {
+        match self {
+            Self::F32(t) => t.numel() * 4,
+            Self::Q8(q) => q.bytes(),
+        }
+    }
+
+    fn as_f32(&self) -> Option<&Tensor> {
+        match self {
+            Self::F32(t) => Some(t),
+            Self::Q8(_) => None,
+        }
+    }
+}
+
+// --- Per-channel phases on the pool (R-098) ---
+
+/// Channels per pooled block for conv1d+SiLU. Block starts are multiples of 8,
+/// so every element takes the same SIMD-body/scalar-tail path as in a
+/// full-length call → bit-identical to the serial loop.
+const CONV_BLOCK: usize = 256;
+/// Channels per pooled block for dt_proj+softplus+SSM+gate (multiple of 8).
+const SSM_BLOCK: usize = 64;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Causal conv1d (shift register) + SiLU for channels `j0..j0+out.len()`.
+/// `cs` = this block's conv state, `x` = this block's x-branch inputs.
+fn conv_silu_block(lw: &MambaLayerWeights, dc: usize, j0: usize, cs: &mut [f32], x: &[f32], out: &mut [f32]) {
+    for (jj, o) in out.iter_mut().enumerate() {
+        let j = j0 + jj;
+        let st = &mut cs[jj * (dc - 1)..(jj + 1) * (dc - 1)];
+        let w = &lw.conv1d_w[j * dc..(j + 1) * dc];
+        let mut val = 0.0f32;
+        for k in 0..(dc - 1) {
+            val += st[k] * w[k];
+        }
+        val += x[jj] * w[dc - 1];
+        val += lw.conv1d_b[j];
+        // Shift state left, insert new value
+        for k in 0..(dc - 2) {
+            st[k] = st[k + 1];
+        }
+        st[dc - 2] = x[jj];
+        *o = val;
+    }
+    silu_inplace(out);
+}
+
+/// Read-only per-layer inputs of the selective-scan phase.
+struct ScanInputs<'a> {
+    dt_raw: &'a [f32],
+    b: &'a [f32],
+    c: &'a [f32],
+    conv_out: &'a [f32],
+    z: &'a [f32],
+}
+
+/// dt = softplus(dt_proj·dt_raw + bias) → SSM recurrence → y·silu(z), for
+/// channels `j0..j0+dt.len()`. Per-channel independent → partition-invariant.
+fn scan_block(
+    lw: &MambaLayerWeights, dr: usize, ds: usize, j0: usize, inp: &ScanInputs,
+    dt: &mut [f32], ss: &mut [f32], y: &mut [f32], gated: &mut [f32],
+) {
+    let n = dt.len();
+    let j1 = j0 + n;
+    f32_rows(dt, &lw.dt_proj_w.data[j0 * dr..j1 * dr], inp.dt_raw, dr);
+    for (jj, d) in dt.iter_mut().enumerate() {
+        *d = portable_softplus(*d + lw.dt_proj_b[j0 + jj]);
+    }
+    ssm_recurrence_d16(
+        y, ss, dt, &inp.conv_out[j0..j1], &lw.a_log[j0 * ds..j1 * ds],
+        inp.b, inp.c, &lw.d_vec[j0..j1], n,
+    );
+    gated_silu_mul(gated, y, &inp.z[j0..j1]);
+}
+
 // --- Layer weights ---
 
 struct MambaLayerWeights {
     norm_w: Vec<f32>,          // (d_model,)
     norm_b: Option<Vec<f32>>,  // (d_model,) — LayerNorm bias (R-088, None = RMSNorm)
-    in_proj_w: Tensor,         // (2*d_inner, d_model)
+    in_proj_w: MambaMatrix,    // (2*d_inner, d_model) — F32 or Q8 (R-099)
     conv1d_w: Vec<f32>,        // (d_inner, d_conv) — flat, used element-wise
     conv1d_b: Vec<f32>,        // (d_inner,)
     x_proj_w: Tensor,          // (dt_rank + 2*d_state, d_inner)
@@ -51,15 +180,27 @@ struct MambaLayerWeights {
     dt_proj_b: Vec<f32>,       // (d_inner,)
     a_log: Vec<f32>,           // (d_inner, d_state) — flat, used element-wise
     d_vec: Vec<f32>,           // (d_inner,)
-    out_proj_w: Tensor,        // (d_model, d_inner)
+    out_proj_w: MambaMatrix,   // (d_model, d_inner) — F32 or Q8 (R-099)
+}
+
+impl MambaLayerWeights {
+    /// Weight bytes read per token by this layer.
+    fn bytes(&self) -> usize {
+        self.in_proj_w.bytes() + self.out_proj_w.bytes()
+            + (self.norm_w.len() + self.norm_b.as_ref().map_or(0, |b| b.len())
+                + self.conv1d_w.len() + self.conv1d_b.len() + self.x_proj_w.numel()
+                + self.dt_proj_w.numel() + self.dt_proj_b.len() + self.a_log.len()
+                + self.d_vec.len()) * 4
+    }
 }
 
 // --- Model ---
 
 pub struct MambaModel {
     pub config: MambaConfig,
-    emb_w: Tensor,             // (vocab_size, d_model) — embedding
-    lm_head_w: Option<Tensor>, // (vocab_size, d_model) — separate LM head (untied)
+    emb_w: MambaMatrix,             // (vocab_size, d_model) — embedding (tied head)
+    lm_head_w: Option<MambaMatrix>, // (vocab_size, d_model) — separate LM head (untied)
+    profile: WeightProfile,         // R-099: numeric weight profile
     layers: Vec<MambaLayerWeights>,
     norm_f_w: Vec<f32>,        // (d_model,)
     norm_f_b: Option<Vec<f32>>, // (d_model,) — LayerNorm bias (R-088)
@@ -141,7 +282,14 @@ impl MambaScratch {
 // --- Model loading ---
 
 impl MambaModel {
+    /// Load with the default F32 profile.
     pub fn load(path: &Path) -> Self {
+        Self::load_with_profile(path, WeightProfile::F32)
+    }
+
+    /// Load and convert in_proj/out_proj/embedding(/head) to `profile` (R-099).
+    /// A_log, D, dt_proj, x_proj, conv1d and norms always stay f32.
+    pub fn load_with_profile(path: &Path, profile: WeightProfile) -> Self {
         let st_path = if path.is_dir() {
             path.join("model.safetensors")
         } else {
@@ -205,7 +353,9 @@ impl MambaModel {
             layers.push(MambaLayerWeights {
                 norm_w: norm.data,
                 norm_b,
-                in_proj_w: Tensor::from_data(in_proj.data, vec![2 * di, d_model]),
+                in_proj_w: MambaMatrix::new(
+                    Tensor::from_data(in_proj.data, vec![2 * di, d_model]), profile,
+                ),
                 conv1d_w: conv_w.data, // flat (d_inner * d_conv)
                 conv1d_b: conv_b.data,
                 x_proj_w: Tensor::from_data(x_proj.data, vec![dr + 2 * ds, di]),
@@ -213,7 +363,9 @@ impl MambaModel {
                 dt_proj_b: dt_bias.data,
                 a_log: a_log.data, // flat (d_inner * d_state)
                 d_vec: d_vec.data,
-                out_proj_w: Tensor::from_data(out_proj.data, vec![d_model, di]),
+                out_proj_w: MambaMatrix::new(
+                    Tensor::from_data(out_proj.data, vec![d_model, di]), profile,
+                ),
             });
 
             if (i + 1) % 8 == 0 || i == n_layer - 1 {
@@ -221,35 +373,39 @@ impl MambaModel {
             }
         }
 
-        let emb_tensor = Tensor::from_data(emb.data, vec![vocab_size, d_model]);
+        let emb_t = Tensor::from_data(emb.data, vec![vocab_size, d_model]);
+        let emb_w = MambaMatrix::new(emb_t, profile);
 
         // R-088: detect separate lm_head.weight (untied embeddings, e.g. MambaByte)
         let lm_head_w = if st.has_tensor("lm_head.weight") {
             let lm = st.get_tensor("lm_head.weight");
             eprintln!("[mamba] separate lm_head.weight detected (untied embeddings)");
-            Some(Tensor::from_data(lm.data, vec![vocab_size, d_model]))
+            let lm_t = Tensor::from_data(lm.data, vec![vocab_size, d_model]);
+            Some(MambaMatrix::new(lm_t, profile))
         } else {
             None
         };
 
-        let mut total_bytes = emb_tensor.numel() * 4
-            + norm_f.data.len() * 4
-            + layers.iter().map(|l| {
-                (l.norm_w.len() + l.in_proj_w.numel() + l.conv1d_w.len()
-                    + l.conv1d_b.len() + l.x_proj_w.numel() + l.dt_proj_w.numel()
-                    + l.dt_proj_b.len() + l.a_log.len() + l.d_vec.len()
-                    + l.out_proj_w.numel()) * 4
-            }).sum::<usize>();
+        let layer_bytes: usize = layers.iter().map(|l| l.bytes()).sum();
+        let norm_f_bytes = (norm_f.data.len() + norm_f_b.as_ref().map_or(0, |b| b.len())) * 4;
+        let head_bytes = lm_head_w.as_ref().unwrap_or(&emb_w).bytes();
+        let mut total_bytes = emb_w.bytes() + layer_bytes + norm_f_bytes;
         if let Some(ref lm) = lm_head_w {
-            total_bytes += lm.numel() * 4;
+            total_bytes += lm.bytes();
         }
-        let mem_mb = total_bytes as f64 / 1024.0 / 1024.0;
-        eprintln!("[mamba] model loaded: {:.1} MB", mem_mb);
+        let mb = |b: usize| b as f64 / 1024.0 / 1024.0;
+        eprintln!("[mamba] model loaded: {:.1} MB (profile {})", mb(total_bytes), profile);
+        eprintln!(
+            "[mamba] weight bytes/token: {:.1} MB (layers {:.1} + head {:.1}), {} GEMV threads",
+            mb(layer_bytes + norm_f_bytes + head_bytes), mb(layer_bytes), mb(head_bytes),
+            crate::domain::gemv::pool_threads(),
+        );
 
         Self {
             config,
-            emb_w: emb_tensor,
+            emb_w,
             lm_head_w,
+            profile,
             layers,
             norm_f_w: norm_f.data,
             norm_f_b,
@@ -279,20 +435,28 @@ impl MambaModel {
         let dr = self.config.dt_rank;
         let n_prune = (di as f32 * prune_frac) as usize;
         if n_prune == 0 { return; }
+        if self.profile != WeightProfile::F32 {
+            eprintln!("[mamba] column pruning requires the F32 profile — skipped");
+            return;
+        }
         let new_di = di - n_prune;
 
         for layer in &mut self.layers {
+            let (in_w, out_w) = match (layer.in_proj_w.as_f32(), layer.out_proj_w.as_f32()) {
+                (Some(a), Some(b)) => (a.data.clone(), b.data.clone()),
+                _ => continue,
+            };
             let mut importance = vec![0.0f32; di];
             for j in 0..di {
                 let mut in_sq = 0.0f32;
                 for k in 0..d {
-                    let xv = layer.in_proj_w.data[j * d + k];
-                    let zv = layer.in_proj_w.data[(j + di) * d + k];
+                    let xv = in_w[j * d + k];
+                    let zv = in_w[(j + di) * d + k];
                     in_sq += xv * xv + zv * zv;
                 }
                 let mut out_sq = 0.0f32;
                 for i in 0..d {
-                    let v = layer.out_proj_w.data[i * di + j];
+                    let v = out_w[i * di + j];
                     out_sq += v * v;
                 }
                 importance[j] = in_sq.sqrt() * out_sq.sqrt();
@@ -310,16 +474,12 @@ impl MambaModel {
             for (ni, &oj) in keep.iter().enumerate() {
                 let xs = oj * d;
                 let xd = ni * d;
-                new_in[xd..xd + d].copy_from_slice(
-                    &layer.in_proj_w.data[xs..xs + d],
-                );
+                new_in[xd..xd + d].copy_from_slice(&in_w[xs..xs + d]);
                 let zs = (oj + di) * d;
                 let zd = (ni + new_di) * d;
-                new_in[zd..zd + d].copy_from_slice(
-                    &layer.in_proj_w.data[zs..zs + d],
-                );
+                new_in[zd..zd + d].copy_from_slice(&in_w[zs..zs + d]);
             }
-            layer.in_proj_w = Tensor::from_data(new_in, vec![2 * new_di, d]);
+            layer.in_proj_w = MambaMatrix::F32(Tensor::from_data(new_in, vec![2 * new_di, d]));
 
             // conv1d_w, conv1d_b
             let mut new_cw = vec![0.0f32; new_di * dc];
@@ -364,11 +524,10 @@ impl MambaModel {
             let mut new_op = vec![0.0f32; d * new_di];
             for row in 0..d {
                 for (ni, &oj) in keep.iter().enumerate() {
-                    new_op[row * new_di + ni] =
-                        layer.out_proj_w.data[row * di + oj];
+                    new_op[row * new_di + ni] = out_w[row * di + oj];
                 }
             }
-            layer.out_proj_w = Tensor::from_data(new_op, vec![d, new_di]);
+            layer.out_proj_w = MambaMatrix::F32(Tensor::from_data(new_op, vec![d, new_di]));
         }
 
         eprintln!(
@@ -396,9 +555,9 @@ impl MambaModel {
         let dc = self.config.d_conv;
         let dr = self.config.dt_rank;
 
-        // Embedding lookup
-        let emb_start = token * d;
-        scratch.x.copy_from_slice(&self.emb_w.data[emb_start..emb_start + d]);
+        // Embedding lookup (Q8 profile: dequantize the row)
+        self.emb_w.row_into(&mut scratch.x[..d], token);
+        let pool = par_pool::global();
 
         for layer_idx in 0..self.config.n_layer {
             let lw = &self.layers[layer_idx];
@@ -412,56 +571,57 @@ impl MambaModel {
             }
 
             // in_proj: (2*d_inner, d_model) @ normed → xz
-            mat_vec_mul_into(&mut scratch.xz, &lw.in_proj_w, &scratch.normed);
+            lw.in_proj_w.gemv(&mut scratch.xz, &scratch.normed);
 
             // Split into x_branch and z_branch
             let (x_branch, z_branch) = scratch.xz.split_at(di);
 
-            // Conv1d as shift register (compute + shift, activation deferred)
-            let cs = &mut state.conv_states[layer_idx];
-            for j in 0..di {
-                let mut val = 0.0f32;
-                for k in 0..(dc - 1) {
-                    val += cs[j * (dc - 1) + k] * lw.conv1d_w[j * dc + k];
-                }
-                val += x_branch[j] * lw.conv1d_w[j * dc + (dc - 1)];
-                val += lw.conv1d_b[j];
-
-                // Shift state left, insert new value
-                for k in 0..(dc - 2) {
-                    cs[j * (dc - 1) + k] = cs[j * (dc - 1) + k + 1];
-                }
-                cs[j * (dc - 1) + (dc - 2)] = x_branch[j];
-
-                scratch.conv_out[j] = val;
+            // Conv1d as shift register + SiLU, channel blocks on the pool (R-098)
+            {
+                let cs = &mut state.conv_states[layer_idx];
+                let parts: Vec<Mutex<(&mut [f32], &mut [f32])>> = cs
+                    .chunks_mut(CONV_BLOCK * (dc - 1))
+                    .zip(scratch.conv_out[..di].chunks_mut(CONV_BLOCK))
+                    .map(Mutex::new)
+                    .collect();
+                pool.run(parts.len(), &|bi| {
+                    let mut g = lock(&parts[bi]);
+                    let (cs_b, out_b) = &mut *g;
+                    let j0 = bi * CONV_BLOCK;
+                    conv_silu_block(lw, dc, j0, cs_b, &x_branch[j0..j0 + out_b.len()], out_b);
+                });
             }
-            // Bulk SiLU via SIMD
-            silu_inplace(&mut scratch.conv_out[..di]);
 
             // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj [f32, narrow]
-            mat_vec_mul_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out);
+            gemv_f32_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out);
 
             // Split z_proj → dt_raw, B, C
             scratch.dt_raw[..dr].copy_from_slice(&scratch.z_proj[..dr]);
-            let b_slice = &scratch.z_proj[dr..dr + ds];
-            let c_slice = &scratch.z_proj[dr + ds..dr + 2 * ds];
 
-            // dt = softplus(dt_proj @ dt_raw + dt_proj_bias) [f32, narrow]
-            mat_vec_mul_into(&mut scratch.dt, &lw.dt_proj_w, &scratch.dt_raw);
-            for j in 0..di {
-                scratch.dt[j] = portable_softplus(scratch.dt[j] + lw.dt_proj_b[j]);
+            // dt = softplus(dt_proj @ dt_raw + bias); SSM recurrence (d_state=16);
+            // gated = y * silu(z). Per-channel → channel blocks on the pool (R-098).
+            {
+                let inp = ScanInputs {
+                    dt_raw: &scratch.dt_raw[..dr],
+                    b: &scratch.z_proj[dr..dr + ds],
+                    c: &scratch.z_proj[dr + ds..dr + 2 * ds],
+                    conv_out: &scratch.conv_out[..di],
+                    z: z_branch,
+                };
+                let ss = &mut state.ssm_states[layer_idx];
+                type ScanPart<'a> = (&'a mut [f32], &'a mut [f32], &'a mut [f32], &'a mut [f32]);
+                let parts: Vec<Mutex<ScanPart>> = scratch.dt[..di].chunks_mut(SSM_BLOCK)
+                    .zip(ss.chunks_mut(SSM_BLOCK * ds))
+                    .zip(scratch.y[..di].chunks_mut(SSM_BLOCK))
+                    .zip(scratch.gated[..di].chunks_mut(SSM_BLOCK))
+                    .map(|(((dt, ss), y), g)| Mutex::new((dt, ss, y, g)))
+                    .collect();
+                pool.run(parts.len(), &|bi| {
+                    let mut g = lock(&parts[bi]);
+                    let (dt_b, ss_b, y_b, g_b) = &mut *g;
+                    scan_block(lw, dr, ds, bi * SSM_BLOCK, &inp, dt_b, ss_b, y_b, g_b);
+                });
             }
-
-            // SSM recurrence (SIMD-accelerated for d_state=16)
-            let ss = &mut state.ssm_states[layer_idx];
-            ssm_recurrence_d16(
-                &mut scratch.y[..di], ss, &scratch.dt[..di],
-                &scratch.conv_out[..di], &lw.a_log, b_slice, c_slice,
-                &lw.d_vec, di,
-            );
-
-            // Gate: gated[j] = y[j] * silu(z_branch[j])
-            gated_silu_mul(&mut scratch.gated[..di], &scratch.y[..di], z_branch);
 
             // R-059: measure gated[] activation sparsity
             {
@@ -475,7 +635,7 @@ impl MambaModel {
             }
 
             // out_proj: (d_model, d_inner) @ gated → result
-            mat_vec_mul_into(&mut scratch.result, &lw.out_proj_w, &scratch.gated);
+            lw.out_proj_w.gemv(&mut scratch.result, &scratch.gated);
 
             // Residual add
             for j in 0..d {
@@ -517,7 +677,12 @@ impl MambaModel {
     /// Uses separate lm_head weights if untied (R-088), otherwise embedding weights.
     pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
         let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
-        mat_vec_mul_into(out_logits, head, hidden);
+        head.gemv(out_logits, hidden);
+    }
+
+    /// Numeric weight profile this model was loaded with (R-099).
+    pub fn profile(&self) -> WeightProfile {
+        self.profile
     }
 
     /// Single-step forward pass (RNN mode).
@@ -527,7 +692,7 @@ impl MambaModel {
     ) {
         self.forward_layers_normed(token, state, scratch);
         let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
-        mat_vec_mul_into(out_logits, head, &scratch.x);
+        head.gemv(out_logits, &scratch.x);
     }
 }
 

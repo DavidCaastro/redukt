@@ -8,15 +8,22 @@ use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
 use crate::domain::backbone::{
-    Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice,
+    Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice, WeightProfile,
 };
 
 /// v3 magic — kept for backward-compat parsing and tests.
 #[cfg(test)]
 const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
 pub const MAGIC_V4: &[u8; 8] = b"AZTH\x04\x00\x00\x00";
+/// v5 (R-099): v4 + 1-byte PROFILE after FLAGS. Written only when profile != F32.
+pub const MAGIC_V5: &[u8; 8] = b"AZTH\x05\x00\x00\x00";
 pub const HEADER_SIZE: usize = 28; // v2/v3: 8 magic + 4 total_bytes + 4 token_count + 12 hp
 pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
+pub const V5_HEADER_BASE: usize = 14; // v5: v4 base + 1 profile
+/// v5 PROFILE byte: bits 0-3 = weight quant code (0=F32, 1=Q8, 2=Q6 reserved),
+/// bits 4-7 reserved (must be 0).
+pub const V5_PROFILE_QUANT_MASK: u8 = 0x0F;
+pub const V5_PROFILE_QUANT_Q6_RESERVED: u8 = 2;
 pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3+ only)
 pub const V4_FLAG_CUSTOM_HP: u8 = 0x01;
 pub const V4_FLAG_EMB_SURGERY: u8 = 0x02;
@@ -87,10 +94,11 @@ pub struct HeaderInfo {
     pub skip_threshold: u8,      // 0 = disabled, 1-99 = adaptive RWKV skip threshold % (R-033)
     pub backbone: BackboneChoice, // R-039: which backbone was used
     pub enhanced_cm: bool,       // R-043/R-044: entropy-adaptive mixer + SegmentModel
+    pub profile: WeightProfile,  // R-099: Mamba weight profile (v5 PROFILE; F32 for v2-v4)
     pub header_size: usize,
 }
 
-/// Validate AZTH magic bytes. Returns format version (2, 3, or 4).
+/// Validate AZTH magic bytes. Returns format version (2, 3, 4 or 5).
 pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
     if data.len() < 8 {
         return Err(AzError::Format(format!(
@@ -106,8 +114,9 @@ pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
     let min_size = match version {
         2 | 3 => HEADER_SIZE,
         4 => V4_HEADER_BASE,
+        5 => V5_HEADER_BASE,
         _ => return Err(AzError::Format(format!(
-            "unsupported AZTH version {} (expected 2, 3, or 4)", version
+            "unsupported AZTH version {} (expected 2, 3, 4 or 5)", version
         ))),
     };
     if data.len() < min_size {
@@ -125,7 +134,23 @@ pub fn uses_default_hp(bias_lr: f32, ngram_scale: f32, mix_eta: f32) -> bool {
         && mix_eta.to_bits() == DEFAULT_MIX_ETA.to_bits()
 }
 
-/// Parse header for any AZTH version (v2, v3, v4). Assumes validate_magic passed.
+/// Decode the v5 PROFILE byte (R-099). Rejects reserved bits and unknown codes.
+pub fn parse_profile_byte(b: u8) -> AzResult<WeightProfile> {
+    if b & !V5_PROFILE_QUANT_MASK != 0 {
+        return Err(AzError::Format(format!(
+            "AZTH v5 PROFILE has reserved bits set: 0x{:02X}", b
+        )));
+    }
+    let code = b & V5_PROFILE_QUANT_MASK;
+    WeightProfile::from_header_code(code).ok_or_else(|| {
+        let what = if code == V5_PROFILE_QUANT_Q6_RESERVED { "Q6 (reserved)" } else { "unknown" };
+        AzError::Format(format!(
+            "AZTH v5 weight profile code {} = {} — not supported by this build", code, what
+        ))
+    })
+}
+
+/// Parse header for any AZTH version (v2-v5). Assumes validate_magic passed.
 pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
     let version = data[4];
     match version {
@@ -146,10 +171,11 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 skip_threshold: 0,
                 backbone: BackboneChoice::Rwkv,
                 enhanced_cm: false,
+                profile: WeightProfile::F32,
                 header_size: HEADER_SIZE,
             })
         }
-        4 => {
+        4 | 5 => {
             let total_bytes = u32::from_le_bytes(
                 [data[8], data[9], data[10], data[11]]
             ) as usize;
@@ -160,17 +186,22 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
-                    "AZTH v4 unknown flags: 0x{:02X}", reserved
+                    "AZTH v{} unknown flags: 0x{:02X}", version, reserved
                 )));
             }
-            let mut offset = V4_HEADER_BASE;
+            // v5: PROFILE byte right after FLAGS (R-099); v4 implies F32.
+            let (profile, mut offset) = if version == 5 {
+                (parse_profile_byte(data[13])?, V5_HEADER_BASE)
+            } else {
+                (WeightProfile::F32, V4_HEADER_BASE)
+            };
 
             // Parse custom hyperparameters (flag 0x01)
             let (bias_lr, ngram_scale, mix_eta) = if flags & V4_FLAG_CUSTOM_HP != 0 {
                 if data.len() < offset + 12 {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 custom HP truncated: {} < {}",
-                        data.len(), offset + 12
+                        "AZTH v{} custom HP truncated: {} < {}",
+                        version, data.len(), offset + 12
                     )));
                 }
                 let o = offset;
@@ -202,8 +233,8 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let emb_surgery = if flags & V4_FLAG_EMB_SURGERY != 0 {
                 if data.len() < offset + EMB_SURGERY_BYTES {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 emb-surgery truncated: {} < {}",
-                        data.len(), offset + EMB_SURGERY_BYTES
+                        "AZTH v{} emb-surgery truncated: {} < {}",
+                        version, data.len(), offset + EMB_SURGERY_BYTES
                     )));
                 }
                 let method = data[offset];
@@ -223,7 +254,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let shuffle_stride = if flags & V4_FLAG_SHUFFLE != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 shuffle truncated: {} < {}", data.len(), offset + 1
+                        "AZTH v{} shuffle truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -237,7 +268,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let delta_stride = if flags & V4_FLAG_DELTA != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 delta truncated: {} < {}", data.len(), offset + 1
+                        "AZTH v{} delta truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -251,7 +282,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let skip_threshold = if flags & V4_FLAG_ADAPTIVE_SKIP != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 adaptive-skip truncated: {} < {}", data.len(), offset + 1
+                        "AZTH v{} adaptive-skip truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -265,13 +296,13 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let backbone = if flags & V4_FLAG_BACKBONE != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v4 backbone truncated: {} < {}", data.len(), offset + 1
+                        "AZTH v{} backbone truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let b = data[offset];
                 offset += 1;
                 BackboneChoice::from_header_byte(b).ok_or_else(|| {
-                    AzError::Format(format!("AZTH v4 unknown backbone: {}", b))
+                    AzError::Format(format!("AZTH v{} unknown backbone: {}", version, b))
                 })?
             } else {
                 BackboneChoice::Rwkv
@@ -283,7 +314,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
-                skip_threshold, backbone, enhanced_cm,
+                skip_threshold, backbone, enhanced_cm, profile,
                 header_size: offset,
             })
         }
@@ -369,6 +400,64 @@ pub fn build_v4_header(
         hdr.push(backbone.header_byte());
     }
     hdr
+}
+
+/// Build the AZTH header for a given weight profile (R-099).
+/// F32 -> byte-identical v4 header (old decoders keep working).
+/// Any other profile -> v5: v4 layout with version 5 and PROFILE inserted after FLAGS.
+pub fn build_header(
+    total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+    emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
+    skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
+    profile: WeightProfile,
+) -> Vec<u8> {
+    let mut hdr = build_v4_header(
+        total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
+        shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
+    );
+    if profile != WeightProfile::F32 {
+        hdr[..8].copy_from_slice(MAGIC_V5);
+        hdr.insert(V4_HEADER_BASE, profile.header_code());
+    }
+    hdr
+}
+
+/// Resolve the Mamba weight profile for compression from `--quant` (R-099).
+/// "auto"/unspecified -> F32 (deterministic default; RWKV-style timing-based
+/// auto-selection is unsafe here because the profile changes the bitstream).
+/// Non-Mamba backbones always report F32 (their quant is not in the profile).
+pub fn resolve_compress_profile(quant: &str, backbone: BackboneChoice) -> AzResult<WeightProfile> {
+    if !matches!(backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
+        return Ok(WeightProfile::F32);
+    }
+    let requested = WeightProfile::from_cli(quant)
+        .map_err(|e| AzError::Parse { context: "--quant".into(), value: e })?;
+    Ok(requested.unwrap_or(WeightProfile::F32))
+}
+
+/// Resolve the profile for decompression: the header is authoritative.
+/// An explicit, conflicting `--quant` is rejected before any decoding (R-099).
+pub fn resolve_decompress_profile(quant: &str, hdr: &HeaderInfo) -> AzResult<WeightProfile> {
+    let mamba = matches!(hdr.backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte);
+    if !mamba {
+        if hdr.profile != WeightProfile::F32 {
+            return Err(AzError::Format(format!(
+                "AZTH v{} declares weight profile {} for backbone {} (only Mamba supports profiles)",
+                hdr.version, hdr.profile, hdr.backbone
+            )));
+        }
+        return Ok(WeightProfile::F32);
+    }
+    let requested = WeightProfile::from_cli(quant)
+        .map_err(|e| AzError::Parse { context: "--quant".into(), value: e })?;
+    match requested {
+        Some(p) if p != hdr.profile => Err(AzError::Format(format!(
+            "weight profile mismatch: archive was compressed with Mamba profile {} but --quant {} \
+             was requested; decompression needs the identical profile (omit --quant to use the header)",
+            hdr.profile, quant
+        ))),
+        _ => Ok(hdr.profile),
+    }
 }
 
 /// Parse header hyperparameters with NaN/Inf validation.
@@ -688,10 +777,16 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         backbone_choice,
         if backbone_str.is_empty() || backbone_str == "auto" { "auto" } else { "manual" });
 
+    // Weight profile (R-099): recorded in the header (v5) when != F32.
+    let mamba_profile = resolve_compress_profile(&quant_str, backbone_choice)?;
+    if matches!(backbone_choice, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
+        eprintln!("[compress] weight profile: {}", mamba_profile);
+    }
+
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_dyn_model(
-        backbone_choice, &weights_dir, quant_override,
+        backbone_choice, &weights_dir, quant_override, mamba_profile,
     );
     let v = model.vocab_size();
 
@@ -734,6 +829,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let t_start = std::time::Instant::now();
 
     let use_pipeline = model.supports_pipeline() && adaptive_skip == 0;
+    // R-098: with the persistent GEMV pool every large GEMV already uses all
+    // cores, so head(t-1) and layers(t) run back-to-back on this thread.
+    // Same functions, same inputs -> bit-identical logits either way.
+    let overlap_head = crate::domain::gemv::pool_threads() <= 1;
 
     if use_pipeline {
         // R-060: split-head pipeline — overlap LM head(t-1) with layers(t).
@@ -757,14 +856,19 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         for t in 1..tokens.len() {
             let tok = tokens[t] as usize;
 
-            // Overlap: worker runs head(hidden_a) → logits; main runs layers(tok) → hidden_b
-            std::thread::scope(|s| {
-                let h = s.spawn(|| {
-                    model.compute_head_into(&hidden_a, &mut logits);
+            if overlap_head {
+                // Overlap: worker runs head(hidden_a) → logits; main runs layers(tok) → hidden_b
+                std::thread::scope(|s| {
+                    let h = s.spawn(|| {
+                        model.compute_head_into(&hidden_a, &mut logits);
+                    });
+                    model.forward_layers_normed(tok, &mut state, &mut scratch, &mut hidden_b);
+                    h.join().unwrap();
                 });
+            } else {
+                model.compute_head_into(&hidden_a, &mut logits);
                 model.forward_layers_normed(tok, &mut state, &mut scratch, &mut hidden_b);
-                h.join().unwrap();
-            });
+            }
             // logits = logits[t-1], hidden_b = hidden[t]
 
             cm.compute_biases(None);
@@ -918,10 +1022,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let input_crc = crc32::crc32(compress_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_v4_header(
+    let hdr = build_header(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
         e8e9_applied, shuffle_applied, delta_applied, adaptive_skip,
-        backbone_choice, true,
+        backbone_choice, true, mamba_profile,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -947,7 +1051,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("  coder overhead: {:.4} BPB", metrics.overhead_bpb());
     eprintln!("  coder efficiency: {:.2}%", metrics.efficiency_pct());
     eprintln!("  CRC-32:         {:08X}", input_crc);
-    eprintln!("  format:         AZTH v4");
+    eprintln!("  format:         AZTH v{} (profile {})", hdr[4], mamba_profile);
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     eprintln!("  output:         {}", output_path);
 
@@ -1302,11 +1406,23 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     // Backbone from header (R-039)
     eprintln!("[decompress] backbone: {}", hdr.backbone);
 
+    // Weight profile from header (R-099): a conflicting --quant fails here,
+    // before any model load or decoding (never surfaces as a CRC mismatch).
+    let mamba_profile = resolve_decompress_profile(&quant_str, &hdr)?;
+    if matches!(hdr.backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
+        eprintln!("[decompress] weight profile: {} (from header)", mamba_profile);
+    }
+
     timer.start("model_load");
     let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_dyn_model(
-        hdr.backbone, &weights_dir, quant_override,
+        hdr.backbone, &weights_dir, quant_override, mamba_profile,
     );
+    if model.weight_profile() != mamba_profile {
+        return Err(AzError::Format(format!(
+            "loaded weight profile {} != header profile {}", model.weight_profile(), mamba_profile
+        )));
+    }
     let v = model.vocab_size();
 
     if !effective_surgery.is_empty() {
@@ -2585,5 +2701,202 @@ mod tests {
         // Post-BUG-001: Mamba always (simplified routing)
         assert_eq!(route_backbone(&ContentType::GenericBinary), BackboneChoice::Mamba);
         assert_eq!(route_backbone(&ContentType::Text), BackboneChoice::Mamba);
+    }
+
+    // ---- R-099: AZTH v5 PROFILE byte ----
+
+    /// Header with every optional v4 field present (Mamba backbone).
+    fn all_fields_header(profile: WeightProfile) -> Vec<u8> {
+        build_header(
+            4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
+            BackboneChoice::Mamba, true, profile,
+        )
+    }
+
+    fn with_payload(hdr: &[u8]) -> Vec<u8> {
+        let mut file = hdr.to_vec();
+        file.extend_from_slice(&[0xAB; 16]);
+        file.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        file
+    }
+
+    #[test]
+    fn build_header_f32_is_byte_identical_v4() {
+        let v4 = build_v4_header(
+            4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50, BackboneChoice::Mamba, true,
+        );
+        assert_eq!(all_fields_header(WeightProfile::F32), v4);
+        assert_eq!(&v4[..8], MAGIC_V4);
+    }
+
+    #[test]
+    fn build_header_q8_is_v4_plus_profile_byte() {
+        let v4 = all_fields_header(WeightProfile::F32);
+        let v5 = all_fields_header(WeightProfile::Q8);
+        assert_eq!(&v5[..8], MAGIC_V5);
+        assert_eq!(v5.len(), v4.len() + 1);
+        assert_eq!(v5[8..13], v4[8..13]); // TOTAL_BYTES + FLAGS unchanged
+        assert_eq!(v5[13], 1); // PROFILE: quant code 1 = Q8
+        assert_eq!(v5[14..], v4[13..]); // optional fields shifted by one byte
+    }
+
+    #[test]
+    fn parse_header_v5_roundtrip_all_fields() {
+        let hdr = all_fields_header(WeightProfile::Q8);
+        let file = with_payload(&hdr);
+        assert_eq!(validate_magic(&file).unwrap(), 5);
+        let info = parse_header(&file).unwrap();
+        let v4 = parse_header(&with_payload(&all_fields_header(WeightProfile::F32))).unwrap();
+        assert_eq!(info.version, 5);
+        assert_eq!(info.profile, WeightProfile::Q8);
+        assert_eq!(v4.profile, WeightProfile::F32);
+        assert_eq!(info.header_size, hdr.len());
+        assert_eq!(info.header_size, v4.header_size + 1);
+        assert_eq!(info.total_bytes, 4321);
+        assert_eq!((info.bias_lr, info.ngram_scale, info.mix_eta), (0.25, 0.6, 0.02));
+        assert_eq!(info.emb_surgery, v4.emb_surgery);
+        assert!(info.e8e9 && info.enhanced_cm);
+        assert_eq!((info.shuffle_stride, info.delta_stride, info.skip_threshold), (4, 1, 50));
+        assert_eq!(info.backbone, BackboneChoice::Mamba);
+        let (stream, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version);
+        assert_eq!(stream, &[0xAB; 16]);
+        assert_eq!(crc, Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn parse_header_v5_minimal() {
+        let hdr = build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba, false,
+            WeightProfile::Q8);
+        assert_eq!(hdr.len(), V5_HEADER_BASE + 1); // + backbone byte
+        let info = parse_header(&with_payload(&hdr)).unwrap();
+        assert_eq!(info.profile, WeightProfile::Q8);
+        assert_eq!(info.backbone, BackboneChoice::Mamba);
+    }
+
+    #[test]
+    fn validate_magic_v5_min_size() {
+        let mut data = vec![0u8; V5_HEADER_BASE];
+        data[..8].copy_from_slice(MAGIC_V5);
+        assert_eq!(validate_magic(&data).unwrap(), 5);
+        assert!(validate_magic(&data[..V5_HEADER_BASE - 1]).is_err());
+    }
+
+    #[test]
+    fn parse_profile_byte_rejects_reserved() {
+        assert_eq!(parse_profile_byte(0).unwrap(), WeightProfile::F32);
+        assert_eq!(parse_profile_byte(1).unwrap(), WeightProfile::Q8);
+        let q6 = parse_profile_byte(V5_PROFILE_QUANT_Q6_RESERVED).unwrap_err().to_string();
+        assert!(q6.contains("Q6"), "{}", q6);
+        assert!(parse_profile_byte(7).is_err());
+        assert!(parse_profile_byte(0x10).is_err()); // reserved bit 4
+        assert!(parse_profile_byte(0x81).is_err());
+    }
+
+    #[test]
+    fn parse_header_v5_rejects_bad_profile() {
+        let mut hdr = all_fields_header(WeightProfile::Q8);
+        hdr[13] = 0x20;
+        assert!(parse_header(&with_payload(&hdr)).is_err());
+        hdr[13] = V5_PROFILE_QUANT_Q6_RESERVED;
+        assert!(parse_header(&with_payload(&hdr)).is_err());
+    }
+
+    fn header_info(profile: WeightProfile, backbone: BackboneChoice) -> HeaderInfo {
+        let hdr = build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0, backbone, true, profile);
+        let mut file = with_payload(&hdr);
+        // RWKV+Q8 can't be produced by build_header users; craft it by hand.
+        if backbone == BackboneChoice::Rwkv && profile != WeightProfile::F32 {
+            file[..8].copy_from_slice(MAGIC_V5);
+            file.insert(V4_HEADER_BASE, profile.header_code());
+        }
+        parse_header(&file).unwrap()
+    }
+
+    #[test]
+    fn decompress_profile_comes_from_header() {
+        let q8 = header_info(WeightProfile::Q8, BackboneChoice::Mamba);
+        for cli in ["", "auto", "q8", "Q8"] {
+            assert_eq!(resolve_decompress_profile(cli, &q8).unwrap(), WeightProfile::Q8, "{}", cli);
+        }
+        let f32h = header_info(WeightProfile::F32, BackboneChoice::Mamba);
+        assert_eq!(resolve_decompress_profile("", &f32h).unwrap(), WeightProfile::F32);
+    }
+
+    #[test]
+    fn decompress_rejects_conflicting_quant_before_decoding() {
+        let q8 = header_info(WeightProfile::Q8, BackboneChoice::Mamba);
+        let err = resolve_decompress_profile("f32", &q8).unwrap_err().to_string();
+        assert!(err.contains("weight profile mismatch") && err.contains("Q8"), "{}", err);
+        let f32h = header_info(WeightProfile::F32, BackboneChoice::Mamba);
+        assert!(resolve_decompress_profile("q8", &f32h).is_err());
+        assert!(resolve_decompress_profile("q4", &f32h).is_err());
+        let rwkv_q8 = header_info(WeightProfile::Q8, BackboneChoice::Rwkv);
+        assert!(resolve_decompress_profile("", &rwkv_q8).is_err());
+    }
+
+    #[test]
+    fn compress_profile_resolution() {
+        let m = BackboneChoice::Mamba;
+        assert_eq!(resolve_compress_profile("q8", m).unwrap(), WeightProfile::Q8);
+        assert_eq!(resolve_compress_profile("f32", m).unwrap(), WeightProfile::F32);
+        assert_eq!(resolve_compress_profile("", m).unwrap(), WeightProfile::F32);
+        assert_eq!(resolve_compress_profile("auto", m).unwrap(), WeightProfile::F32);
+        assert_eq!(resolve_compress_profile("q8", BackboneChoice::MambaByte).unwrap(), WeightProfile::Q8);
+        assert!(resolve_compress_profile("q4", m).is_err());
+        // RWKV keeps its own quantization path; never recorded as a profile.
+        assert_eq!(resolve_compress_profile("q8", BackboneChoice::Rwkv).unwrap(), WeightProfile::F32);
+    }
+
+    /// Toy Q8 "model": logits = E_q8 · dequant(E_q8[prev_token]) through the
+    /// pooled Q8 GEMV — exercises quantize → pooled kernel → CDF → coder →
+    /// v5 container → parse → decode, without real weights.
+    #[test]
+    fn q8_small_roundtrip_through_v5_container() {
+        use crate::domain::gemv::{gemv_q8w_into, Q8wMatrix};
+        use crate::domain::tensor::Tensor;
+        let (vocab, d) = (96usize, 64usize);
+        let mut seed = 12345u32;
+        let data: Vec<f32> = (0..vocab * d).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+        }).collect();
+        let emb = Q8wMatrix::quantize(&Tensor::from_data(data, vec![vocab, d]), 64);
+        let logits_after = |tok: usize| {
+            let mut h = vec![0.0f32; d];
+            emb.dequant_row_into(&mut h, tok);
+            let mut l = vec![0.0f32; vocab];
+            gemv_q8w_into(&mut l, &emb, &h);
+            l
+        };
+        let tokens: Vec<usize> = (0..200).map(|i| (i * 7 + i / 3) % vocab).collect();
+
+        let mut enc = RangeEncoder::new();
+        enc.encode_symbol(tokens[0], &Cdf::uniform(vocab));
+        for t in 1..tokens.len() {
+            enc.encode_symbol(tokens[t], &cdf_from_logits(&logits_after(tokens[t - 1])));
+        }
+        let stream = enc.finish();
+        let payload: Vec<u8> = tokens.iter().map(|&t| t as u8).collect();
+        let hdr = build_header(payload.len() as u32, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
+            BackboneChoice::Mamba, true, WeightProfile::Q8);
+        let mut file = hdr.clone();
+        file.extend_from_slice(&stream);
+        file.extend_from_slice(&crc32::crc32(&payload).to_le_bytes());
+
+        assert_eq!(validate_magic(&file).unwrap(), 5);
+        let info = parse_header(&file).unwrap();
+        assert_eq!(resolve_decompress_profile("", &info).unwrap(), WeightProfile::Q8);
+        let (s, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version);
+        let mut dec = RangeDecoder::new(s);
+        let mut out = vec![decode_checked(&mut dec, &Cdf::uniform(vocab), vocab, 0).unwrap() as usize];
+        for t in 1..tokens.len() {
+            let cdf = cdf_from_logits(&logits_after(out[t - 1]));
+            out.push(decode_checked(&mut dec, &cdf, vocab, t).unwrap() as usize);
+        }
+        assert_eq!(out, tokens);
+        let restored: Vec<u8> = out.iter().map(|&t| t as u8).collect();
+        assert_eq!(Some(crc32::crc32(&restored)), crc);
     }
 }

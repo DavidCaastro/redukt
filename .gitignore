@@ -24,3 +24,4 @@ notebooks/kaggle-gpu-validation/
 data/benchmark/results/kaggle/
 # Plugin build artifacts
 plugins/redukt-gpu/target/
+__pycache__/

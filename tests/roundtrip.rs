@@ -458,6 +458,90 @@ fn scalar_determinism() {
 }
 
 // ---------------------------------------------------------------------------
+// R-098/R-099: Mamba pooled GEMV + Q8 weight profile (AZTH v5)
+// ---------------------------------------------------------------------------
+
+fn has_mamba_weights() -> bool {
+    Path::new("weights/mamba-130m/model.safetensors").exists()
+}
+
+fn run_redukt(bin: &Path, args: &[&str], threads: &str) -> std::process::Output {
+    Command::new(bin)
+        .args(args)
+        .env("REDUKT_THREADS", threads)
+        .output()
+        .expect("failed to run redukt")
+}
+
+/// Q8 archive: v5 header, byte-identical roundtrip, identical bytes for 1 vs N
+/// GEMV threads, and a conflicting `--quant f32` rejected before decoding.
+#[test]
+#[ignore] // requires Mamba weights; run with --release for speed
+fn mamba_q8_profile_roundtrip_and_mismatch() {
+    let bin = ensure_bin();
+    if !has_mamba_weights() { eprintln!("SKIP: no mamba weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_mamba_q8");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let input = tmp.join("input.txt");
+    let az_n = tmp.join("q8_n.azth");
+    let az_1 = tmp.join("q8_1.azth");
+    let restored = tmp.join("restored.txt");
+    let bad = tmp.join("bad.txt");
+    std::fs::write(&input, b"<invoice id=\"42\"><total currency=\"EUR\">1234.56</total></invoice>\n").unwrap();
+    let (i, n1, nn) = (input.to_str().unwrap(), az_1.to_str().unwrap(), az_n.to_str().unwrap());
+
+    for (out, threads) in [(nn, "4"), (n1, "1")] {
+        let o = run_redukt(&bin, &["compress", "--input", i, "--output", out,
+            "--backbone", "mamba", "--quant", "q8"], threads);
+        assert!(o.status.success(), "Q8 compress failed (threads={})", threads);
+    }
+    let azth = std::fs::read(&az_n).unwrap();
+    assert_eq!(&azth[..8], b"AZTH\x05\x00\x00\x00", "Q8 archive must be AZTH v5");
+    assert_eq!(azth[13], 1, "PROFILE byte must carry quant code 1 (Q8)");
+    assert_eq!(azth, std::fs::read(&az_1).unwrap(), "Q8 bytes differ between 1 and 4 threads");
+
+    let o = run_redukt(&bin, &["decompress", "--input", nn, "--output", restored.to_str().unwrap()], "4");
+    assert!(o.status.success(), "Q8 decompress failed");
+    assert_eq!(std::fs::read(&input).unwrap(), std::fs::read(&restored).unwrap());
+
+    let o = run_redukt(&bin, &["decompress", "--input", nn, "--output", bad.to_str().unwrap(),
+        "--quant", "f32"], "4");
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "Q8 archive decoded with --quant f32 must fail");
+    assert!(stderr.contains("weight profile mismatch"), "unclear error: {}", stderr);
+    assert!(!stderr.contains("CRC-32 mismatch"), "must fail before decoding/CRC");
+    assert!(!bad.exists(), "no output may be written on profile mismatch");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// F32 Mamba archives stay AZTH v4 and are byte-identical for 1 vs N threads.
+#[test]
+#[ignore] // requires Mamba weights; run with --release for speed
+fn mamba_f32_pooled_gemv_thread_count_invariant() {
+    let bin = ensure_bin();
+    if !has_mamba_weights() { eprintln!("SKIP: no mamba weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_mamba_f32_threads");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let input = tmp.join("input.txt");
+    std::fs::write(&input, b"The quick brown fox jumps over the lazy dog. 0123456789\n").unwrap();
+    let mut outputs = Vec::new();
+    for threads in ["1", "3", "8"] {
+        let out = tmp.join(format!("f32_{}.azth", threads));
+        let o = run_redukt(&bin, &["compress", "--input", input.to_str().unwrap(),
+            "--output", out.to_str().unwrap(), "--backbone", "mamba", "--quant", "f32"], threads);
+        assert!(o.status.success(), "F32 compress failed (threads={})", threads);
+        outputs.push(std::fs::read(&out).unwrap());
+    }
+    assert_eq!(&outputs[0][..5], b"AZTH\x04", "F32 archives must stay AZTH v4");
+    assert!(outputs.iter().all(|o| *o == outputs[0]), "F32 bytes depend on thread count");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
 // Utility: SHA-256 (minimal, no external deps)
 // ---------------------------------------------------------------------------
 

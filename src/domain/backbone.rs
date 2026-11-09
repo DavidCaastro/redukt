@@ -61,6 +61,59 @@ impl fmt::Display for BackboneChoice {
     }
 }
 
+/// Numeric weight profile of the Mamba-family backbone (R-099).
+/// Stored in the AZTH v5 PROFILE byte (bits 0-3). Decompression requires the
+/// identical profile: it changes the logits, hence the coded stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightProfile {
+    /// All weights f32 (AZTH v4 compatible, default).
+    F32,
+    /// Weight-only int8, per-row f32 scale, on in_proj/out_proj/embedding/head.
+    /// Activations and all other tensors stay f32.
+    Q8,
+}
+
+impl WeightProfile {
+    /// PROFILE quant code: 0=F32, 1=Q8 (2=Q6 reserved, 3-15 reserved).
+    pub fn header_code(self) -> u8 {
+        match self {
+            Self::F32 => 0,
+            Self::Q8 => 1,
+        }
+    }
+
+    /// Decode PROFILE quant code. None for reserved/unknown codes.
+    pub fn from_header_code(c: u8) -> Option<Self> {
+        match c {
+            0 => Some(Self::F32),
+            1 => Some(Self::Q8),
+            _ => None,
+        }
+    }
+
+    /// Parse a `--quant` value for the Mamba family.
+    /// `Ok(None)` = "auto"/unspecified (caller decides), `Err` = unsupported level.
+    pub fn from_cli(s: &str) -> Result<Option<Self>, String> {
+        match s.to_lowercase().as_str() {
+            "" | "auto" => Ok(None),
+            "f32" => Ok(Some(Self::F32)),
+            "q8" => Ok(Some(Self::Q8)),
+            other => Err(format!(
+                "--quant {} not supported for the Mamba backbone (use f32, q8 or auto)", other
+            )),
+        }
+    }
+}
+
+impl fmt::Display for WeightProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::F32 => write!(f, "F32"),
+            Self::Q8 => write!(f, "Q8"),
+        }
+    }
+}
+
 /// Route content type to backbone (R-039, updated R-040, simplified post-BUG-001).
 /// Mamba-130M wins 10/12 file types. RWKV marginal on GenericBinary (+4.6%),
 /// but samba misclassified as GenericBinary lost -79% with RWKV routing.

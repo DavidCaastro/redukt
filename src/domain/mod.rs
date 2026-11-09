@@ -6,6 +6,8 @@ pub mod match_model;
 pub mod run_model;
 pub mod word_model;
 pub mod tensor;
+pub mod par_pool;
+pub mod gemv;
 pub mod ngram;
 pub mod bias_head;
 pub mod mixer;
