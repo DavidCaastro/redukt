@@ -43,7 +43,7 @@ HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
 def detect_config(st):
     """Auto-detect model config from embedding tensor shape."""
-    emb = st.get_tensor("backbone.embeddings.weight").numpy()
+    emb = st.get_tensor("backbone.embeddings.weight")
     vocab_size, d_model = emb.shape
 
     n_layer = 0
@@ -56,12 +56,12 @@ def detect_config(st):
     dt_rank = (d_model + 15) // 16
 
     # Verify d_inner from in_proj shape
-    in_proj = st.get_tensor("backbone.layers.0.mixer.in_proj.weight").numpy()
+    in_proj = st.get_tensor("backbone.layers.0.mixer.in_proj.weight")
     actual_2di = in_proj.shape[0]
     d_inner = actual_2di // 2
 
     # Verify dt_rank from dt_proj shape
-    dt_proj = st.get_tensor("backbone.layers.0.mixer.dt_proj.weight").numpy()
+    dt_proj = st.get_tensor("backbone.layers.0.mixer.dt_proj.weight")
     dt_rank = dt_proj.shape[1]
 
     return {
@@ -115,7 +115,7 @@ def convert(input_path, output_path):
 
         def write_tensor(name, expected_numel=None):
             nonlocal total_floats
-            t = st.get_tensor(name).numpy().astype(np.float32).flatten()
+            t = np.asarray(st.get_tensor(name), dtype=np.float32).flatten()
             if expected_numel is not None and t.size != expected_numel:
                 print(f"  WARNING: {name} has {t.size} elements, "
                       f"expected {expected_numel}", file=sys.stderr)
