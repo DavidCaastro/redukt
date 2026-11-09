@@ -2295,22 +2295,32 @@ R-082 (Rust byte tokenizer) ─────────────────�
     - [ ] Documentar fortalezas (archivos estructurados, CPU-only, zero-dep)
     - [ ] Publicar resultados en `data/benchmark/results/`
 
-- R-090: PTX-as-string GPU kernels (from strata-inference pattern)
-  - **Estado**: BLOQUEADO (depende R-072 → R-076 GPU plugin architecture)
-  - **Prioridad**: P2 — siguiente paso para GPU offload
-  - **Deliverable**: SSM GEMV kernels como PTX inline en plugin GPU
+- R-090: CUDA GPU kernels for Mamba inference (from strata-inference pattern)
+  - **Estado**: IMPLEMENTADO — pendiente validación en Kaggle T4
+  - **Prioridad**: P1 — máximo impacto en throughput (15x proyectado)
+  - **Deliverable**: CUDA plugin completo (libredukt_gpu.so) con Mamba forward pass
   - **Subtareas**:
-    - [ ] Escribir GEMV kernel PTX para Q8 matmul (M=1 fast path)
-    - [ ] Escribir SSM recurrence kernel PTX
-    - [ ] Integrar con BackendVTable FFI (cuModuleLoadData)
-    - [ ] Benchmark vs CPU: throughput en T4
+    - [x] Escribir GEMV kernel CUDA con float4 vectorizado + warp shuffle reduction
+    - [x] Escribir SSM recurrence kernel CUDA (d_state genérico)
+    - [x] Escribir kernels auxiliares: RMSNorm, LayerNorm, SiLU, Conv1d, Softplus, GatedSiLU
+    - [x] Implementar carga de pesos desde formato .rbin (flat binary, 44B header)
+    - [x] Integrar con BackendVTable FFI v1 (4 exports: init/forward/reset/free)
+    - [x] Script conversor: SafeTensors → .rbin (`scripts/convert-weights-gpu.py`)
+    - [x] Notebook de test y benchmark (`notebooks/redukt-gpu-cuda-test.py`)
+    - [ ] Validar en Kaggle T4: compilar, forward pass, determinismo
+    - [ ] Benchmark vs CPU: throughput en T4 (objetivo: >300 tok/s)
+  - **Archivos**:
+    - `plugins/redukt-gpu-cuda/mamba_cuda.cu` — Plugin CUDA completo (~500 lines)
+    - `plugins/redukt-gpu-cuda/Makefile` — Build para Linux/Kaggle
+    - `scripts/convert-weights-gpu.py` — SafeTensors → .rbin
+    - `notebooks/redukt-gpu-cuda-test.py` — Test suite + benchmark
 
 **Paralelización**: R-088 es independiente y ejecutable inmediatamente.
 R-089 depende de R-088 (o R-086). R-090 es independiente pero P2.
 
 ```
 R-087 (research) ✅ ──→ R-088 (eval 353M) ──→ R-089 (benchmark vs Nacrith)
-                        R-090 (PTX kernels) ── independiente
+                        R-090 (CUDA kernels) ✅ implementado, pendiente Kaggle test
 ```
 
 **Impacto en Fase 16**: Si R-088 confirma compatibilidad de pesos 353M:
@@ -2805,6 +2815,9 @@ actual se resolverá empíricamente en R-093.
 | 2026-11-09 | docs: cpu-throughput-reformulation.md — auditoría código + reformulación hardware-aware, 10 fuentes |
 | 2026-11-09 | Proyección CPU-only: 96M+gate 237 tok/s decompress, 800-1500 tok/s compress (parallel scan) |
 | 2026-11-09 | ⚠️ Kaggle TPU v5e-8 saturado — R-084 bloqueado (push OK, sesión no inicia) |
+| 2026-11-09 | R-090 IMPLEMENTADO — CUDA Mamba plugin completo: 11 kernels (GEMV float4+warp shuffle, SSM, RMSNorm, LayerNorm, SiLU, Conv1d, Softplus, GatedSiLU) |
+| 2026-11-09 | R-090: .rbin binary weight format (44B header, flat f32), converter SafeTensors→.rbin, test+benchmark notebook |
+| 2026-11-09 | R-090: Pendiente validación en Kaggle T4. Proyección: ~500 tok/s (15x vs CPU 34 tok/s) |
 | 2026-11-09 | R-084 degradado P0→P1. R-088 (pesos pre-entrenados 353M) elevado a path crítico |
 | 2026-11-09 | R-085 nota: si R-088 confirma 353M, R-085 se cancela o reenfoca como fine-tuning |
 | 2026-11-07 | Fase 15 COMPLETADA: R-080 ✅ R-081 ✅ R-082 ✅ R-083 ✅ — MambaByte training infrastructure ready. |
