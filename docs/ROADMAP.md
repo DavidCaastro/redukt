@@ -2796,6 +2796,7 @@ actual se resolverá empíricamente en R-093.
 | 2026-11-09 | R-088: LayerNorm bug found and fixed (RMSNorm→LayerNorm): 1.7531→1.3156 BPB (-25%) |
 | 2026-11-09 | R-088: untied embeddings support added (lm_head_w), convert --preset 353m/972m, HF key stripping |
 | 2026-11-09 | Conclusión R-088: pesos pre-entrenados NO reemplazan training propio. R-084/R-085 siguen necesarios. |
+| 2026-11-09 | R-088: roundtrip interrumpido por rebuild (taskkill). Compresión OK, CRC OK, 218 tests pass. |
 | 2026-11-09 | Fase 18 definida: CPU Throughput Reformulation (R-091 → R-097). Hardware-aware execution pipeline. |
 | 2026-11-09 | R-091 (NTA prefetch MambaByte), R-092 (L2 tiling MambaByte) — re-evaluación bajo nuevo régimen |
 | 2026-11-09 | R-093 (parallel scan compress CPU) — P0, mayor impacto: 10-50× compress throughput |
