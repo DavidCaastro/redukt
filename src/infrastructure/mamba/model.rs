@@ -279,7 +279,8 @@ pub struct MambaState {
     // Per layer: conv_state (d_inner, d_conv-1) + ssm_state (d_inner, d_state)
     conv_states: Vec<Vec<f32>>,  // n_layer × (d_inner * (d_conv-1))
     ssm_states: Vec<Vec<f32>>,   // n_layer × (d_inner * d_state)
-    tokens_since_reset: u64,     // for the experimental periodic reset (see `reset_every`)
+    reset_every: u64,            // R-108: zero the state every N forwards (0 = never)
+    tokens_since_reset: u64,
 }
 
 impl MambaState {
@@ -289,6 +290,7 @@ impl MambaState {
         Self {
             conv_states: (0..config.n_layer).map(|_| vec![0.0; conv_len]).collect(),
             ssm_states: (0..config.n_layer).map(|_| vec![0.0; ssm_len]).collect(),
+            reset_every: 0,
             tokens_since_reset: 0,
         }
     }
@@ -299,30 +301,23 @@ impl MambaState {
         self.tokens_since_reset = 0;
     }
 
-    /// Experimental length-collapse mitigation (2026-11-10 diagnosis): zero the
-    /// recurrent state every `REDUKT_MAMBA_RESET_EVERY` tokens. Mamba-130M degenerates
-    /// to near-uniform logits beyond ~16-18K tokens on some inputs (reproduced with the
-    /// HF reference implementation). Encoder and decoder must use the same value; this
-    /// is NOT part of the AZTH format yet, so the variable is for measurement only.
+    /// R-108: periodic reset period in forwards (0 = never). The period is part of the
+    /// AZTH header (PROFILE bit 6 + RESET_LOG2), so encoder and decoder always agree.
+    pub fn set_reset_every(&mut self, every: u64) {
+        self.reset_every = every;
+    }
+
+    /// Length-collapse mitigation (R-108, diagnosed 2026-11-10): Mamba-130M's recurrence
+    /// degenerates to near-uniform logits beyond ~16-18K tokens on some inputs (reproduced
+    /// with the HF reference implementation). Zeroing conv+SSM state every `reset_every`
+    /// forwards keeps whole-file BPB within ~3% of the 10 KB figure (enwik8 100 KB:
+    /// 1.6327 -> 0.9950 with 4096). Called once per forward, before the embedding lookup.
     fn maybe_periodic_reset(&mut self) {
-        let every = reset_every();
-        if every > 0 && self.tokens_since_reset >= every {
+        if self.reset_every > 0 && self.tokens_since_reset >= self.reset_every {
             self.reset();
         }
         self.tokens_since_reset += 1;
     }
-}
-
-/// `REDUKT_MAMBA_RESET_EVERY=N` (0 or unset = never), read once.
-fn reset_every() -> u64 {
-    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let v = std::env::var("REDUKT_MAMBA_RESET_EVERY").ok().and_then(|v| v.trim().parse::<u64>().ok());
-        if let Some(n) = v.filter(|n| *n > 0) {
-            eprintln!("[mamba] EXPERIMENTAL: recurrent state reset every {} tokens (REDUKT_MAMBA_RESET_EVERY)", n);
-        }
-        v.unwrap_or(0)
-    })
 }
 
 // --- Scratch ---
@@ -987,6 +982,7 @@ use crate::domain::backbone::{Backbone, BackboneState, BackboneScratch};
 
 impl BackboneState for MambaState {
     fn reset(&mut self) { self.reset(); }
+    fn set_reset_every(&mut self, every: u64) { self.set_reset_every(every); }
 }
 
 impl BackboneScratch for MambaScratch {

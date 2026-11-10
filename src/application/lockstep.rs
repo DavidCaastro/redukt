@@ -27,7 +27,8 @@ use std::time::Instant;
 
 use crate::application::codec::{
     build_header, cdf_from_logits, cdf_from_logits_with, extract_stream_and_crc_v, parse_header, preprocess_input,
-    resolve_compress_profile, resolve_decompress_profile, validate_magic, HeaderInfo, CRC_SIZE,
+    reset_every_from_log2, resolve_compress_profile, resolve_decompress_profile, resolve_reset_log2, validate_magic,
+    HeaderInfo, CRC_SIZE,
 };
 use crate::application::model_loader::{self, DynModel, DynTokenizer};
 use crate::domain::backbone::{
@@ -60,6 +61,8 @@ pub struct BatchOptions {
     pub shuffle_mode: String,
     pub delta_mode: String,
     pub backbone: String,
+    /// R-108: `--reset-every` as typed (empty = backbone default); decompress ignores it.
+    pub reset_every: String,
 }
 
 /// Everything a stream needs besides the backbone state (Phase A inputs).
@@ -109,6 +112,8 @@ pub struct EncodeMeta {
     pub ngram_scale: f32,
     pub mix_eta: f32,
     pub emb_surgery: String,
+    /// R-108: backbone state reset period as log2 (0 = never), written to the header.
+    pub reset_log2: u8,
 }
 
 /// A file ready to enter a slot.
@@ -185,6 +190,7 @@ pub fn run_lockstep<M: Backbone, T: BackendTokenizer>(
                 }),
                 Some(Ok(adm)) => {
                     states[i].reset();
+                    states[i].set_reset_every(reset_every_of(&adm)); // R-108: per file, from meta/header
                     scratches[i].reset_perf();
                     admit(&mut works[i], adm, v);
                 }
@@ -258,6 +264,14 @@ pub fn run_lockstep<M: Backbone, T: BackendTokenizer>(
 }
 
 /// Install an admission into an empty slot.
+/// R-108: the reset period a stream must use (encode: what the header will say; decode: the header).
+fn reset_every_of(adm: &Admission) -> u64 {
+    match adm {
+        Admission::Encode { meta, .. } => reset_every_from_log2(meta.reset_log2),
+        Admission::Decode { hdr, .. } => hdr.reset_every(),
+    }
+}
+
 fn admit(w: &mut Work, adm: Admission, v: usize) {
     let started = Instant::now();
     let (name, cm, io) = match adm {
@@ -388,7 +402,7 @@ fn encode_output(enc: RangeEncoder, m: &EncodeMeta) -> AzResult<Vec<u8>> {
     let total_u32 = validate_u32_size(m.total_bytes, "TOTAL_BYTES")?;
     let hdr = build_header(
         total_u32, m.bias_lr, m.ngram_scale, m.mix_eta, &m.emb_surgery,
-        m.e8e9, m.shuffle, m.delta, 0, m.backbone, true, m.profile,
+        m.e8e9, m.shuffle, m.delta, 0, m.backbone, true, m.profile, m.reset_log2,
     );
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -537,6 +551,7 @@ fn compress_admission(
         ngram_scale: opts.ngram_scale,
         mix_eta: opts.mix_eta,
         emb_surgery: opts.emb_surgery.clone(),
+        reset_log2: resolve_reset_log2(&opts.reset_every, key.backbone)?,
     };
     Ok(Admission::Encode { name, tokens, meta })
 }
@@ -822,7 +837,7 @@ mod tests {
         EncodeMeta {
             total_bytes: total, crc, e8e9: false, shuffle: 0, delta: 0,
             backbone: BackboneChoice::Mamba, profile: WeightProfile::F32,
-            bias_lr: 0.30, ngram_scale: 0.50, mix_eta: 0.01, emb_surgery: String::new(),
+            bias_lr: 0.30, ngram_scale: 0.50, mix_eta: 0.01, emb_surgery: String::new(), reset_log2: 0,
         }
     }
 

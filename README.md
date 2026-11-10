@@ -60,10 +60,11 @@ Wins 8/12 files vs brotli-11 at 10 KB; loses on high-entropy binary (sao +45%, o
 **Whole-file results (Kaggle T4, 2026-11-10, `data/benchmark/results/kaggle-fullsize/`)**: with the current Mamba
 backbone the ratio collapses with length — enwik8 0.964 (10 KB) → 1.63 (100 KB) → 3.91 (2 MB), and all five whole
 industry files lose to brotli-11/xz. The cause is Mamba-130M's recurrent state degenerating beyond ~16K tokens
-(reproduced with the HF reference implementation). An experimental periodic state reset
-(`REDUKT_MAMBA_RESET_EVERY=4096`, encoder and decoder must agree) restores 0.995 bpb on the 100 KB prefix and wins the
-five whole industry files again (apache 0.185 vs brotli 0.313, UBL 0.235 vs 0.247); putting the period in the format
-is roadmap item R-108. Until then, treat every figure above as a 10 KB-window figure.
+(reproduced with the HF reference implementation). A periodic state reset
+is now the default (R-108): the Mamba backbone state is zeroed every 4096 tokens and the period is recorded in the AZTH
+header (`compress --reset-every N`, 0 = off). It restores 0.995 bpb on the 100 KB prefix and wins the five whole
+industry files again (apache 0.185 vs brotli 0.313, UBL 0.235 vs 0.247). 10 KB references grow by one header byte
+(enwik8 F32 0.9648, Q8 0.9695). Until then, treat every figure above as a 10 KB-window figure.
 
 Throughput (Mamba backbone, i5-1235U laptop, measured 2026-11-10): 53.6 tok/s single-stream F32, 111-127 tok/s Q8
 weight-only, 315-322 tok/s aggregate with lockstep batching (N=32 streams), 366 tok/s with `--numeric fma`.

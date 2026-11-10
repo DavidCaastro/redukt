@@ -90,6 +90,10 @@ fn print_usage() {
     eprintln!("                       Streams share each weight fetch (GEMV->GEMM); output per file is");
     eprintln!("                       byte-identical to single-file mode. Memory ~6 MB per stream (Mamba).");
     eprintln!("                       Worker threads are set by REDUKT_THREADS, not by --jobs.");
+    eprintln!("  --reset-every <N>    Compress (Mamba family): zero the backbone state every N tokens (R-108;");
+    eprintln!("                       0 = never, else a power of two 256..1048576; default 4096). Stored in the");
+    eprintln!("                       header, so decompress always follows the archive. Mamba-130M degenerates");
+    eprintln!("                       beyond ~16K tokens of context; the reset keeps whole-file BPB near 10 KB.");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
     eprintln!();
     eprintln!("Environment:");

@@ -42,7 +42,7 @@ import numpy as np
 REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt.git")
 REDUKT_REF = os.environ.get("REDUKT_REF", "88782bc")   # commit on origin/master
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("cuda-test-out")
-CPU_REF_BPB = 0.9641          # enwik8 10KB, CPU F32 (AZTH v5); Q8 reference is 0.9688
+CPU_REF_BPB = 0.9648          # enwik8 10KB, CPU F32 (AZTH v5 + R-108 RESET_LOG2 byte); Q8 reference is 0.9695
 BATCH_SIZES = (1, 8, 32, 128)
 ENWIK8_URL = "http://mattmahoney.net/dc/enwik8.zip"
 BACKEND_OK, BACKEND_INIT_FAILED, BACKEND_INVALID_ARGUMENT = 0, 1, 5

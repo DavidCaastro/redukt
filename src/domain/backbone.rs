@@ -126,6 +126,9 @@ pub fn route_backbone(_ct: &crate::domain::content_detect::ContentType) -> Backb
 pub trait BackboneState: Send {
     /// Reset all state to zeros (for batch reuse without reallocation).
     fn reset(&mut self);
+    /// R-108: zero the recurrent state every `every` forwards (0 = never). Recorded in the
+    /// AZTH header; backbones without length drift ignore it (default no-op).
+    fn set_reset_every(&mut self, _every: u64) {}
 }
 
 /// Pre-allocated scratch workspace for zero-alloc forward passes.

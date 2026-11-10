@@ -288,13 +288,16 @@ fn golden_reference_determinism() {
 
     // Verify compressed output matches golden reference
     let azth_bytes = std::fs::read(&compressed).unwrap();
-    assert_eq!(azth_bytes.len(), 32,
-        "golden: expected 32 bytes, got {}", azth_bytes.len());
+    // R-108: +1 header byte (RESET_LOG2 = 12 after PROFILE 0x50); the coded stream is unchanged
+    // for inputs shorter than 4096 tokens.
+    assert_eq!(azth_bytes.len(), 33,
+        "golden: expected 33 bytes, got {}", azth_bytes.len());
 
     let hash = sha256_hex(&azth_bytes);
-    // Golden SHA-256 for Windows x86_64 AVX2, AZTH v5 F32 (re-measured 2026-11-10; the v3 Q8
-    // golden of 2026-10-29 was 35 B). F32 is the golden profile; update if the pipeline changes.
-    let expected = "5e6b876a062e1e414dbf483493b128a3146de8f70b4e90d69eac282b520693aa";
+    // Golden SHA-256 for Windows x86_64 AVX2, AZTH v5 F32 with R-108 RESET_LOG2 (re-measured
+    // 2026-11-10; before R-108: 32 B, 5e6b876a...; the v3 Q8 golden of 2026-10-29 was 35 B).
+    // F32 is the golden profile; update if the pipeline changes.
+    let expected = "b8719bf8d1ac6a7ed3426981ccb859f53f195023af7d869000fbb294bdb8fc0d";
     assert_eq!(hash, expected,
         "golden hash mismatch — platform or pipeline changed?\n  got:      {}\n  expected: {}",
         hash, expected);

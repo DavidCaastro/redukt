@@ -103,11 +103,14 @@ MAGIC:       8B  "AZTH\x05\x00\x00\x00"
 TOTAL_BYTES: 4B  LE
 FLAGS:       1B  (same bits as v4)
 PROFILE:     1B  (bits 0-3 QUANT: 0=F32, 1=Q8, 2=Q6 reserved;
-                  bits 4-5 NUMERIC_CONTRACT: 0=legacy libm, 1=fmath-v1, 2-3=error before model load;
-                  bits 6-7 reserved)
+                  bits 4-5 NUMERIC_CONTRACT: 0=legacy libm, 1=fmath-v1, 2=fma-v1, 3=error before model load;
+                  bit 6 RESET_PERIOD -> 1 B RESET_LOG2 follows (R-108); bit 7 reserved)
 [optional blocks as v4]  STREAM  CRC32 (4B)
 ```
-Header: 14B up to 35B. Since R-104 F1 (51dafd9) the encoder ALWAYS writes v5: F32 -> PROFILE 0x10, Q8 -> 0x11
+Header: 14B up to 36B. R-108 (2026-11-10): PROFILE bit 6 = RESET_PERIOD, followed by 1 B RESET_LOG2 (8..=20); the
+Mamba family writes it by default (12 = 4096 forwards: PROFILE 0x50 F32 / 0x51 Q8), `--reset-every 0` omits it,
+RWKV/plugin never. Decoder applies the period from the header; pre-R-108 decoders reject it up front.
+Since R-104 F1 (51dafd9) the encoder ALWAYS writes v5: F32 -> PROFILE 0x10, Q8 -> 0x11
 (contract 1 = pure-Rust `fmath` exp/log, `src/domain/fmath.rs`). The coded stream is identical to v4/libm (6/6 cases);
 only the header changes (+1 B for F32). v2-v4 and early v5 (bits 4-5 = 0) decode via the legacy libm branch.
 The decoder rejects a conflicting `--quant`; `decompress` takes profile and contract from the header.
@@ -241,9 +244,11 @@ same aggregate throughput).
 Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (Mamba+CM F32, AZTH v5, `--bytes 10240`)**: 0.9641 BPB [MEASURED: 2026-11-10] (current reference;
-  0.9633 under v4 until R-104 — same stream, +1 B header)
-- **compress (Mamba+CM Q8, AZTH v5)**: 0.9688 BPB (+0.57% vs F32) [MEASURED: 2026-11-10]
+- **compress (Mamba+CM F32, AZTH v5 + R-108 RESET_LOG2, `--bytes 10240`)**: 0.9648 BPB (1,235 B) [MEASURED: 2026-11-10]
+  (current reference; 0.9641 before R-108 and 0.9633 under v4 — same coded stream, +1 B header each time)
+- **compress (Mamba+CM Q8, AZTH v5 + R-108)**: 0.9695 BPB (1,241 B; 0.9688 before R-108) [MEASURED: 2026-11-10]
+- **compress (Mamba+CM Q8, enwik8 100 KB, default reset 4096)**: 0.9951 BPB (12,737 B) [MEASURED: 2026-11-10];
+  `--reset-every 0` reproduces the pre-R-108 1.6327 (20,899 B)
 - compress (Mamba+CM, older binary): 0.9609 BPB [MEASURED: 2026-10-31] — outdated reference, not a platform
   divergence (R-104); the figures in the tables below were measured with that older binary
 - **compress (RWKV+CM, AZTH v4)**: 1.3312 BPB [MEASURED: 2026-10-30]
@@ -299,11 +304,10 @@ That scale test is RWKV-only. **With the Mamba backbone the ratio COLLAPSES with
 (apache 0.494 vs 0.313, UBL 0.481 vs 0.252, syslog 1.11 vs 0.37). Cause: Mamba-130M's recurrent state degenerates
 to near-uniform logits beyond ~16-18K tokens; reproduced with the HF reference implementation, so it is the model,
 not the runtime (`data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2026-11-10.md`). RWKV-7 does not drift (1.29 bpb at 100 KB).
-Mitigation measured: resetting the backbone state every 4096 tokens (`REDUKT_MAMBA_RESET_EVERY`, experimental,
-encoder and decoder must agree) gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) and wins all five whole industry files
+Mitigation shipped (R-108): the backbone state is reset every 4096 tokens by default for the Mamba family and the
+period is in the AZTH header (`--reset-every N`, 0 = off); it gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) and wins all five whole industry files
 again (apache 0.185 vs brotli 0.313, facturae 0.248 vs 0.395, UBL 0.235 vs 0.247, syslog 0.245 vs 0.379, openssh
-0.202 vs 0.359) at zero extra compute; productizing
-it requires the period in the AZTH header (R-108). Every headline Redukt figure is a 10 KB window inside the
+0.202 vs 0.359) at zero extra compute. Every headline Redukt figure is a 10 KB window inside the
 regime where the backbone still works. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 
@@ -325,7 +329,7 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-103 CUDA plugin on Kaggle T4 (`kaggle-cuda/`) | roundtrip OK, BPB 0.9641 == CPU F32; batch N=1/8/32/128 = 151/951/1,076/1,117 tok/s | validated |
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
-| R-108 periodic backbone state reset (`REDUKT_MAMBA_RESET_EVERY`, experimental) | enwik8 100 KB 1.6327 -> 0.9950 bpb (reset 4096); 5/5 whole industry files win again (-5% to -44% vs brotli); roundtrip OK; default output byte-identical | measured, format change pending |
+| R-108 periodic backbone state reset — in the format (PROFILE bit 6 + RESET_LOG2, default 4096 for Mamba) | enwik8 100 KB 1.6327 -> 0.9951 bpb; 5/5 whole industry files win again (-5% to -44% vs brotli); header-driven decompress roundtrip OK; `--reset-every 0` = old output; 10 KB references +1 B | done |
 | Plugin lockstep guard | `--jobs > 1 --backbone plugin` now rejected (single FFI v1 state) | done |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical

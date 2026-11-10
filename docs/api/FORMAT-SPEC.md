@@ -177,13 +177,16 @@ Offset  Size  Field          Description
 0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
 0x0C    1B    FLAGS          Same bits and semantics as v4
 0x0D    1B    PROFILE        Weight profile (see below)
-0x0E    var   [optional]     Exactly the v4 optional fields, same order:
+[0x0E]  1B    RESET_LOG2     Only if PROFILE bit 6 is set (R-108): backbone state reset period = 2^RESET_LOG2
+                             forwards, 8 <= RESET_LOG2 <= 20 (256 .. 1,048,576). Written by default for the
+                             Mamba family (12 = 4096); never for RWKV/plugin.
+var     var   [optional]     Exactly the v4 optional fields, same order:
                              [HP 12B] [EMB 5B] [SHUFFLE 1B] [DELTA 1B] [SKIP 1B] [BACKBONE 1B]
 var     var   STREAM         Arithmetic coded probability stream
 EOF-4   4B    CRC32          CRC-32 (IEEE) of the bytes that entered the coder
 ```
 
-Header size: **14 bytes** minimum (15 for a Mamba archive: +1 BACKBONE), 35 bytes maximum.
+Header size: **14 bytes** minimum (16 for a default Mamba archive: +1 RESET_LOG2 +1 BACKBONE), 36 bytes maximum.
 
 ### PROFILE byte
 
@@ -191,10 +194,22 @@ Header size: **14 bytes** minimum (15 for a Mamba archive: +1 BACKBONE), 35 byte
 |------|-------------------|--------|
 | 0–3  | QUANT             | `0` = F32, `1` = Q8 (recipe below), `2` = Q6 (reserved, rejected), `3`–`15` reserved (rejected) |
 | 4–5  | NUMERIC_CONTRACT  | `0` = legacy libm, `1` = fmath-v1 (default since R-104 F1), `2` = fma-v1 (R-107, Mamba family only, opt-in), `3` reserved (rejected) |
-| 6–7  | —                 | Reserved, must be 0 (decoder rejects) |
+| 6    | RESET_PERIOD      | `1` = a RESET_LOG2 byte follows PROFILE (R-108). Pre-R-108 decoders reject it as a reserved bit, never with a CRC mismatch |
+| 7    | —                 | Reserved, must be 0 (decoder rejects) |
 
-Values written by the current encoder: `0x10` (F32) and `0x11` (Q8) by default;
-`0x20` (F32) and `0x21` (Q8) with `compress --numeric fma` (Mamba / MambaByte).
+Values written by the current encoder: Mamba family `0x50` (F32) and `0x51` (Q8) by default (bit 6 set, RESET_LOG2 = 12),
+`0x60` / `0x61` with `compress --numeric fma`; `0x10` / `0x11` with `--reset-every 0`; RWKV `0x10`.
+
+### RESET_LOG2 (R-108)
+
+Mamba-130M's recurrent state degenerates to near-uniform logits beyond ~16-18K tokens of context on some inputs
+(reproduced with the HF reference implementation, 2026-11-10; `data/benchmark/results/kaggle-fullsize/`). The
+encoder zeroes the backbone conv + SSM state every 2^RESET_LOG2 forwards (the context-mixing models keep running)
+and records the period here so the decoder replays it exactly. Measured: enwik8 100 KB 1.6327 -> 0.9951 bpb with 4096;
+all five whole industry files go from losing to beating brotli-11/xz. Inputs shorter than the period produce the same
+coded stream as before R-108 (+1 header byte). `compress --reset-every N` (0 = never, power of two 256..1048576)
+overrides the default; the flag applies to the Mamba family only. In lockstep batches every stream carries its own
+period (from its header on decode), so batch output stays byte-identical to single-file output.
 A non-F32 profile is only valid for the Mamba / MambaByte backbones;
 the decoder rejects it for RWKV (RWKV's own `--quant` is not part of the format).
 
@@ -302,7 +317,7 @@ means byte count implies token count).
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
 | v4      | `\x04`      | 13–34       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, skip, backbone, CM) |
-| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104; contract 2 fma-v1, R-107) |
+| v5      | `\x05`      | 14–36       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104; contract 2 fma-v1, R-107; RESET_LOG2 byte when PROFILE bit 6, R-108) |
 
 The decoder accepts v2, v3, v4 and v5 files:
 - **v2**: no CRC check (backward compatible)
@@ -311,7 +326,8 @@ The decoder accepts v2, v3, v4 and v5 files:
 - **v5**: as v4, plus the weight profile and the numeric contract are taken from PROFILE
 
 The encoder writes **v5** for every archive since R-104 F1 (PROFILE `0x10` for
-F32, `0x11` for Q8; `0x20` / `0x21` with `--numeric fma`, R-107). Before that,
+F32, `0x11` for Q8; `0x20` / `0x21` with `--numeric fma`, R-107; since R-108 the Mamba
+family sets bit 6 and appends RESET_LOG2, i.e. `0x50` / `0x51` by default). Before that,
 F32 archives were written as v4. A timing-based
 auto-selection of the weight profile is never used: it would make the bitstream
 machine-dependent.

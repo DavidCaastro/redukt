@@ -118,6 +118,13 @@ impl BackboneState for DynState {
             Self::Plugin(s) => s.reset(),
         }
     }
+    /// R-108: only the Mamba family drifts with length; RWKV/plugin ignore the period.
+    fn set_reset_every(&mut self, every: u64) {
+        match self {
+            Self::Mamba(s) | Self::MambaByte(s) => s.set_reset_every(every),
+            Self::Rwkv(_) | Self::Plugin(_) => {}
+        }
+    }
 }
 
 impl BackboneScratch for DynScratch {

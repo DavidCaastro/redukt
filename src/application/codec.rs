@@ -9,7 +9,7 @@ use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
-use crate::domain::backbone::{Backbone, BackendTokenizer, BackboneChoice, WeightProfile};
+use crate::domain::backbone::{Backbone, BackboneState, BackendTokenizer, BackboneChoice, WeightProfile};
 use crate::domain::fmath::NumericContract;
 
 /// v3 magic — kept for backward-compat parsing and tests.
@@ -24,8 +24,19 @@ pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
 pub const V5_HEADER_BASE: usize = 14; // v5: v4 base + 1 profile
 /// v5 PROFILE byte: bits 0-3 = weight quant code (0=F32, 1=Q8, 2=Q6 reserved),
 /// bits 4-5 = NUMERIC_CONTRACT (0=legacy libm, 1=fmath-v1, 2=fma-v1 (R-107, Mamba
-/// family only), 3 reserved; R-104), bits 6-7 reserved (must be 0).
+/// family only), 3 reserved; R-104), bit 6 = RESET_PERIOD field present (R-108: one
+/// RESET_LOG2 byte follows PROFILE), bit 7 reserved (must be 0).
 pub const V5_PROFILE_QUANT_MASK: u8 = 0x0F;
+/// R-108: PROFILE bit 6 — a 1-byte RESET_LOG2 follows; the backbone state is zeroed every
+/// 2^RESET_LOG2 forwards. Pre-R-108 decoders reject it up front ("reserved bits set").
+pub const V5_PROFILE_RESET_FLAG: u8 = 0x40;
+/// Valid RESET_LOG2 range: 2^8 = 256 .. 2^20 = 1M forwards.
+pub const RESET_LOG2_MIN: u8 = 8;
+pub const RESET_LOG2_MAX: u8 = 20;
+/// Default period for the Mamba family: 4096 forwards (measured 2026-11-10: enwik8 100 KB
+/// 1.6327 -> 0.9950 bpb; 8192 gives 0.9968). Inputs under ~16 KB never trigger a reset, so
+/// the 10 KB references keep their coded stream (+1 header byte).
+pub const DEFAULT_RESET_LOG2: u8 = 12;
 pub const V5_PROFILE_QUANT_Q6_RESERVED: u8 = 2;
 pub const V5_PROFILE_CONTRACT_SHIFT: u8 = 4;
 pub const V5_PROFILE_CONTRACT_MASK: u8 = 0x30;
@@ -101,7 +112,53 @@ pub struct HeaderInfo {
     pub enhanced_cm: bool,       // R-043/R-044: entropy-adaptive mixer + SegmentModel
     pub profile: WeightProfile,  // R-099: Mamba weight profile (v5 PROFILE; F32 for v2-v4)
     pub numeric_contract: NumericContract, // R-104: v5 PROFILE bits 4-5; legacy for v2-v4
+    pub reset_log2: u8,          // R-108: backbone state reset every 2^n forwards (0 = never)
     pub header_size: usize,
+}
+
+impl HeaderInfo {
+    /// R-108: reset period in forwards (0 = never).
+    pub fn reset_every(&self) -> u64 {
+        reset_every_from_log2(self.reset_log2)
+    }
+}
+
+/// 2^log2 forwards, or 0 for "never".
+pub fn reset_every_from_log2(log2: u8) -> u64 {
+    if log2 == 0 { 0 } else { 1u64 << log2 }
+}
+
+/// R-108: the period written for a backbone. The Mamba family drifts with length and gets
+/// `DEFAULT_RESET_LOG2` unless `--reset-every` says otherwise; other backbones never reset.
+pub fn default_reset_log2(backbone: BackboneChoice) -> u8 {
+    if is_mamba_family(backbone) { DEFAULT_RESET_LOG2 } else { 0 }
+}
+
+/// Parse `--reset-every <N>`: 0 = never, otherwise a power of two in 256..=1048576.
+pub fn parse_reset_every(s: &str) -> AzResult<u8> {
+    let bad = |v: &str| AzError::Parse { context: "--reset-every".into(), value: v.to_string() };
+    let n: u64 = s.trim().parse().map_err(|_| bad(s))?;
+    if n == 0 {
+        return Ok(0);
+    }
+    if !n.is_power_of_two() {
+        return Err(bad(&format!("{} (must be 0 or a power of two)", s)));
+    }
+    let log2 = n.trailing_zeros() as u8;
+    if !(RESET_LOG2_MIN..=RESET_LOG2_MAX).contains(&log2) {
+        return Err(bad(&format!("{} (must be 0 or between 256 and 1048576)", s)));
+    }
+    Ok(log2)
+}
+
+/// Validate a RESET_LOG2 byte read from a header.
+fn check_reset_log2(log2: u8) -> AzResult<u8> {
+    if log2 == 0 || !(RESET_LOG2_MIN..=RESET_LOG2_MAX).contains(&log2) {
+        return Err(AzError::Format(format!(
+            "AZTH v5 RESET_LOG2 out of range: {} (expected {}..={})", log2, RESET_LOG2_MIN, RESET_LOG2_MAX
+        )));
+    }
+    Ok(log2)
 }
 
 /// Validate AZTH magic bytes. Returns format version (2, 3, 4 or 5).
@@ -144,7 +201,7 @@ pub fn uses_default_hp(bias_lr: f32, ngram_scale: f32, mix_eta: f32) -> bool {
 /// Rejects reserved bits, unknown quant codes and unknown numeric contracts,
 /// so an unsupported archive fails while parsing, before any model load.
 pub fn parse_profile_byte(b: u8) -> AzResult<(WeightProfile, NumericContract)> {
-    if b & !(V5_PROFILE_QUANT_MASK | V5_PROFILE_CONTRACT_MASK) != 0 {
+    if b & !(V5_PROFILE_QUANT_MASK | V5_PROFILE_CONTRACT_MASK | V5_PROFILE_RESET_FLAG) != 0 {
         return Err(AzError::Format(format!(
             "AZTH v5 PROFILE has reserved bits set: 0x{:02X}", b
         )));
@@ -194,6 +251,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 enhanced_cm: false,
                 profile: WeightProfile::F32,
                 numeric_contract: NumericContract::LegacyLibm,
+                reset_log2: 0,
                 header_size: HEADER_SIZE,
             })
         }
@@ -218,6 +276,19 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 (p, c, V5_HEADER_BASE)
             } else {
                 (WeightProfile::F32, NumericContract::LegacyLibm, V4_HEADER_BASE)
+            };
+            // R-108: RESET_LOG2 right after PROFILE when PROFILE bit 6 is set.
+            let reset_log2 = if version == 5 && data[13] & V5_PROFILE_RESET_FLAG != 0 {
+                if data.len() < offset + 1 {
+                    return Err(AzError::Format(format!(
+                        "AZTH v5 RESET_LOG2 truncated: {} < {}", data.len(), offset + 1
+                    )));
+                }
+                let l = check_reset_log2(data[offset])?;
+                offset += 1;
+                l
+            } else {
+                0
             };
 
             // Parse custom hyperparameters (flag 0x01)
@@ -340,6 +411,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
                 skip_threshold, backbone, enhanced_cm, profile, numeric_contract,
+                reset_log2,
                 header_size: offset,
             })
         }
@@ -523,21 +595,27 @@ pub fn build_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
     skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
-    profile: WeightProfile,
+    profile: WeightProfile, reset_log2: u8,
 ) -> Vec<u8> {
     let contract = if is_mamba_family(backbone) { model_loader::process_contract() } else { NumericContract::CURRENT };
     let mut hdr = build_v4_header(
         total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
         shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
     );
-    set_v5_profile(&mut hdr, profile, contract);
+    set_v5_profile(&mut hdr, profile, contract, reset_log2);
     hdr
 }
 
-/// Turn a v4 header into v5 with PROFILE = `profile` | `contract` << 4.
-fn set_v5_profile(hdr: &mut Vec<u8>, profile: WeightProfile, contract: NumericContract) {
+/// Turn a v4 header into v5 with PROFILE = `profile` | `contract` << 4 [| RESET flag],
+/// followed by RESET_LOG2 when `reset_log2 > 0` (R-108).
+fn set_v5_profile(hdr: &mut Vec<u8>, profile: WeightProfile, contract: NumericContract, reset_log2: u8) {
     hdr[..8].copy_from_slice(MAGIC_V5);
-    hdr.insert(V4_HEADER_BASE, profile_byte(profile, contract));
+    let mut p = profile_byte(profile, contract);
+    if reset_log2 > 0 {
+        p |= V5_PROFILE_RESET_FLAG;
+        hdr.insert(V4_HEADER_BASE, reset_log2);
+    }
+    hdr.insert(V4_HEADER_BASE, p);
 }
 
 /// `build_header` with an explicit numeric contract (R-107), e.g. the one the
@@ -546,15 +624,29 @@ pub fn build_header_with(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
     skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
-    profile: WeightProfile, contract: NumericContract,
+    profile: WeightProfile, contract: NumericContract, reset_log2: u8,
 ) -> AzResult<Vec<u8>> {
     check_contract_backbone(contract, backbone)?;
     let mut hdr = build_v4_header(
         total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
         shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
     );
-    set_v5_profile(&mut hdr, profile, contract);
+    set_v5_profile(&mut hdr, profile, contract, reset_log2);
     Ok(hdr)
+}
+
+/// R-108: resolve the reset period for compression from `--reset-every` (empty = backbone default).
+/// Non-Mamba backbones never reset; an explicit non-zero value for them is reported and ignored.
+pub fn resolve_reset_log2(reset_every: &str, backbone: BackboneChoice) -> AzResult<u8> {
+    if reset_every.is_empty() {
+        return Ok(default_reset_log2(backbone));
+    }
+    let log2 = parse_reset_every(reset_every)?;
+    if log2 > 0 && !is_mamba_family(backbone) {
+        eprintln!("[compress] WARNING: --reset-every applies to the Mamba family only; {} never resets", backbone);
+        return Ok(0);
+    }
+    Ok(log2)
 }
 
 /// Resolve the Mamba weight profile for compression from `--quant` (R-099).
@@ -847,6 +939,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut model_size = String::new();
     let mut backbone_str = String::new();
     let mut numeric_str = String::new();
+    let mut reset_every_str = String::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -857,6 +950,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--output-dir" => { output_dir = next_arg(args, &mut i, "--output-dir")?.to_string(); }
             "--jobs" => { jobs = parse_arg(next_arg(args, &mut i, "--jobs")?, "--jobs")?; }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--reset-every" => { reset_every_str = next_arg(args, &mut i, "--reset-every")?.to_string(); }
             "--bytes" => { max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?; }
             "--lr" => { bias_lr = parse_arg(next_arg(args, &mut i, "--lr")?, "--lr")?; }
             "--ngram-scale" => { ngram_scale = parse_arg(next_arg(args, &mut i, "--ngram-scale")?, "--ngram-scale")?; }
@@ -925,6 +1019,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         let opts = crate::application::lockstep::BatchOptions {
             slots: jobs, weights_dir, quant: quant_str, emb_surgery, max_bytes,
             bias_lr, ngram_scale, mix_eta, e8e9_mode, shuffle_mode, delta_mode, backbone: backbone_str,
+            reset_every: reset_every_str,
         };
         return crate::application::lockstep::compress_dir(&input_dir, &output_dir, &opts, Some(&governor));
     }
@@ -991,7 +1086,10 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut cm = CmEnsemble::new(v, ngram_scale, bias_lr, mix_eta, true);
     let mut enc = RangeEncoder::new();
 
+    // R-108: backbone state reset period (header field; Mamba family default 4096).
+    let reset_log2 = resolve_reset_log2(&reset_every_str, backbone_choice)?;
     let mut state = model.create_state();
+    state.set_reset_every(reset_every_from_log2(reset_log2));
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
@@ -1213,7 +1311,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let hdr = build_header_with(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
         e8e9_applied, shuffle_applied, delta_applied, adaptive_skip,
-        backbone_choice, true, mamba_profile, contract,
+        backbone_choice, true, mamba_profile, contract, reset_log2,
     )?;
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
@@ -1302,7 +1400,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             slots: jobs, weights_dir, quant: quant_str, emb_surgery, max_bytes: 0,
             bias_lr: DEFAULT_BIAS_LR, ngram_scale: DEFAULT_NGRAM_SCALE, mix_eta: DEFAULT_MIX_ETA,
             e8e9_mode: String::new(), shuffle_mode: String::new(), delta_mode: String::new(),
-            backbone: String::new(),
+            backbone: String::new(), reset_every: String::new(),
         };
         let contract = batch_numeric_contract(&input_dir)?;
         model_loader::set_process_contract(contract);
@@ -1409,6 +1507,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut dec = RangeDecoder::new(stream);
 
     let mut state = model.create_state();
+    state.set_reset_every(hdr.reset_every()); // R-108: period from the header
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
 
@@ -1964,12 +2063,16 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
     let mut highway_start: usize = 0;
     let mut highway_thr: f32 = 0.01;
     let mut resync_interval: usize = 32;
+    let mut reset_every: u64 = 0; // R-108 sweeps: backbone-only eval with a periodic reset
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
+            "--reset-every" => {
+                reset_every = parse_arg(next_arg(args, &mut i, "--reset-every")?, "--reset-every")?;
+            }
             "--bytes" => {
                 max_bytes = parse_arg(next_arg(args, &mut i, "--bytes")?, "--bytes")?;
             }
@@ -2021,12 +2124,13 @@ pub fn cmd_mamba_eval(args: &[String]) -> AzResult<()> {
     );
 
     let mut state = model.create_state();
+    state.set_reset_every(reset_every);
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut probs_buf = vec![0.0f32; v];
     let mut ce_bits = 0.0f64;
 
-    eprintln!("[mamba-eval] evaluating (Mamba-only, no ensemble) ...");
+    eprintln!("[mamba-eval] evaluating (Mamba-only, no ensemble, reset every {} tokens) ...", reset_every);
     let t_start = std::time::Instant::now();
 
     for t in 0..tokens.len() {
@@ -2706,8 +2810,66 @@ mod tests {
     fn all_fields_header(profile: WeightProfile) -> Vec<u8> {
         build_header(
             4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
-            BackboneChoice::Mamba, true, profile,
+            BackboneChoice::Mamba, true, profile, 0,
         )
+    }
+
+    // ---- R-108: RESET_LOG2 field (PROFILE bit 6) ----
+
+    #[test]
+    fn reset_period_roundtrips_through_header() {
+        let base = all_fields_header(WeightProfile::Q8);
+        let with = build_header(
+            4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
+            BackboneChoice::Mamba, true, WeightProfile::Q8, 12,
+        );
+        assert_eq!(with.len(), base.len() + 1);
+        assert_eq!(with[13], 0x11 | V5_PROFILE_RESET_FLAG);
+        assert_eq!(with[14], 12);
+        assert_eq!(with[15..], base[14..]); // optional v4 fields shifted by one more byte
+        let hdr = parse_header(&with_payload(&with)).unwrap();
+        assert_eq!((hdr.reset_log2, hdr.reset_every()), (12, 4096));
+        assert_eq!(hdr.header_size, with.len());
+        assert_eq!((hdr.profile, hdr.numeric_contract), (WeightProfile::Q8, NumericContract::FmathV1));
+        let none = parse_header(&with_payload(&base)).unwrap();
+        assert_eq!((none.reset_log2, none.reset_every()), (0, 0));
+    }
+
+    #[test]
+    fn reset_log2_out_of_range_or_truncated_is_rejected() {
+        for bad in [0u8, 7, 21, 255] {
+            let mut h = build_header(10, 0.30, 0.5, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba, true,
+                                     WeightProfile::F32, 12);
+            h[14] = bad;
+            let err = parse_header(&with_payload(&h)).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.contains("RESET_LOG2"), "{}: {}", bad, err);
+        }
+        // Flag set but the byte is missing: the header itself is the whole file.
+        let mut h = build_header(10, 0.30, 0.5, 0.01, "", false, 0, 0, 0, BackboneChoice::Rwkv, true,
+                                 WeightProfile::F32, 0);
+        h[13] |= V5_PROFILE_RESET_FLAG;
+        let err = parse_header(&h).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("truncated"), "{}", err);
+    }
+
+    #[test]
+    fn reset_every_cli_parsing_and_defaults() {
+        assert_eq!(parse_reset_every("0").unwrap(), 0);
+        assert_eq!(parse_reset_every("4096").unwrap(), 12);
+        assert_eq!(parse_reset_every("256").unwrap(), 8);
+        assert_eq!(parse_reset_every("1048576").unwrap(), 20);
+        for bad in ["3000", "128", "2097152", "abc", "-1"] {
+            assert!(parse_reset_every(bad).is_err(), "{}", bad);
+        }
+        assert_eq!(default_reset_log2(BackboneChoice::Mamba), DEFAULT_RESET_LOG2);
+        assert_eq!(default_reset_log2(BackboneChoice::MambaByte), DEFAULT_RESET_LOG2);
+        assert_eq!(default_reset_log2(BackboneChoice::Rwkv), 0);
+        assert_eq!(default_reset_log2(BackboneChoice::Plugin), 0);
+        assert_eq!(resolve_reset_log2("", BackboneChoice::Mamba).unwrap(), DEFAULT_RESET_LOG2);
+        assert_eq!(resolve_reset_log2("0", BackboneChoice::Mamba).unwrap(), 0);
+        assert_eq!(resolve_reset_log2("8192", BackboneChoice::Rwkv).unwrap(), 0); // ignored with a warning
+        assert_eq!(reset_every_from_log2(0), 0);
+        assert_eq!(reset_every_from_log2(13), 8192);
     }
 
     fn with_payload(hdr: &[u8]) -> Vec<u8> {
@@ -2770,9 +2932,9 @@ mod tests {
             assert_eq!(parse_profile_byte(byte).unwrap(), (profile, fma));
             for backbone in [BackboneChoice::Mamba, BackboneChoice::MambaByte] {
                 let hdr = build_header_with(4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
-                    backbone, true, profile, fma).unwrap();
+                    backbone, true, profile, fma, 0).unwrap();
                 let plain = build_header_with(4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
-                    backbone, true, profile, NumericContract::CURRENT).unwrap();
+                    backbone, true, profile, NumericContract::CURRENT, 0).unwrap();
                 assert_eq!(hdr[13], byte);
                 assert_eq!((&hdr[..13], &hdr[14..]), (&plain[..13], &plain[14..])); // only PROFILE differs
                 let info = parse_header(&with_payload(&hdr)).unwrap();
@@ -2780,11 +2942,11 @@ mod tests {
             }
         }
         let rwkv = build_header_with(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
-            BackboneChoice::Rwkv, true, WeightProfile::F32, fma);
+            BackboneChoice::Rwkv, true, WeightProfile::F32, fma, 0);
         assert!(rwkv.unwrap_err().to_string().contains("Mamba family"));
         // Hand-crafted RWKV + contract 2 fails while parsing.
         let mut file = with_payload(&build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
-            BackboneChoice::Rwkv, true, WeightProfile::F32));
+            BackboneChoice::Rwkv, true, WeightProfile::F32, 0));
         file[V4_HEADER_BASE] = 0x20;
         let err = parse_header(&file).err().map(|e| e.to_string()).unwrap_or_default();
         assert!(err.contains("Mamba family"), "{}", err);
@@ -2847,7 +3009,7 @@ mod tests {
     #[test]
     fn parse_header_v5_minimal() {
         let hdr = build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0, BackboneChoice::Mamba, false,
-            WeightProfile::Q8);
+            WeightProfile::Q8, 0);
         assert_eq!(hdr.len(), V5_HEADER_BASE + 1); // + backbone byte
         let info = parse_header(&with_payload(&hdr)).unwrap();
         assert_eq!(info.profile, WeightProfile::Q8);
@@ -2875,7 +3037,7 @@ mod tests {
         assert!(parse_profile_byte(7).is_err());
         assert!(parse_profile_byte(0x22).is_err()); // contract 2 with reserved quant Q6
         assert!(parse_profile_byte(0x30).is_err()); // contract 3 (reserved)
-        assert!(parse_profile_byte(0x40).is_err()); // reserved bit 6
+        assert_eq!(parse_profile_byte(0x51).unwrap(), (WeightProfile::Q8, fm)); // bit 6 = RESET flag (R-108)
         assert!(parse_profile_byte(0x81).is_err()); // reserved bit 7
     }
 
@@ -2889,7 +3051,7 @@ mod tests {
     }
 
     fn header_info(profile: WeightProfile, backbone: BackboneChoice) -> HeaderInfo {
-        let hdr = build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0, backbone, true, profile);
+        let hdr = build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0, backbone, true, profile, 0);
         let mut file = with_payload(&hdr);
         // RWKV+Q8 can't be produced by build_header users; craft it by hand.
         if backbone == BackboneChoice::Rwkv && profile != WeightProfile::F32 {
@@ -2974,7 +3136,7 @@ mod tests {
         let stream = enc.finish();
         let payload: Vec<u8> = tokens.iter().map(|&t| t as u8).collect();
         let hdr = build_header_with(payload.len() as u32, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
-            BackboneChoice::Mamba, true, WeightProfile::Q8, contract).unwrap();
+            BackboneChoice::Mamba, true, WeightProfile::Q8, contract, 0).unwrap();
         let mut file = hdr.clone();
         file.extend_from_slice(&stream);
         file.extend_from_slice(&crc32::crc32(&payload).to_le_bytes());

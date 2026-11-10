@@ -2852,7 +2852,8 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - Decisión GO/NO-GO documentada con el umbral económico explícito
 
 - R-108: Colapso de Mamba-130M con la longitud — reinicio periódico del estado en el formato
-  - **Estado**: MEDIDO (mitigación experimental), formato PENDIENTE
+  - **Estado**: COMPLETADO (2026-11-10): PROFILE bit 6 + byte RESET_LOG2 en AZTH v5; default 4096 para la familia
+    Mamba (`--reset-every N`, 0 = nunca); decoder sigue la cabecera; lockstep por stream; 303 tests; golden actualizado
   - **Prioridad**: P0 — sin esto Redukt pierde contra gzip a partir de ~500 KB y contra brotli/xz en todos los
     ficheros industry completos
   - **Hallazgo (2026-11-10, Kaggle T4 + CPU local, `data/benchmark/results/kaggle-fullsize/README.md`)**: enwik8 0.964 (10 KB) ->
@@ -2867,10 +2868,11 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     cinco; roundtrip CRC OK; salida por defecto idéntica (sha 3779ba13…). Coste de cómputo cero.
   - **Subtareas**:
     - [x] Diagnóstico y reproducción con referencia externa
-    - [x] Flag experimental por variable de entorno (encoder y decoder deben coincidir)
-    - [ ] Periodo de reinicio en la cabecera AZTH (v6 o bloque opcional v5) y rechazo si el decoder no lo soporta
+    - [x] Flag experimental por variable de entorno (sustituido por el campo de cabecera)
+    - [x] Periodo de reinicio en la cabecera AZTH (PROFILE bit 6 + RESET_LOG2; pre-R-108 rechaza por bit reservado)
+    - [x] Verificado: enwik8 100 KB 0.9951 con decompress guiado por cabecera; `--reset-every 0` = salida anterior
     - [ ] Barrido del periodo (1024-8192) y re-warm opcional (re-alimentar K tokens tras el reinicio)
-    - [ ] Repetir la curva de escala y los ficheros industry completos con el periodo elegido; actualizar README
+    - [ ] Repetir la curva de escala (Kaggle) y los 12 archivos con el periodo por defecto; actualizar tablas
   - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
 - R-109: Lockstep con plugin GPU vía slots FFI v2
   - **Estado**: PENDIENTE (guardarraíl aplicado)
@@ -3263,3 +3265,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | Lanzado `notebooks/redukt-gpu-fullsize-bench.py` en Kaggle T4: curva de escala enwik8 (10 KB-4 MB) con Mamba, ficheros industry completos vs zstd/xz/brotli, lockstep por vCPU y gate económico (resultados en `data/benchmark/results/kaggle-fullsize/`) |
 | 2026-11-10 | Kaggle full-size (T4 + 4 vCPU): colapso de Mamba con la longitud (enwik8 0.964 -> 3.91 bpb de 10 KB a 2 MB; 5/5 industry completos pierden vs brotli/xz); reproducido con HF transformers; R-108 definido; mitigación `REDUKT_MAMBA_RESET_EVERY=4096` -> 0.9950 bpb a 100 KB |
 | 2026-11-10 | Defecto: `--jobs>1 --backbone plugin` corrompe predicciones (estado FFI v1 único) -> guardarraíl en `lockstep::load_group_model`; R-109 definido |
+| 2026-11-10 | R-108 COMPLETADO: periodo de reinicio del estado Mamba en AZTH v5 (PROFILE bit 6 + RESET_LOG2, default 4096); `--reset-every`; enwik8 100 KB 0.9951; referencias 10 KB +1 B (F32 0.9648, Q8 0.9695); golden 33 B |

@@ -25,7 +25,7 @@ use crate::application::codec::{
 use crate::application::lockstep::{run_lockstep, Admission, EncodeMeta, StreamResult};
 use crate::application::model_loader::{self, resolve_auto_profile, DynModel, DynTokenizer};
 use crate::domain::backbone::{
-    route_backbone, Backbone, BackboneChoice, BackendTokenizer, WeightProfile,
+    route_backbone, Backbone, BackboneChoice, BackboneState, BackendTokenizer, WeightProfile,
 };
 use crate::domain::cm_ensemble::CmEnsemble;
 use crate::domain::coder::{Cdf, RangeDecoder};
@@ -298,6 +298,8 @@ fn compress_request(body: &[u8], server: &Server) -> Result<Vec<u8>, ApiError> {
         bias_lr: DEFAULT_BIAS_LR,
         ngram_scale: DEFAULT_NGRAM_SCALE,
         mix_eta: DEFAULT_MIX_ETA,
+        reset_log2: crate::application::codec::default_reset_log2(choice), // R-108: CLI default
+
         emb_surgery: String::new(),
     };
     run_single(model, tokenizer, Admission::Encode { name: "api".into(), tokens, meta })
@@ -495,6 +497,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     );
     let mut dec = RangeDecoder::new(stream);
     let mut state = model.create_state();
+    state.set_reset_every(hdr.reset_every()); // R-108
     let mut scratch = model.create_scratch();
     let mut logits = vec![0.0f32; v];
     let mut ensemble_buf = vec![0.0f32; v];
@@ -619,7 +622,7 @@ mod tests {
 
     fn archive(backbone: BackboneChoice, profile: WeightProfile, emb: &str) -> Vec<u8> {
         let mut a = build_header(
-            100, 0.30, 0.50, 0.01, emb, false, 0, 0, 0, backbone, true, profile,
+            100, 0.30, 0.50, 0.01, emb, false, 0, 0, 0, backbone, true, profile, 0,
         );
         a.extend_from_slice(&[0u8; 16]);
         a
