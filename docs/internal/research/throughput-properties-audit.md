@@ -216,4 +216,9 @@ Conclusiones:
   conversión tok/s -> B/s usa los 3.8 B/token de la línea base.
 - El umbral económico (18-100 KB/s por vCPU) sigue ~15-80x por encima del throughput actual (1.2 KB/s por máquina): R-105
   (tier rápido) sigue siendo necesario.
-- Determinismo (R-104): roundtrip Windows<->Linux<->Kaggle idéntico 9/9; pendiente `f64::exp` de libm y SIMD vs escalar.
+- **Re-medición con la máquina en reposo** (`data/benchmark/results/lockstep-throughput-2026-11-10.csv`): Q8 N=8 270.8,
+  N=16 286.9, N=32 309.9 tok/s agregados; F32 N=16 259.6. Confirma la ronda previa (266/292/315; F32 262.6). 12 archivos =
+  75,398 tokens; 32 archivos = 198,844 tokens. La verificación independiente confirmó los gates BPB exactos y la identidad
+  lote vs single (N=1,2,3, ambas direcciones).
+- Determinismo (R-104): roundtrip Windows<->Linux<->Kaggle idéntico 9/9; F1 ya sustituyó libm por `fmath` (commit 51dafd9);
+  pendiente SIMD vs escalar (F2).

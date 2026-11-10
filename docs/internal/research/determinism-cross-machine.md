@@ -244,3 +244,21 @@ docker run --rm -v <sweep>:/s -w /s rust:1.98-bookworm sh -c "rustc -O --edition
 ```
 
 Para hacer la sweep reproducible en CI, en F1 conviene versionarla como test o como ejemplo.
+
+---
+
+## Estado F1 (2026-11-10)
+
+F1 de R-104 está hecha (commit `51dafd9`):
+
+- `src/domain/fmath.rs` aporta `exp_f64` y `log_f64` portados de musl (MIT; NOTICE actualizado). Dan 0 ulp en 43 valores
+  dorados y <=1 ulp frente a `std` en un barrido de 1e6; el hash del barrido es idéntico en Windows debug, Windows release
+  (con FMA) y Linux glibc. `exp` tarda 9.3 ns frente a 17.0 ns de UCRT.
+- `cdf_from_logits` y `cm_ensemble` ya no usan libm, con lo que se cierra el riesgo latente de la sección anterior.
+- AZTH v5 PROFILE: bits 0-3 QUANT (0 = F32, 1 = Q8, 2 = Q6 reservado), bits 4-5 NUMERIC_CONTRACT (0 = libm legacy,
+  1 = fmath-v1, 2-3 error antes de cargar el modelo), bits 6-7 reservados. El encoder escribe siempre v5 (F32 -> `0x10`,
+  Q8 -> `0x11`); v2-v4 y v5 tempranos (bits 4-5 = 0) decodifican por la rama legacy.
+- Los streams codificados son idénticos antes y después en 6/6 casos; solo cambia el header (F32 pasa de v4 a v5, +1 B):
+  enwik8 F32 10 KB = 0.9641 BPB (0.9633 en v4). Roundtrip Windows<->Linux OK.
+- Pendientes: F2 (orden escalar = lanes AVX2) y F3 (CI multiplataforma y lint de libm).
+

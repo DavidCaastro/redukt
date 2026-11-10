@@ -70,8 +70,15 @@ Each `.azth` is byte-identical to the single-file output regardless of N.
 ```
 
 Measured aggregate throughput (12 files x 10 KB, Q8, laptop): N=1 111, N=8 266, N=32 315 tok/s (F32: 58 -> 322 tok/s).
-`--quant q8` selects the weight-only Q8 profile (+0.6% to +1.2% BPB, written as AZTH v5). `REDUKT_THREADS=N` sets the
+`--quant auto` (the default) selects the weight-only Q8 profile for Mamba (+0.6% to +1.2% BPB); `--quant f32` is
+recommended for batches of 16 or more files. `REDUKT_THREADS=N` sets the
 worker pool size.
+
+## API
+
+`redukt api` has byte-for-byte parity with the CLI (same backbone routing, preprocessing and profiles; verified
+sha256 API == CLI). Flags: `--bind/--host`, `--port`, `--weights`, `--backbone`, `--quant`; `/v1/status` reports backbones,
+profile, readable formats and version. It serves one request at a time.
 
 ## Deploy (GCP)
 
@@ -121,7 +128,8 @@ cargo test --release --test roundtrip -- --ignored
 
 ## Format
 
-Output format: AZTH v4 (F32 profile) or v5 (adds a weight-profile byte, written for Q8). The decoder accepts v2-v5.
+Output format: AZTH v5 (adds a PROFILE byte with the weight profile and the numeric contract; since R-104 the encoder
+always writes v5, F32 included). The decoder accepts v2-v5.
 See `docs/api/FORMAT-SPEC.md` for full specification.
 Includes CRC-32 integrity verification, hyperparameter validation, and u32 overflow protection.
 

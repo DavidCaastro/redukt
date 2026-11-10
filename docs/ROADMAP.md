@@ -2680,6 +2680,13 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
       mejor BPB.
     - ~4.9 MB de estado por stream. 192/192 `.azth` de lote **idénticos** (sha256) al single-file; roundtrips cruzados OK.
     - Pendiente: archivos grandes (chunking o arranque caliente) y medida en estado térmico estable (varias rondas).
+  - **Re-medición independiente (reposo)** (2026-11-10; `data/benchmark/results/lockstep-throughput-2026-11-10.csv`):
+    máquina en reposo, Q8 N=8 270.8, N=16 286.9, N=32 309.9 tok/s agregados; F32 N=16 259.6. Confirma la ronda del agente
+    (266/292/315; F32 262.6). 12 archivos = 75,398 tokens; 32 archivos = 198,844 tokens. La revisión independiente (commits
+    1a9e1d4, 51dafd9, 762a42d) confirmó los gates BPB exactos (F32 0.9633/0.3883/0.2164; Q8 0.9688/0.3930/0.2188, valores
+    pre-R-104), identidad lote vs single N=1,2,3 en ambas direcciones, `.azth` de Kaggle v4 byte-idéntico e invariancia de
+    hilos. Fixes: cuelgue con stream corrupto (guard de presupuesto de tokens en lockstep y decoder single), shape check duro
+    en kernels multi, salida atómica `.part`, slots <= archivos, archivo vacío rechazado sin panic, payload truncado -> error.
   - **Evidencia externa**: llama-batched-bench (3.8B Q4, CPU): b=1 25.7 → b=8 86.3 → b=32 147.7 t/s agregados
     (5.8×), meseta en 64. Cruce memory → compute-bound en DDR4 portátil con Q8: N ≈ 12-24.
   - **Criterios de aceptación**:
@@ -2725,6 +2732,13 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     Madrid no ofrece c3 ni GPU: c4-highcpu-32 allí y GPU en europe-west4. Detalle en `deploy/gcp/README.md`.
     El `Dockerfile` raíz (rust:1.82, no compilaba) se eliminó: la fuente canónica es `deploy/gcp/Dockerfile`.
     Pendiente (requiere proyecto GCP real): $/GB medido en Cloud Run / Cloud Batch.
+    Entrypoint (commit df6aca1): `REDUKT_BACKBONE`/`REDUKT_QUANT`, modos `api`/`batch-compress`/`batch-decompress`, Cloud Run
+    2Gi con concurrency 1; verificado en contenedor local (status, roundtrip HTTP, batch). Nada desplegado en GCP real.
+  - **Subtarea R-102.API ✅ (paridad API-CLI; no se numera como R-106 porque es parte del entregable de R-102 y comparte
+    criterios y pendiente de despliegue)** (commit ae7297a): `redukt api` con paridad byte a byte con el CLI (Mamba,
+    preprocesado, perfiles); flags `--bind/--host`, `--port`, `--weights`, `--backbone` (auto|uno|lista), `--quant`;
+    `/v1/status` con backbones, perfil, `formats_read` v2..v5, threads, max_body 256 MiB y version; monohilo (una petición a
+    la vez). Verificado sha256 API == CLI en enwik8 10 KB Q8. `--quant auto` = Q8 para Mamba (`AUTO_MAMBA_PROFILE`).
   - **Criterios de aceptación**:
     - Roundtrip PASS (CRC-32 verified OK) en Cloud Run y en Cloud Batch
     - BPB enwik8 10KB medido en cloud y comparado con la referencia 0.9609 (la igualdad bit a bit se exige en R-104)
@@ -2752,7 +2766,7 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - tok/s y $/GB medidos en GCE, documentados
 
 - R-104: Determinismo cross-máquina — BLOQUEANTE de producto
-  - **Estado**: EN CURSO (F1 — cierre de riesgos restantes)
+  - **Estado**: EN CURSO (F1 ✅ 2026-11-10; F2 y F3 PENDIENTES)
   - **Prioridad**: P0 — ningún cliente externo antes de cerrarlo
   - **Dependencia**: ninguna; condiciona el diseño de R-098/R-099/R-100 y la entrega de R-102/R-103
   - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`, `src/domain/mixer.rs`,
@@ -2766,10 +2780,19 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     Mamba Q8, RWKV, mismo sha256); el `enwik8.cpu.azth` de Kaggle (sha 384c3042) coincide bit a bit con el local.
     La divergencia 0.9609 vs 0.9633 era una **referencia antigua**, no una diferencia de plataforma: la referencia F32
     actual con `--bytes 10240` es 0.9633. Hilos y `target-cpu` no alteran la salida.
-    Riesgos restantes (F1, en curso): `f64::exp` de libm en `cdf_from_logits` y `cm_ensemble` (latente, ~1e-8..1e-6 por
+    Riesgos que motivaron F1: `f64::exp` de libm en `cdf_from_logits` y `cm_ensemble` (latente, ~1e-8..1e-6 por
     token), orden SIMD vs escalar, y RWKV declara F32 en la cabecera aunque el loader cuantiza 73 tensores a Q8.
-    Plan: portar exp/log a Rust puro, bits de contrato numérico en PROFILE (ver `docs/api/FORMAT-SPEC.md`), nivel escalar con
-    el orden de lanes AVX2 y matriz CI multiplataforma.
+  - **F1 ✅ HECHA** (2026-11-10; commit 51dafd9): `src/domain/fmath.rs` con `exp_f64`/`log_f64` portados de musl (MIT,
+    NOTICE actualizado); 0 ulp en 43 valores dorados; <=1 ulp vs std en barrido de 1e6; hash del barrido idéntico en Windows
+    debug/release (FMA) y Linux glibc; exp 9.3 ns vs 17.0 ns de UCRT. `cdf_from_logits` y `cm_ensemble` ya no usan libm.
+    AZTH v5 PROFILE: bits 0-3 QUANT, bits 4-5 NUMERIC_CONTRACT (0 = libm legacy, 1 = fmath-v1, 2-3 error antes de cargar el
+    modelo), bits 6-7 reservados. El encoder escribe SIEMPRE v5 (F32 -> 0x10, Q8 -> 0x11); v2-v4 y v5 tempranos
+    (bits 4-5 = 0) decodifican por la rama legacy. Streams idénticos antes/después en 6/6 casos; solo cambia el header
+    (F32 pasa de v4 a v5, +1 B): enwik8 F32 10 KB = 0.9641 BPB (0.9633 en v4). Cross-OS Windows<->Linux OK.
+  - **F2 PENDIENTE**: nivel escalar con el orden de lanes de AVX2 (mismo `.azth` sin AVX2/FMA). Criterio: sha256 idéntico
+    entre ruta escalar y AVX2 en enwik8/facturae/apache, F32 y Q8, con Δ tok/s medido.
+  - **F3 PENDIENTE**: CI multiplataforma (Windows + Linux, golden `.azth` por SHA-256) y lint que prohíba libm en rutas de
+    CDF/CM. Criterio: la CI falla ante cualquier cambio de sha256 de los goldens o uso de `f64::exp/ln/powf` en esas rutas.
   - **Opciones**: (A) orden de acumulación canónico, independiente de ISA y de hilos; (B) aritmética entera /
     punto fijo en las rutas que alimentan la CDF.
   - **Subtareas**:
@@ -2849,7 +2872,7 @@ Contraste: R-099 quedó en 53.6 (proyectado ~70), R-098 en 111-127 single (proye
 umbral económico (18-100 KB/s por vCPU): R-105 (tier rápido) y/o GPU (R-103) siguen siendo necesarios.
 
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
-R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1); R-101 y R-105 PENDIENTES.
+R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 
 ---
 
@@ -3168,3 +3191,10 @@ R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1); R-101 y R-105 PE
 | 2026-11-10 | 365ef68 feat(R-100): lockstep multi-stream batching (GEMV->GEMM) for compress/decompress — Q8 111->315, F32 57.7->322.1 tok/s (N=32) |
 | 2026-11-10 | AZTH v5 (byte PROFILE); `--jobs N` = streams lockstep; `decompress --input-dir`; batch antiguo eliminado; Dockerfile raíz eliminado (canónico: deploy/gcp/Dockerfile) |
 | 2026-11-10 | Tests: 263 unit + 4 integración, 0 warnings. Referencia BPB F32 actual: enwik8 0.9633 (`--bytes 10240`) |
+| 2026-11-10 | fe73b4f docs(fase-19): measured results for R-098..R-104, AZTH v5, lockstep usage |
+| 2026-11-10 | 1a9e1d4 fix(R-100): hardening from independent review of lockstep/gemv/par_pool |
+| 2026-11-10 | ae7297a feat(api): CLI parity (Mamba, preprocessing, profiles); --quant auto -> Q8 |
+| 2026-11-10 | 51dafd9 feat(R-104): pure-Rust exp/log (musl port) + numeric contract in AZTH v5 — F1 hecha; encoder siempre v5; enwik8 F32 0.9641 |
+| 2026-11-10 | 762a42d test: SAFETY comments on FFI v2, golden v5 F32, tokenizer roundtrip test |
+| 2026-11-10 | df6aca1 feat(deploy): align GCP configs with Mamba-default API, lockstep batch, Q8 |
+| 2026-11-10 | Re-medición en reposo (lockstep-throughput-2026-11-10.csv): Q8 N=8/16/32 270.8/286.9/309.9; F32 N=16 259.6. Tests: 295 unit + 5 integración, 0 warnings |

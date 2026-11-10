@@ -1,0 +1,17 @@
+date,machine,state,profile,jobs,files,tokens,lockstep_s,tok_s_aggregate,s_per_file_wall,source
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,idle,q8,8,12,75398,278.4,270.8,23.3,coordinator remeasure
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,idle,q8,16,16,89966,313.6,286.9,19.6,coordinator remeasure
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,idle,f32,16,16,89966,346.6,259.6,21.7,coordinator remeasure
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,idle,q8,32,32,198844,641.6,309.9,20.1,coordinator remeasure
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,1,12,75398,,111.0,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,2,12,75398,,134.2,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,4,12,75398,,236.3,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,8,12,75398,,265.9,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,16,16,89966,,292.1,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,q8,32,32,198844,,314.7,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,1,12,75398,,57.7,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,2,12,75398,,96.5,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,4,12,75398,,154.6,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,8,12,75398,,206.5,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,16,16,89966,,262.6,,lockstep agent round1
+2026-11-10,i5-1235U 2P+8E DDR4-2667 dual,warm,f32,32,32,198844,,322.1,,lockstep agent round1

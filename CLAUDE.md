@@ -46,20 +46,24 @@ CRC32:       4B  LE (CRC-32 IEEE of original data)
 Header: 13B (defaults) up to 34B (all flags). v3 was 28B (fixed).
 TOKEN_COUNT removed in v4 — decoder terminates by byte count.
 Decompression requires IDENTICAL model + weights.
-CRC-32 verified on decompression (v3+). Decoder accepts v2, v3, and v4.
+CRC-32 verified on decompression (v3+). Decoder accepts v2 to v5 (the encoder always writes v5, see below).
 Max file size: ~4 GB (u32 TOTAL_BYTES). Validated at compression time.
 
-### AZTH Format v5 (weight profile — R-098)
+### AZTH Format v5 (weight profile + numeric contract — R-098, R-104; current)
 v4 plus one PROFILE byte right after FLAGS. Authoritative layout: `docs/api/FORMAT-SPEC.md`.
 ```
 MAGIC:       8B  "AZTH\x05\x00\x00\x00"
 TOTAL_BYTES: 4B  LE
 FLAGS:       1B  (same bits as v4)
-PROFILE:     1B  (bits 0-3 quant: 0=F32, 1=Q8, 2=Q6 reserved; remaining bits: see FORMAT-SPEC.md)
+PROFILE:     1B  (bits 0-3 QUANT: 0=F32, 1=Q8, 2=Q6 reserved;
+                  bits 4-5 NUMERIC_CONTRACT: 0=legacy libm, 1=fmath-v1, 2-3=error before model load;
+                  bits 6-7 reserved)
 [optional blocks as v4]  STREAM  CRC32 (4B)
 ```
-Header: 14B up to 35B. The encoder writes v5 only when the profile is not F32 (F32 still writes v4,
-byte-identical to before). The decoder accepts v2..v5 and rejects a conflicting `--quant`.
+Header: 14B up to 35B. Since R-104 F1 (51dafd9) the encoder ALWAYS writes v5: F32 -> PROFILE 0x10, Q8 -> 0x11
+(contract 1 = pure-Rust `fmath` exp/log, `src/domain/fmath.rs`). The coded stream is identical to v4/libm (6/6 cases);
+only the header changes (+1 B for F32). v2-v4 and early v5 (bits 4-5 = 0) decode via the legacy libm branch.
+The decoder rejects a conflicting `--quant`; `decompress` takes profile and contract from the header.
 
 ## Constraints
 
@@ -168,6 +172,7 @@ Provenance documented in `weights/MANIFEST.md`.
 2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8 or F32 — difference <2%)
 2b. Cross-OS gate (R-104): same sha256 and byte-identical roundtrip Windows <-> Linux (x86-64-v3) on
     enwik8/facturae/apache, F32 and Q8
+2c. API == CLI gate (R-102): `redukt api` compress output sha256 == CLI output sha256 (enwik8 10 KB, Q8 and F32)
 3. Full benchmark matches verified results (see below)
 4. NOTICE file up to date
 5. README badges current
@@ -183,12 +188,14 @@ Provenance documented in `weights/MANIFEST.md`.
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
 All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
 Dual backbone: Mamba-130M (default) + RWKV-7 0.1B (GenericBinary only).
-Quantization: auto-selected Q8 applies to RWKV only (F32 vs Q8 difference: <2.5% on all files).
-Mamba runs F32 in the hot path (verified 2026-11-09); weight-only Q8 for Mamba is in progress (R-098).
+Quantization: `--quant auto` = Q8 for Mamba since R-098 (ae7297a, `model_loader::AUTO_MAMBA_PROFILE`); RWKV keeps its
+own auto Q8 (F32 vs Q8 difference: <2.5% on all files). `--quant f32` is recommended for batches >= 16 (~1% better BPB,
+same aggregate throughput).
 Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (Mamba+CM F32, AZTH v4, `--bytes 10240`)**: 0.9633 BPB [MEASURED: 2026-11-10] (current reference)
+- **compress (Mamba+CM F32, AZTH v5, `--bytes 10240`)**: 0.9641 BPB [MEASURED: 2026-11-10] (current reference;
+  0.9633 under v4 until R-104 — same stream, +1 B header)
 - **compress (Mamba+CM Q8, AZTH v5)**: 0.9688 BPB (+0.57% vs F32) [MEASURED: 2026-11-10]
 - compress (Mamba+CM, older binary): 0.9609 BPB [MEASURED: 2026-10-31] — outdated reference, not a platform
   divergence (R-104); the figures in the tables below were measured with that older binary
@@ -252,14 +259,19 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-098 BPB F32 -> Q8 | enwik8 +0.57%, facturae +1.21%, apache +1.11% | within +5% budget |
 | R-100 lockstep, Q8 aggregate N=1/2/4/8/16/32 | 111/134/236/266/292/315 tok/s | done |
 | R-100 lockstep, F32 aggregate (same N) | 57.7/96.5/154.6/206.5/262.6/322.1 tok/s | done |
+| R-100 re-measured, machine idle (`lockstep-throughput-2026-11-10.csv`) | Q8 N=8/16/32: 270.8/286.9/309.9; F32 N=16: 259.6 tok/s | confirms |
+| R-104 F1 pure-Rust exp/log + numeric contract | 0 ulp on 43 golden values, <=1 ulp vs std over 1e6; Windows<->Linux OK | done |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.
 Aggregate gain ~9x over the 34 tok/s start; cost per raw GB estimated ~$47 -> ~$5 (spot). Next lever: FMA/kernels
 (new numeric profile) and GPU batch.
-Status: R-098/R-099/R-100 done; R-102 GCP verified locally (not deployed on real GCP); R-103 CUDA FFI v2 compiled
-(sm_75/sm_89), NOT yet run on a GPU; R-104 in progress (Windows<->Linux<->Kaggle roundtrips identical, libm `exp`
-and SIMD-vs-scalar risks remain); R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
+The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) and an independent review confirmed the BPB
+gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
+(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 295 unit + 5 integration.
+Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
+compiled (sm_75/sm_89), NOT yet run on a GPU; R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
+F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)
 
