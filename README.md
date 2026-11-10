@@ -105,8 +105,8 @@ Each `.azth` is byte-identical to the single-file output regardless of N.
 Measured aggregate throughput (12 files x 10 KB, Q8, laptop): N=1 111, N=8 266, N=32 315 tok/s (F32: 58 -> 322 tok/s).
 `--quant auto` (the default) selects the weight-only Q8 profile for Mamba (+0.6% to +1.2% BPB); `--quant f32` is
 recommended for batches of 16 or more files. `REDUKT_THREADS=N` sets the worker pool size. With `--backbone plugin`
-the lockstep runs one FFI v2 `forward_batch` per step over per-stream device slots (R-109; GPU validation of the
-batch == single gate pending).
+the lockstep runs one FFI v2 `forward_batch` per step over per-stream device slots (R-109; validated on a T4:
+batch == single sha256, 1,401 B/s aggregate at N=12 including model load).
 
 ## API
 

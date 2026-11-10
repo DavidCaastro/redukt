@@ -2876,7 +2876,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - [ ] Repetir la curva de escala (Kaggle) y los 12 archivos con el periodo por defecto; actualizar tablas
   - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
 - R-109: Lockstep con plugin GPU vía slots FFI v2
-  - **Estado**: IMPLEMENTADO (2026-11-10), validación en GPU PENDIENTE (kernel Kaggle v3 con gate batch == single)
+  - **Estado**: COMPLETADO (2026-11-10). Validado en Kaggle T4 (run-c-r109): lockstep plugin jobs=12 -> bpb 0.7481
+    (antes 1.9492), batch == single sha256 3/3 PASS, 1,401 B/s agregados incl. carga (CPU 4 vCPU: 283 B/s; plugin
+    single por CLI: 336 B/s). Seguimiento: el plugin ahora también aplica el periodo R-108 de la cabecera
   - **Implementación**: `Backbone::prepare_streams(n)` (default no-op) -> `PluginBackend::batch_init(n)`; cada
     `PluginState` recibe un slot (`SlotPool`); `forward_into` con slot usa `forward_batch` de 1; `forward_multi` del
     plugin hace un `forward_batch` por paso sobre todos los slots; `reset()` por slot via `batch_reset`; el stream
@@ -2885,8 +2887,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     FFI v1 mantiene UN estado global y los streams se pisan. La CLI ahora rechaza `--jobs > 1` con el plugin.
   - **Subtareas**:
     - [x] `PluginState` por slot usando `batch_init/batch_reset/forward_batch` (R-096)
-    - [ ] Gate batch == single con el plugin en T4 (notebook `redukt-gpu-fullsize-bench.py`, fase C)
-    - [ ] Medir tok/s agregados por la CLI con N=12 y N=32 (hoy 1,117 tok/s a N=128 solo por FFI)
+    - [x] Gate batch == single con el plugin en T4: 3/3 PASS (run-c-r109)
+    - [x] Medido por la CLI con N=12: 1,401 B/s agregados incl. carga del modelo (~370 tok/s a 3.8 B/token)
+    - [ ] Medir N=32 y N=128 por la CLI (FFI dio 1,117 tok/s a N=128)
 
 **Paralelización**: R-098 y R-099 son independientes entre sí. R-100 requiere ambos. R-101 requiere R-098.
 R-102 y R-105 son independientes del resto. R-103 depende de R-090. R-104 es transversal y bloquea la entrega
@@ -3274,3 +3277,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | Defecto: `--jobs>1 --backbone plugin` corrompe predicciones (estado FFI v1 único) -> guardarraíl en `lockstep::load_group_model`; R-109 definido |
 | 2026-11-10 | R-108 COMPLETADO: periodo de reinicio del estado Mamba en AZTH v5 (PROFILE bit 6 + RESET_LOG2, default 4096); `--reset-every`; enwik8 100 KB 0.9951; referencias 10 KB +1 B (F32 0.9648, Q8 0.9695); golden 33 B |
 | 2026-11-10 | R-109 implementado: lockstep del plugin GPU sobre slots FFI v2 (`prepare_streams`, `SlotPool`, `forward_multi` -> `forward_batch`); stream único sigue por v1; 304 tests; validación T4 pendiente (kernel v3) |
+| 2026-11-10 | R-109 VALIDADO en T4 (run-c-r109): plugin lockstep jobs=12 bpb 0.7481 (antes 1.9492), batch == single 3/3, 1,401 B/s agregados; el plugin pasa a aplicar el periodo de reinicio R-108 de la cabecera |

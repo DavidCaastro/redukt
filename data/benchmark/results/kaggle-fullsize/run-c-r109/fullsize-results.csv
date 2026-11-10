@@ -1,0 +1,5 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=4,11599,0.7551,474.1,259.2,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=12,11599,0.7551,434.0,283.1,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba f32 jobs=12,11567,0.7531,500.4,245.6,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-T4,plugin f32 jobs=12,11491,0.7481,87.7,1401.5,aggregate incl. model load; batch==single 3/3 (PASS)

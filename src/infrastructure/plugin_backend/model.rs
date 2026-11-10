@@ -33,13 +33,32 @@ pub struct PluginState {
     reset_fn: BackendResetFn,
     slot: Option<u32>,
     v2: Option<BackendVTableV2>,
+    /// R-108: zero the device state every N forwards (0 = never), from the AZTH header.
+    reset_every: u64,
+    since_reset: u64,
+}
+
+impl PluginState {
+    /// R-108 periodic reset, called once per forward before the token enters the model
+    /// (same schedule as `MambaState::maybe_periodic_reset`).
+    fn tick(&mut self) {
+        if self.reset_every > 0 && self.since_reset >= self.reset_every {
+            self.reset();
+        }
+        self.since_reset += 1;
+    }
 }
 
 // SAFETY: Plugin functions are process-global, called single-threaded.
 unsafe impl Send for PluginState {}
 
 impl BackboneState for PluginState {
+    fn set_reset_every(&mut self, every: u64) {
+        self.reset_every = every;
+    }
+
     fn reset(&mut self) {
+        self.since_reset = 0;
         match (self.slot, self.v2.as_ref()) {
             (Some(slot), Some(v2)) => {
                 let slots = [slot];
@@ -350,7 +369,7 @@ impl Backbone for PluginBackend {
     /// streams); otherwise the state is the plugin's process-global v1 state.
     fn create_state(&self) -> PluginState {
         let slot = if self.v2.is_some() { lock(&self.pool).take() } else { None };
-        PluginState { reset_fn: self.reset_fn, slot, v2: self.v2.clone() }
+        PluginState { reset_fn: self.reset_fn, slot, v2: self.v2.clone(), reset_every: 0, since_reset: 0 }
     }
 
     fn create_scratch(&self) -> PluginScratch { PluginScratch }
@@ -359,6 +378,7 @@ impl Backbone for PluginBackend {
         &self, token: usize, state: &mut PluginState,
         _scratch: &mut PluginScratch, out_logits: &mut [f32],
     ) {
+        state.tick();
         if let Some(slot) = state.slot {
             // Slot state: v2 batch of one. The FFI v2 contract makes v1 and v2 bit-identical.
             if let Err(e) = self.forward_batch(&[slot], &[token as u32], out_logits) {
@@ -387,6 +407,11 @@ impl Backbone for PluginBackend {
     ) {
         let n = tokens.len();
         let slots: Option<Vec<u32>> = states.iter().map(|s| s.slot).collect();
+        if slots.is_some() && n > 0 {
+            for s in states.iter_mut() {
+                s.tick(); // forward_into ticks itself on the fallback path below
+            }
+        }
         let slots = match slots {
             Some(s) if n > 0 => s,
             _ => {

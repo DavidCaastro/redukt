@@ -128,10 +128,16 @@ pub fn reset_every_from_log2(log2: u8) -> u64 {
     if log2 == 0 { 0 } else { 1u64 << log2 }
 }
 
-/// R-108: the period written for a backbone. The Mamba family drifts with length and gets
-/// `DEFAULT_RESET_LOG2` unless `--reset-every` says otherwise; other backbones never reset.
+/// R-108: the period written for a backbone. The Mamba family — CPU and the GPU plugin, which
+/// hosts the same Mamba-130M — drifts with length and gets `DEFAULT_RESET_LOG2` unless
+/// `--reset-every` says otherwise; RWKV never resets.
 pub fn default_reset_log2(backbone: BackboneChoice) -> u8 {
-    if is_mamba_family(backbone) { DEFAULT_RESET_LOG2 } else { 0 }
+    if resets_with_length(backbone) { DEFAULT_RESET_LOG2 } else { 0 }
+}
+
+/// Backbones subject to the R-108 periodic reset (Mamba family on CPU or via the GPU plugin).
+fn resets_with_length(backbone: BackboneChoice) -> bool {
+    is_mamba_family(backbone) || backbone == BackboneChoice::Plugin
 }
 
 /// Parse `--reset-every <N>`: 0 = never, otherwise a power of two in 256..=1048576.
@@ -642,7 +648,7 @@ pub fn resolve_reset_log2(reset_every: &str, backbone: BackboneChoice) -> AzResu
         return Ok(default_reset_log2(backbone));
     }
     let log2 = parse_reset_every(reset_every)?;
-    if log2 > 0 && !is_mamba_family(backbone) {
+    if log2 > 0 && !resets_with_length(backbone) {
         eprintln!("[compress] WARNING: --reset-every applies to the Mamba family only; {} never resets", backbone);
         return Ok(0);
     }
@@ -2864,7 +2870,7 @@ mod tests {
         assert_eq!(default_reset_log2(BackboneChoice::Mamba), DEFAULT_RESET_LOG2);
         assert_eq!(default_reset_log2(BackboneChoice::MambaByte), DEFAULT_RESET_LOG2);
         assert_eq!(default_reset_log2(BackboneChoice::Rwkv), 0);
-        assert_eq!(default_reset_log2(BackboneChoice::Plugin), 0);
+        assert_eq!(default_reset_log2(BackboneChoice::Plugin), DEFAULT_RESET_LOG2); // GPU plugin hosts Mamba-130M
         assert_eq!(resolve_reset_log2("", BackboneChoice::Mamba).unwrap(), DEFAULT_RESET_LOG2);
         assert_eq!(resolve_reset_log2("0", BackboneChoice::Mamba).unwrap(), 0);
         assert_eq!(resolve_reset_log2("8192", BackboneChoice::Rwkv).unwrap(), 0); // ignored with a warning
