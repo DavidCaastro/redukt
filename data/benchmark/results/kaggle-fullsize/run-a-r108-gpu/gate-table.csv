@@ -1,0 +1,19 @@
+file,redukt_bpb,best_classical,classical_bpb,gb_saved_per_raw_gb,storage,value_7y_usd_per_gb,rstar_kbs_per_vcpu,measured_kbs_per_vcpu,speedup_needed,cost_cpu_spot_usd_per_gb,cost_t4_spot_usd_per_gb
+enwik8[2097152],0.9998,brotli-11-w24,2.2420,0.1553,S3 Standard,0.3000,13.0,0.000,inf,inf,172.0
+enwik8[2097152],0.9998,brotli-11-w24,2.2420,0.1553,Backblaze B2,0.0906,42.9,0.000,inf,inf,172.0
+enwik8[2097152],0.9998,brotli-11-w24,2.2420,0.1553,Deep Archive,0.0129,301.2,0.000,inf,inf,172.0
+facturae-batch.xml,0.2408,brotli-11-w24,0.4078,0.0209,S3 Standard,0.0403,96.4,0.000,inf,inf,172.0
+facturae-batch.xml,0.2408,brotli-11-w24,0.4078,0.0209,Backblaze B2,0.0122,319.1,0.000,inf,inf,172.0
+facturae-batch.xml,0.2408,brotli-11-w24,0.4078,0.0209,Deep Archive,0.0017,2240.2,0.000,inf,inf,172.0
+ubl-invoice-batch.xml,0.2392,brotli-11-w24,0.2519,0.0016,S3 Standard,0.0031,1268.0,0.000,inf,inf,172.0
+ubl-invoice-batch.xml,0.2392,brotli-11-w24,0.2519,0.0016,Backblaze B2,0.0009,4196.1,0.000,inf,inf,172.0
+ubl-invoice-batch.xml,0.2392,brotli-11-w24,0.2519,0.0016,Deep Archive,0.0001,29457.6,0.000,inf,inf,172.0
+apache-access.log,0.1849,brotli-11-w24,0.3132,0.0160,S3 Standard,0.0310,125.5,0.000,inf,inf,172.0
+apache-access.log,0.1849,brotli-11-w24,0.3132,0.0160,Backblaze B2,0.0094,415.4,0.000,inf,inf,172.0
+apache-access.log,0.1849,brotli-11-w24,0.3132,0.0160,Deep Archive,0.0013,2915.9,0.000,inf,inf,172.0
+linux-syslog.log,0.2449,xz-9e,0.3697,0.0156,S3 Standard,0.0301,129.0,0.000,inf,inf,172.0
+linux-syslog.log,0.2449,xz-9e,0.3697,0.0156,Backblaze B2,0.0091,427.0,0.000,inf,inf,172.0
+linux-syslog.log,0.2449,xz-9e,0.3697,0.0156,Deep Archive,0.0013,2997.7,0.000,inf,inf,172.0
+openssh-auth.log,0.2014,xz-9e,0.3460,0.0181,S3 Standard,0.0349,111.4,0.000,inf,inf,172.0
+openssh-auth.log,0.2014,xz-9e,0.3460,0.0181,Backblaze B2,0.0106,368.5,0.000,inf,inf,172.0
+openssh-auth.log,0.2014,xz-9e,0.3460,0.0181,Deep Archive,0.0015,2587.2,0.000,inf,inf,172.0

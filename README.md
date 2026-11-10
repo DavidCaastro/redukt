@@ -64,7 +64,9 @@ industry files lose to brotli-11/xz. The cause is Mamba-130M's recurrent state d
 is now the default (R-108): the Mamba backbone state is zeroed every 4096 tokens and the period is recorded in the AZTH
 header (`compress --reset-every N`, 0 = off). It restores 0.995 bpb on the 100 KB prefix and wins the five whole
 industry files again (apache 0.185 vs brotli 0.313, UBL 0.235 vs 0.247). 10 KB references grow by one header byte
-(enwik8 F32 0.9648, Q8 0.9695). Until then, treat every figure above as a 10 KB-window figure.
+(enwik8 F32 0.9648, Q8 0.9695). Measured on a T4 with the reset (`data/benchmark/results/kaggle-fullsize/`): enwik8
+0.9648 (10 KB) → 0.9925 (100 KB) → 0.9697 (500 KB) → 0.9781 (1 MB) → 0.9998 (2 MB), where brotli-11 gives 2.24 and
+xz -9e 2.17. Until then, treat every figure above as a 10 KB-window figure.
 
 Throughput (Mamba backbone, i5-1235U laptop, measured 2026-11-10): 53.6 tok/s single-stream F32, 111-127 tok/s Q8
 weight-only, 315-322 tok/s aggregate with lockstep batching (N=32 streams), 366 tok/s with `--numeric fma`.

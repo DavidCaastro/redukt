@@ -2873,7 +2873,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - [x] Verificado: enwik8 100 KB 0.9951 con decompress guiado por cabecera; `--reset-every 0` = salida anterior
     - [x] Barrido del periodo en enwik8 100 KB Q8: 1024 1.0259, 2048 1.0070, **4096 0.9951**, 8192 0.9969 -> 4096 se
           confirma como default; re-warm opcional (re-alimentar K tokens tras el reinicio) queda como idea
-    - [ ] Repetir la curva de escala (Kaggle) y los 12 archivos con el periodo por defecto; actualizar tablas
+    - [x] Curva de escala repetida en T4 con el periodo por defecto (56570a1): 0.9648 / 1.0372 / 0.9925 / 0.9697 /
+          0.9781 / 0.9998 bpb de 10 KB a 2 MB (sin reinicio: 3.9056 a 2 MB); industry completos en T4 0.185-0.245,
+          5/5 por delante de brotli/xz. Pendiente opcional: punto de 4 MB (saltado por presupuesto) y los 12 archivos
   - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
 - R-109: Lockstep con plugin GPU vía slots FFI v2
   - **Estado**: COMPLETADO (2026-11-10). Validado en Kaggle T4 (run-c-r109): lockstep plugin jobs=12 -> bpb 0.7481
@@ -3280,3 +3282,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | R-109 VALIDADO en T4 (run-c-r109): plugin lockstep jobs=12 bpb 0.7481 (antes 1.9492), batch == single 3/3, 1,401 B/s agregados; el plugin pasa a aplicar el periodo de reinicio R-108 de la cabecera |
 | 2026-11-10 | run-c-r109b (T4, 56570a1): plugin lockstep con periodo R-108 de cabecera -> bpb 0.7529 (CPU F32 0.7531), batch == single 3/3, 1,376 B/s agregados; R-108 y R-109 cerrados en ambos tiers |
 | 2026-11-10 | run-a-r108 (Kaggle, 61a9027): CPU enwik8 100 KB 0.9925 F32 / 0.9951 Q8 con reinicio; sha256 Windows == Linux en 10 KB y 100 KB (gate R-104 2b vigente con R-108); curva GPU aún sin reinicio (plugin corregido en 56570a1) -> kernel A v3 |
+| 2026-11-11 | run-a-r108-gpu (T4, 56570a1): curva enwik8 con reinicio plana 0.965-1.037 bpb de 10 KB a 2 MB (2.2x mejor que xz/brotli a 2 MB); industry completos 5/5 por delante; R-108 cerrado también en el tier GPU |

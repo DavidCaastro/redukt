@@ -1,0 +1,12 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+B-full,facturae-batch.xml,38371,redukt-T4,plugin F32 single,1155,0.2408,159.1,241.2,sha256 fb8a1830437b7ccf; roundtrip OK decompress 161s
+B-full,ubl-invoice-batch.xml,81558,redukt-T4,plugin F32 single,2439,0.2392,352.1,231.6,sha256 da0d30e3b306cc21; roundtrip OK decompress 349s
+B-full,apache-access.log,171239,redukt-T4,plugin F32 single,3958,0.1849,579.6,295.5,sha256 24d0e0011ea50c6d
+B-full,linux-syslog.log,216485,redukt-T4,plugin F32 single,6628,0.2449,817.7,264.8,sha256 1d7564cdb4a9300c
+B-full,openssh-auth.log,225216,redukt-T4,plugin F32 single,5670,0.2014,812.2,277.3,sha256 07c7a9a045f24eef
+A-scale,enwik8[10240],10240,redukt-T4,plugin F32 single,1235,0.9648,35.1,292.1,sha256 2956d64caa9fc1ed; roundtrip OK decompress 35s
+A-scale,enwik8[51200],51200,redukt-T4,plugin F32 single,6638,1.0372,131.1,390.5,sha256 c2fa3413deb32681
+A-scale,enwik8[102400],102400,redukt-T4,plugin F32 single,12704,0.9925,256.6,399.0,sha256 981101bb62e9fd05; roundtrip OK decompress 253s
+A-scale,enwik8[512000],512000,redukt-T4,plugin F32 single,62060,0.9697,1401.5,365.3,sha256 ff90085ba91fdfc2
+A-scale,enwik8[1048576],1048576,redukt-T4,plugin F32 single,128200,0.9781,2850.2,367.9,sha256 3bbc9243a16a1f33
+A-scale,enwik8[2097152],2097152,redukt-T4,plugin F32 single,262079,0.9998,5717.0,366.8,sha256 39841d239a5fe28f

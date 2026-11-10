@@ -74,6 +74,37 @@ Classical compute cost on the same machine, enwik8 100 MB, one core: zstd -19 1.
 Gate: with the 2 MB figure the saving vs brotli is negative, so R* is undefined; with the reset mitigation and the
 10 KB-like ratios, R* stays 18-100 KB/s per vCPU (`scripts/breakeven.py`), i.e. 260-1,450x the measured 69 B/s.
 
+## Final: GPU scale curve and whole industry files WITH the R-108 reset (run-a-r108-gpu, kernel A v3, 56570a1)
+
+T4 CUDA plugin via the CLI, F32, single stream, header RESET_LOG2 = 12 (4096 tokens), roundtrips OK at 10 KB,
+100 KB and both XML files. The 4 MB point was skipped by the budget guard (needed 3.65 h with 4.94 h left and a
+1.5 h margin); 2 MB is the largest measured prefix.
+
+| Prefix | Redukt bpb, no reset (run-a) | **Redukt bpb, reset 4096 (run-a-r108-gpu)** | brotli -11 w24 | xz -9e | T4 B/s |
+|---|---|---|---|---|---|
+| 10 KB | 0.9641 | **0.9648** (+1 B header) | 2.363 | 2.931 | 292 |
+| 50 KB | 1.0539 | **1.0372** | 2.35 | 2.72 | 391 |
+| 100 KB | 1.6295 | **0.9925** | 2.351 | 2.64 | 399 |
+| 500 KB | 3.3099 | **0.9697** | ~2.26 | ~2.3 | 365 |
+| 1 MB | 3.7096 | **0.9781** | ~2.24 | ~2.2 | 368 |
+| 2 MB | 3.9056 | **0.9998** | 2.242 | 2.17 | 367 |
+| 100 MB (classical only) | — | — | 2.0594 | 1.9865 | — |
+
+The curve is flat at 0.97-1.04 bpb from 10 KB to 2 MB instead of collapsing to 3.9; at 2 MB Redukt is 2.2x smaller
+than xz -9e and brotli -11. Still 6% behind Nacrith's 0.9389 on the full 100 MB (not measured here: ~75 h on a T4 at
+this single-stream rate).
+
+| File (LF copy) | Size | no reset (run-b) | **reset 4096 (T4)** | best classical | Δ |
+|---|---|---|---|---|---|
+| facturae-batch.xml | 38,371 | 0.4458 | **0.2408** | brotli 0.4078 | **-41%** |
+| ubl-invoice-batch.xml | 81,558 | 0.4810 | **0.2392** | brotli 0.2519 | **-5%** |
+| apache-access.log | 171,239 | 0.4937 | **0.1849** | brotli 0.3132 | **-41%** |
+| linux-syslog.log | 216,485 | 1.1145 | **0.2449** | xz 0.3697 | **-34%** |
+| openssh-auth.log | 225,216 | 1.1710 | **0.2014** | xz 0.3460 | **-42%** |
+
+All five whole industry files win again on the GPU tier too, matching the local CPU reset run within 1-4% (CPU
+figures were measured on the CRLF copies).
+
 ## R-108 re-run (run-a-r108, kernel A v2, commit 61a9027, T4 + 4 vCPU)
 
 CPU points with the header reset period (default 4096), Kaggle Xeon:

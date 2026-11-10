@@ -309,7 +309,9 @@ not the runtime (`data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2
 Mitigation shipped (R-108): the backbone state is reset every 4096 tokens by default for the Mamba family and the
 period is in the AZTH header (`--reset-every N`, 0 = off); it gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) and wins all five whole industry files
 again (apache 0.185 vs brotli 0.313, facturae 0.248 vs 0.395, UBL 0.235 vs 0.247, syslog 0.245 vs 0.379, openssh
-0.202 vs 0.359) at zero extra compute. Every headline Redukt figure is a 10 KB window inside the
+0.202 vs 0.359) at zero extra compute. Verified on the T4 tier (Kaggle, 56570a1): enwik8 curve 0.9648 (10 KB),
+1.0372 (50 KB), 0.9925 (100 KB), 0.9697 (500 KB), 0.9781 (1 MB), 0.9998 (2 MB) — 2.2x smaller than xz/brotli at 2 MB;
+industry whole files facturae 0.241, UBL 0.239, apache 0.185, syslog 0.245, openssh 0.201. Every headline Redukt figure is a 10 KB window inside the
 regime where the backbone still works. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 

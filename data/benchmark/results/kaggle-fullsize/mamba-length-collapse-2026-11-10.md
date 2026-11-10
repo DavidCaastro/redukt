@@ -71,3 +71,9 @@ aggregate tok/s of this run (85.6) is NOT a throughput figure (it ran alongside 
 0.143 bpb and LogReducer 0.186 on the Loghub Apache_2k log that `apache-access.log` is: with the reset Redukt ties
 LogReducer and still trails LogShrink, at 3-4 orders of magnitude lower speed.
 
+## Closure (2026-11-11, Kaggle T4, commit 56570a1)
+
+With the reset period in the AZTH header (R-108, default 4096) the GPU scale curve on enwik8 is flat: 0.9648 (10 KB),
+1.0372 (50 KB), 0.9925 (100 KB), 0.9697 (500 KB), 0.9781 (1 MB), 0.9998 (2 MB) — versus 3.9056 at 2 MB without the
+reset. Whole industry files on the T4: facturae 0.2408, UBL 0.2392, apache 0.1849, syslog 0.2449, openssh 0.2014, all
+ahead of brotli-11/xz. Details: `README.md` in this folder (run-a-r108-gpu).
