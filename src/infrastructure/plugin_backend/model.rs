@@ -249,6 +249,8 @@ impl PluginBackend {
     /// Allocate `max_streams` zeroed state slots on the device (0 releases the pool).
     pub fn batch_init(&mut self, max_streams: u32) -> Result<(), BackendResult> {
         let v2 = self.v2.as_ref().ok_or(BackendResult::VersionMismatch)?;
+        // SAFETY: `v2` was resolved from the loaded library, which `self` keeps alive, so the
+        // fn pointer is valid; batch_init takes only a scalar and no caller memory.
         let code = unsafe { (v2.batch_init)(max_streams) };
         match BackendResult::from_code(code) {
             BackendResult::Ok => {
@@ -269,6 +271,8 @@ impl PluginBackend {
             }
         }
         let (ptr, n) = slots.map_or((std::ptr::null(), 0), |s| (s.as_ptr(), s.len() as u32));
+        // SAFETY: the vtable pointer is valid while the library is loaded. `ptr`/`n` come from a
+        // live slice (or null/0 for "all"), and every slot was checked above to be < batch_cap.
         let code = unsafe { (v2.batch_reset)(ptr, n) };
         match BackendResult::from_code(code) {
             BackendResult::Ok => Ok(()),
@@ -286,6 +290,9 @@ impl PluginBackend {
         if slots.is_empty() {
             return Ok(());
         }
+        // SAFETY: the vtable pointer is valid while the library is loaded. validate_batch_args
+        // checked slots.len() == tokens.len(), out.len() == n * vocab, slots < batch_cap and
+        // no duplicate slots, so all three pointers cover the lengths the plugin reads/writes.
         let code = unsafe {
             (v2.forward_batch)(
                 slots.len() as u32, slots.as_ptr(), tokens.as_ptr(), out.as_mut_ptr(), vocab,

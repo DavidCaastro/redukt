@@ -258,7 +258,7 @@ fn decompress_rejects_corrupted_crc() {
 /// matches the expected SHA-256 hash. This detects any change in the
 /// compression pipeline (model, quantization, coder, format).
 ///
-/// Platform: Windows x86_64, AVX2, Q8 auto. Generated 2026-10-29.
+/// Platform: Windows x86_64, AVX2, `--quant f32` (golden profile). Re-measured 2026-11-10.
 /// If this test fails on a new platform, record the new hash as the
 /// platform-specific golden reference.
 #[test]
@@ -278,16 +278,23 @@ fn golden_reference_determinism() {
     let golden_input = b"Determinism: the quick brown fox jumps!";
     std::fs::write(&input, golden_input).unwrap();
 
-    assert!(compress(&bin, &input, &compressed), "golden compress failed");
+    // Pinned to F32: the default profile is now Q8 (AZTH v5), whose size differs.
+    let status = Command::new(&bin)
+        .args(["compress", "--input", input.to_str().unwrap(),
+               "--output", compressed.to_str().unwrap(), "--quant", "f32"])
+        .status()
+        .expect("failed to run compress");
+    assert!(status.success(), "golden compress failed");
 
     // Verify compressed output matches golden reference
     let azth_bytes = std::fs::read(&compressed).unwrap();
-    assert_eq!(azth_bytes.len(), 35,
-        "golden: expected 35 bytes, got {}", azth_bytes.len());
+    assert_eq!(azth_bytes.len(), 32,
+        "golden: expected 32 bytes, got {}", azth_bytes.len());
 
     let hash = sha256_hex(&azth_bytes);
-    // Golden SHA-256 for Windows x86_64 AVX2 Q8 (2026-10-29)
-    let expected = "736a2024822ef712bf9847cffd2b1065f03f7f1de152329a02b816f71b6c3e21";
+    // Golden SHA-256 for Windows x86_64 AVX2, AZTH v5 F32 (re-measured 2026-11-10; the v3 Q8
+    // golden of 2026-10-29 was 35 B). F32 is the golden profile; update if the pipeline changes.
+    let expected = "5e6b876a062e1e414dbf483493b128a3146de8f70b4e90d69eac282b520693aa";
     assert_eq!(hash, expected,
         "golden hash mismatch — platform or pipeline changed?\n  got:      {}\n  expected: {}",
         hash, expected);
@@ -300,6 +307,27 @@ fn golden_reference_determinism() {
 
     std::fs::remove_dir_all(&tmp).ok();
     eprintln!("golden reference OK: {} bytes, hash={}", azth_bytes.len(), &hash[..16]);
+}
+
+/// Empty input must be rejected with a clean error (exit 1), not a panic (exit 101).
+/// Fails before any model is loaded, so it needs no weights.
+#[test]
+fn compress_empty_file_errors_without_panic() {
+    let bin = ensure_bin();
+    let tmp = std::env::temp_dir().join("redukt_test_empty_compress");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let input = tmp.join("empty.bin");
+    let out = tmp.join("empty.azth");
+    std::fs::write(&input, b"").unwrap();
+
+    let status = Command::new(&bin)
+        .args(["compress", "--input", input.to_str().unwrap(), "--output", out.to_str().unwrap()])
+        .status()
+        .expect("failed to run compress");
+    assert!(!status.success(), "empty input must fail");
+    assert_ne!(status.code(), Some(101), "empty input must not panic");
+    assert!(!out.exists(), "no output expected for empty input");
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 /// Multi-process determinism: compress the same input 5 times in separate

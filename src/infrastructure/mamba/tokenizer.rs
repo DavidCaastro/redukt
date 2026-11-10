@@ -440,6 +440,20 @@ mod tests {
     }
 
     #[test]
+    fn verify_roundtrip_ascii_utf8_and_binary() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("weights/mamba-130m/tokenizer.json");
+        if !path.exists() {
+            eprintln!("SKIP: no tokenizer.json");
+            return;
+        }
+        let tok = BpeTokenizer::load(&path);
+        let utf8 = "Compresi\u{f3}n sin p\u{e9}rdidas \u{65e5}\u{672c}\u{8a9e}";
+        assert_eq!(tok.verify_roundtrip(b"The quick brown fox, 123."), None);
+        assert_eq!(tok.verify_roundtrip(utf8.as_bytes()), None);
+        assert_eq!(tok.verify_roundtrip(&[0xC0, 0xC1, 0xF5, 0xFF, 0x00, 0x80]), None);
+    }
+
+    #[test]
     fn test_unescape_json() {
         assert_eq!(unescape_json_string(r#"hello\"world"#), "hello\"world");
         assert_eq!(unescape_json_string(r#"\n\t"#), "\n\t");
