@@ -2,8 +2,9 @@
 # Redukt container entrypoint for GCP (Cloud Run / Cloud Batch / GCE).
 #
 # Usage (first argument = mode):
-#   redukt-entrypoint.sh api              HTTP server on $PORT (default 8080)
-#   redukt-entrypoint.sh batch-compress   shard $IN_DIR by task and compress to $OUT_DIR
+#   redukt-entrypoint.sh api              HTTP server on $PORT (default 8080), models loaded before bind
+#   redukt-entrypoint.sh batch-compress   shard $IN_DIR by task and compress to $OUT_DIR (lockstep, --jobs N streams)
+#   redukt-entrypoint.sh batch-decompress shard $IN_DIR/*.azth by task and restore them to $OUT_DIR
 #   redukt-entrypoint.sh fetch-weights    only make sure the weights are present, then exit
 #   redukt-entrypoint.sh <anything else>  weights bootstrap, then `exec redukt "$@"`
 #   redukt-entrypoint.sh --help | -h | help   no bootstrap, straight to `redukt`
@@ -13,6 +14,12 @@
 #   2. $WEIGHTS_TARBALL_URL (signed HTTPS URL to a .tar/.tar.gz of the weights dir) -> curl | tar.
 #   3. $WEIGHTS_BUCKET (+ optional $WEIGHTS_PREFIX) -> `gcloud storage cp` if gcloud exists in the
 #      image, otherwise curl + OAuth token (metadata server, or $WEIGHTS_ACCESS_TOKEN).
+#
+# Tunables (all optional):
+#   REDUKT_BACKBONE  mamba (default) | rwkv | auto | comma list (api only, e.g. mamba,rwkv for routing by content)
+#   REDUKT_QUANT     auto (default; Q8 for Mamba, AZTH v5) | q8 | f32 (f32 recommended for batches of >= 16 streams)
+#   JOBS             lockstep streams for batch modes (default 16); worker threads come from REDUKT_THREADS (default: all CPUs)
+#   WEIGHTS_SET      weight sets to make sure are present; derived from REDUKT_BACKBONE when unset
 #
 # Redukt has NO env var / flag-independent weights path: it resolves `weights/<dir>` relative to
 # the CWD (/app).  /app/weights is therefore a symlink to $REDUKT_WEIGHTS_DIR, re-pointed here.
@@ -36,12 +43,24 @@ GCS_ENDPOINT="${GCS_ENDPOINT:-https://storage.googleapis.com}"   # e.g. https://
 WEIGHTS_CACHE_DIR="${WEIGHTS_CACHE_DIR:-/tmp/redukt-weights}"   # used if REDUKT_WEIGHTS_DIR is read-only
 VERIFY_WEIGHTS="${VERIFY_WEIGHTS:-0}"
 
-# Which weight sets this container needs (api only loads RWKV today).
-if [ "$MODE" = "api" ]; then
-  WEIGHTS_SET="${WEIGHTS_SET:-rwkv}"
-else
-  WEIGHTS_SET="${WEIGHTS_SET:-rwkv,mamba}"
-fi
+REDUKT_BACKBONE="${REDUKT_BACKBONE:-mamba}"
+REDUKT_QUANT="${REDUKT_QUANT:-auto}"
+case "$REDUKT_BACKBONE" in *[!a-z,]*) die "REDUKT_BACKBONE='$REDUKT_BACKBONE': use lowercase names / comma list" ;; esac
+case "$REDUKT_QUANT" in auto|q8|f32|q4) ;; *) die "REDUKT_QUANT='$REDUKT_QUANT' (expected auto|q8|f32)" ;; esac
+
+# Which weight sets this container needs.  Mamba loads from weights/mamba-130m, RWKV from weights/rwkv7-0.1b.
+# batch-decompress needs whatever backbones the archives' headers name, so it asks for both by default.
+default_weights_set() {
+  local b=",$REDUKT_BACKBONE," set=""
+  case "$MODE" in
+    api|batch-compress|fetch-weights) ;;
+    *) echo "mamba,rwkv"; return ;;          # batch-decompress and passthrough (decompress reads the header)
+  esac
+  case "$b" in *,mamba,*|*,auto,*) set="mamba" ;; esac
+  case "$b" in *,rwkv,*) set="${set:+$set,}rwkv" ;; esac
+  echo "$set"
+}
+WEIGHTS_SET="${WEIGHTS_SET:-$(default_weights_set)}"
 
 # ---- weight inventory (paths relative to the weights root; see weights/MANIFEST.md) ----------
 required_files() {
@@ -188,26 +207,31 @@ case "$MODE" in
   api)
     shift
     ensure_weights
-    # Cloud Run injects $PORT.  The model is loaded BEFORE the socket is bound (api.rs), so a
-    # startup probe on /v1/status only succeeds once the model is in memory.
-    exec redukt api --host 0.0.0.0 --port "${PORT:-8080}" \
-      --weights "/app/weights/rwkv7-0.1b" "$@"
+    # Cloud Run injects $PORT.  Every requested model is loaded BEFORE the socket is bound (api.rs), so a
+    # startup probe on /v1/status only succeeds once the models are in memory.  No --weights: Mamba and
+    # RWKV resolve weights/<dir> against the CWD (/app -> $REDUKT_WEIGHTS_DIR).
+    exec redukt api --bind 0.0.0.0 --port "${PORT:-8080}" \
+      --backbone "$REDUKT_BACKBONE" --quant "$REDUKT_QUANT" "$@"
     ;;
 
-  batch-compress)
+  batch-compress|batch-decompress)
     shift
     ensure_weights
+    case "$MODE" in
+      batch-compress)   VERB=compress;   SUFFIX="" ;;
+      batch-decompress) VERB=decompress; SUFFIX=".azth" ;;
+    esac
 
     IN_DIR="${IN_DIR:-/mnt/in}"
     OUT_DIR="${OUT_DIR:-/mnt/out}"
-    JOBS="${JOBS:-$(nproc)}"
+    JOBS="${JOBS:-16}"
     SKIP_EXISTING="${SKIP_EXISTING:-1}"
     # Cloud Batch predefined variables; SHARD_* are the manual fallback.
     SHARD_COUNT="${BATCH_TASK_COUNT:-${SHARD_COUNT:-1}}"
     if [ -n "${BATCH_TASK_INDEX:-}" ]; then
       SHARD_INDEX="$BATCH_TASK_INDEX"
     elif [ "$SHARD_COUNT" -gt 1 ] && [ -z "${SHARD_INDEX:-}" ]; then
-      # Without an index every task would compress shard 0 and the other shards would never be done.
+      # Without an index every task would process shard 0 and the other shards would never be done.
       die "SHARD_COUNT=$SHARD_COUNT but neither BATCH_TASK_INDEX nor SHARD_INDEX is set"
     else
       SHARD_INDEX="${SHARD_INDEX:-0}"
@@ -215,19 +239,26 @@ case "$MODE" in
     [ -d "$IN_DIR" ] || die "IN_DIR $IN_DIR is not a directory"
     mkdir -p "$OUT_DIR"
 
-    # redukt's --input-dir mode has no sharding of its own: every process would compress EVERY
+    # redukt's --input-dir mode has no sharding of its own: every process would handle EVERY
     # file.  Build a per-task staging dir of symlinks: files sorted by size (desc) and dealt
-    # round-robin to tasks so shards have similar total bytes.  Already-compressed files
-    # (<name>.azth in OUT_DIR) are skipped, which makes Spot-preemption retries resumable
-    # (an object only appears in GCS once the write is finalised).
+    # round-robin to tasks so shards have similar total bytes.  Files whose result already exists
+    # in OUT_DIR (<name>.azth when compressing, <name> when decompressing) are skipped, which makes
+    # Spot-preemption retries resumable (an object only appears in GCS once the write is finalised).
+    # compress skips *.azth inputs itself; decompress only reads *.azth.
     STAGE="$(mktemp -d /tmp/redukt-shard.XXXXXX)"
     trap 'rm -rf "$STAGE"' EXIT
 
     n=0; kept=0; skipped=0
     while IFS=$'\t' read -r -d '' size name; do
-      case "$name" in *.azth) continue ;; esac            # redukt skips .azth inputs as well
+      if [ "$VERB" = compress ]; then
+        case "$name" in *.azth) continue ;; esac
+        done_name="$name.azth"
+      else
+        case "$name" in *.azth) ;; *) continue ;; esac
+        done_name="${name%.azth}"
+      fi
       if [ $(( n % SHARD_COUNT )) -eq "$SHARD_INDEX" ]; then
-        if [ "$SKIP_EXISTING" = 1 ] && [ -e "$OUT_DIR/$name.azth" ]; then
+        if [ "$SKIP_EXISTING" = 1 ] && [ -e "$OUT_DIR/$done_name" ]; then
           skipped=$((skipped + 1))
         else
           ln -s "$IN_DIR/$name" "$STAGE/$name"; kept=$((kept + 1))
@@ -236,12 +267,20 @@ case "$MODE" in
       n=$((n + 1))
     done < <(find "$IN_DIR" -maxdepth 1 -type f -printf '%s\t%f\0' | sort -z -t $'\t' -k1,1nr -k2,2)
 
-    log "shard $SHARD_INDEX/$SHARD_COUNT: $n files in $IN_DIR, $kept to compress, $skipped already done, jobs=$JOBS"
+    log "$VERB shard $SHARD_INDEX/$SHARD_COUNT: $n candidate files in $IN_DIR, $kept to do, $skipped already done," \
+        "streams=$JOBS threads=${REDUKT_THREADS:-all} backbone=$REDUKT_BACKBONE quant=$REDUKT_QUANT"
     if [ "$kept" -eq 0 ]; then log "nothing to do"; exit 0; fi
 
+    # compress takes --backbone/--quant (a single backbone; a comma list is api-only).  decompress takes the
+    # backbone and profile from each archive header (a conflicting --quant would fail), so it gets neither.
+    verb_args=()
+    if [ "$VERB" = compress ]; then
+      case "$REDUKT_BACKBONE" in *,*) die "batch-compress needs a single REDUKT_BACKBONE, got '$REDUKT_BACKBONE'" ;; esac
+      verb_args=(--backbone "$REDUKT_BACKBONE" --quant "$REDUKT_QUANT")
+    fi
     # shellcheck disable=SC2086   # REDUKT_EXTRA_ARGS is intentionally word-split
-    run_child redukt compress --input-dir "$STAGE" --output-dir "$OUT_DIR" --jobs "$JOBS" \
-      --weights "/app/weights/rwkv7-0.1b" ${REDUKT_EXTRA_ARGS:-} "$@"
+    run_child redukt "$VERB" --input-dir "$STAGE" --output-dir "$OUT_DIR" --jobs "$JOBS" \
+      "${verb_args[@]+"${verb_args[@]}"}" ${REDUKT_EXTRA_ARGS:-} "$@"
     ;;
 
   *)

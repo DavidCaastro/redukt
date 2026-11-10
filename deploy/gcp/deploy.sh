@@ -7,7 +7,8 @@
 #   weights  upload ./weights (rwkv7-0.1b, mamba-130m, optional <GPU_SUBDIR>/model.rbin) + SHA256SUMS
 #   build    Cloud Build (deploy/gcp/cloudbuild.yaml): CPU image, CUDA image if BUILD_CUDA=true
 #   run      deploy the Cloud Run service `redukt-api` (deploy/gcp/cloudrun-service.yaml)
-#   batch    submit a Cloud Batch job (deploy/gcp/batch-job.json) that compresses gs://$IN_BUCKET -> gs://$OUT_BUCKET
+#   batch    submit a Cloud Batch job (deploy/gcp/batch-job.json) gs://$IN_BUCKET -> gs://$OUT_BUCKET.
+#            BATCH_MODE=compress (default) or decompress (IN_BUCKET then holds the .azth files)
 #   render F print cloudrun-service.yaml / batch-job.json with the current variables substituted (no GCP calls)
 #
 # Every step is safe to re-run.  DRY_RUN=1 prints the mutating gcloud commands instead of executing them
@@ -44,11 +45,18 @@ else
 fi
 TASK_COUNT="${TASK_COUNT:-1}"                          # 1 task = 1 VM (taskCountPerNode=1)
 PARALLELISM="${PARALLELISM:-$TASK_COUNT}"
-JOBS="${JOBS:-$VCPUS}"                                 # redukt --jobs per task
+BATCH_MODE="${BATCH_MODE:-compress}"                   # compress | decompress (entrypoint modes batch-compress|batch-decompress)
+# --jobs = lockstep streams per task (NOT threads; threads = all vCPUs unless REDUKT_THREADS is set).
+# Measured on an i5-1235U laptop: aggregate tok/s saturates around N=32; 16-32 is recommended on c4-highcpu-32.
+JOBS="${JOBS:-16}"
+REDUKT_BACKBONE="${REDUKT_BACKBONE:-mamba}"            # batch takes a single backbone (a comma list is api-only)
+# auto = Q8 for Mamba (AZTH v5).  f32 (AZTH v4) is ~1% better BPB at equal aggregate throughput for N >= 16.
+# Ignored by decompress (the profile comes from each archive header).
+REDUKT_QUANT="${REDUKT_QUANT:-auto}"
 CPU_MILLI="${CPU_MILLI:-$((VCPUS * 1000))}"
 PROVISIONING_MODEL="${PROVISIONING_MODEL:-STANDARD}"   # STANDARD | SPOT
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-86400s}"
-WEIGHTS_SET="${WEIGHTS_SET:-rwkv}"                     # batch mode is RWKV-only today (codec.rs batch_compress)
+WEIGHTS_SET="${WEIGHTS_SET:-}"                         # empty = derived by entrypoint.sh (mamba -> mamba-130m; decompress: mamba,rwkv)
 REDUKT_EXTRA_ARGS="${REDUKT_EXTRA_ARGS:-}"
 
 RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -62,7 +70,7 @@ run() { if [ "${DRY_RUN:-0}" = 1 ]; then { printf '[dry-run]'; printf ' %q' "$@"
 
 # render FILE: replace ${VAR} placeholders (only the listed variables) -- no envsubst dependency
 RENDER_VARS="PROJECT_ID REGION REPO IMAGE_TAG WEIGHTS_BUCKET IN_BUCKET OUT_BUCKET RUNTIME_SA TASK_COUNT PARALLELISM \
-JOBS MACHINE_TYPE BOOT_DISK_TYPE PROVISIONING_MODEL CPU_MILLI MEMORY_MIB MAX_RUN_DURATION WEIGHTS_SET REDUKT_EXTRA_ARGS"
+JOBS BATCH_MODE REDUKT_BACKBONE REDUKT_QUANT MACHINE_TYPE BOOT_DISK_TYPE PROVISIONING_MODEL CPU_MILLI MEMORY_MIB MAX_RUN_DURATION WEIGHTS_SET REDUKT_EXTRA_ARGS"
 render() {
   local out v; out="$(cat "$1")"
   for v in $RENDER_VARS; do out="${out//\$\{$v\}/${!v}}"; done
@@ -133,6 +141,7 @@ step_weights() {
   for d in rwkv7-0.1b mamba-130m; do
     [ -d "$LOCAL_WEIGHTS/$d" ] || continue
     # exclude leftovers that are not read by redukt (.pth/.bin/.md/.cache)
+    # weights for both backbones: mamba-130m is the default (REDUKT_BACKBONE=mamba), rwkv7-0.1b for rwkv / decompress of routed archives
     run gcloud storage rsync --recursive --project "$PROJECT_ID" \
       --exclude='.*\.(pth|bin|md|gitattributes)$|.*/\.cache/.*' \
       "$LOCAL_WEIGHTS/$d" "gs://$WEIGHTS_BUCKET/$d"
@@ -169,7 +178,10 @@ step_batch() {
   local tmp name; tmp="$(mktemp)"
   name="redukt-$(date +%Y%m%d-%H%M%S)"
   render "$HERE/batch-job.json" >"$tmp"
-  log "submitting Batch job $name: $TASK_COUNT task(s) on $MACHINE_TYPE ($PROVISIONING_MODEL), $JOBS jobs/task"
+  case "$BATCH_MODE" in compress|decompress) ;; *) die "BATCH_MODE must be compress or decompress" ;; esac
+  case "$REDUKT_QUANT" in auto|q8|f32) ;; *) die "REDUKT_QUANT must be auto, q8 or f32" ;; esac
+  log "submitting Batch job $name ($BATCH_MODE): $TASK_COUNT task(s) on $MACHINE_TYPE ($PROVISIONING_MODEL)," \
+      "$JOBS streams/task, backbone=$REDUKT_BACKBONE quant=$REDUKT_QUANT"
   run gcloud batch jobs submit "$name" --project "$PROJECT_ID" --location "$REGION" --config "$tmp"
   rm -f "$tmp"
   log "follow with: gcloud batch jobs describe $name --location $REGION --project $PROJECT_ID"

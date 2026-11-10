@@ -13,12 +13,25 @@
 #   envsubst < deploy/gcp/cloudrun-service.yaml > /tmp/svc.yaml
 #   gcloud run services replace /tmp/svc.yaml --region=${REGION} [--dry-run]
 #
-# What this service really is (see api.rs):
+#   https://docs.cloud.google.com/run/docs/configuring/services/memory-limits                  (4 vCPU needs 2-16 GiB; file writes use instance memory)
+#
+# What this service really is (see api.rs, `redukt api`):
 #   * single-threaded accept loop: ONE request at a time per instance  -> containerConcurrency: 1
-#   * loads the RWKV-7 model (weights/rwkv7-0.1b) BEFORE binding the port -> startupProbe on GET /v1/status
-#   * compress path is RWKV-only and has no entropy gate; at ~60 tok/s a 60-min request (the Cloud Run
-#     maximum) handles only a few hundred KB.  Use Cloud Batch (batch-job.json) for volume.
-#   * Cloud Run HTTP/1 request AND response are capped at 32 MiB (api.rs speaks HTTP/1.1 only).
+#   * loads the models named by --backbone (default: Mamba-130M, Q8 -> AZTH v5) BEFORE binding the port
+#     -> startupProbe on GET /v1/status (returns backbones, profile, formats_read v2..v5, threads, max_body)
+#   * serves ONLY the backbone/profile it loaded: archives from another profile (e.g. F32/v4 vs Q8/v5) or
+#     backbone are rejected.  To accept both, run a second service (REDUKT_QUANT=f32) or load several backbones
+#     (REDUKT_BACKBONE=mamba,rwkv routes by content).  Chunked bodies, bodies > 256 MiB and emb-surgery
+#     archives are rejected.
+#   * Mamba Q8 single stream: ~111-127 tok/s (~3.8 bytes/token) on the dev laptop, so a request of a few MB
+#     takes minutes.  Cloud Run caps HTTP/1 request AND response at 32 MiB and a request at 60 min:
+#     the API is for small files / interactive use.  For volume use Cloud Batch (batch-job.json, lockstep
+#     multi-stream, 16-32 streams), which is several times faster in aggregate.
+#   * Memory (2 GiB, the documented minimum for 4 vCPU): Mamba Q8 weights ~160 MB resident, the F32 safetensors
+#     (~520 MB) are read during load, so the peak is ~0.7 GB; with REDUKT_BACKBONE=mamba,rwkv the second model is
+#     loaded after the first (peak ~0.7 GB too).  A 32 MiB body + tokens + CM tables stay well under 2 GiB.
+#     If you use the WEIGHTS_BUCKET fallback instead of the FUSE mount, ~0.9 GB of weights land in
+#     memory-backed /tmp: raise memory to 4Gi.
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -50,22 +63,25 @@ spec:
           env:
             - name: REDUKT_WEIGHTS_DIR
               value: /weights
-            - name: WEIGHTS_SET
-              value: rwkv                                  # api.rs only loads weights/rwkv7-0.1b today
+            - name: REDUKT_BACKBONE
+              value: mamba                                 # mamba (default) | rwkv | mamba,rwkv (route by content)
+            - name: REDUKT_QUANT
+              value: auto                                  # auto = Q8 for Mamba (v5); f32 = v4, ~1% better BPB, 3.3x slower single
+            # WEIGHTS_SET is derived from REDUKT_BACKBONE (mamba -> mamba-130m/, rwkv -> rwkv7-0.1b/).
             # Fallback when /weights is NOT mounted: download from GCS at start-up (entrypoint.sh).
-            # Cloud Run's rootfs/tmp is in-memory, so the 382 MB then count against the 4 GiB.
+            # Cloud Run's rootfs/tmp is in-memory, so the ~520 MB (Mamba) then count against memory: use 4Gi.
             # - name: WEIGHTS_BUCKET
             #   value: ${WEIGHTS_BUCKET}
           resources:
             limits:
               cpu: '4'
-              memory: 4Gi                                  # RWKV Q8 ~130 MB resident + CM tables + request buffers (MAX_BODY 256 MB)
+              memory: 2Gi                                  # 4 vCPU requires >= 2 GiB; Mamba Q8 ~160 MB + ~520 MB F32 load peak (see header)
           volumeMounts:
             - name: weights
               mountPath: /weights
-          startupProbe:                                    # up to 60 x 10 s = 600 s (documented maximum)
+          startupProbe:                                    # failureThreshold x periodSeconds = 600 s = documented maximum; Mamba load from FUSE is typically seconds
             httpGet:
-              path: /v1/status                             # GET /v1/status -> {"status":"ok",...} (api.rs)
+              path: /v1/status                             # GET /v1/status -> {"status":"ok","backbones":[...],...} (api.rs)
               port: 8080
             initialDelaySeconds: 0
             timeoutSeconds: 5
@@ -79,7 +95,7 @@ spec:
             driver: gcsfuse.run.googleapis.com
             readOnly: true
             volumeAttributes:
-              bucketName: ${WEIGHTS_BUCKET}                # layout: rwkv7-0.1b/{model.safetensors,rwkv_vocab_v20230424.txt}
+              bucketName: ${WEIGHTS_BUCKET}                # layout: mamba-130m/{model.safetensors,tokenizer.json} (+ rwkv7-0.1b/ if REDUKT_BACKBONE includes rwkv)
               mountOptions: uid=10001,gid=10001            # image user is 10001 (volumes are root-owned by default)
   traffic:
     - percent: 100
