@@ -210,10 +210,11 @@ Conclusiones:
   en la cabeza atada.
 - **Siguiente palanca**: FMA/kernels de cómputo (nuevo perfil numérico, coordinado con R-104) y GPU batch (R-103,
   compilado pero sin ejecutar en GPU real). R-101 (Q6) aporta poco mientras el límite sea cómputo.
-- **Coste**: de ≈$47 a ≈$5 por GB raw (spot $0.022/vCPU-h). Cálculo manual con la fórmula de `scripts/breakeven.py`
-  (C = P_cpu * 1e9 / (3600 * R)) escalando los 130 B/s de la línea base por 315/34: R ≈ 1.2 KB/s -> $5.07; con F32 N=32
-  (322.1 tok/s) $4.96. Es una **estimación**: no se midió bytes/s ni se ejecutó el script sobre esta medida, y la
-  conversión tok/s -> B/s usa los 3.8 B/token de la línea base.
+- **Coste** (corregido 2026-11-10): la métrica correcta es por vCPU, no por máquina. El lockstep satura 12 hilos para
+  dar ~1,180 B/s (3.8 B/token), es decir ~100 B/s por vCPU frente a ~65-130 B/s por vCPU de la línea base (que usaba
+  1-2 cores): la eficiencia mejora ~1.5-2x, no 9x. Con C = P * 1e9 / (3600 * R): 12 vCPU spot ($0.26/h) ≈ **$50-60/GB
+  raw**; Hetzner dedicado ≈ $19/GB; GPU T4 N=128 (4.2 KB/s, $0.13-0.25/h) ≈ **$9-17/GB**. La estimación previa de
+  "≈$5/GB" asumía 1 vCPU y queda retirada. Umbral: $0.06-0.33/GB (CLAUDE.md "Commercial Target").
 - El umbral económico (18-100 KB/s por vCPU) sigue ~15-80x por encima del throughput actual (1.2 KB/s por máquina): R-105
   (tier rápido) sigue siendo necesario.
 - **Re-medición con la máquina en reposo** (`data/benchmark/results/lockstep-throughput-2026-11-10.csv`): Q8 N=8 270.8,

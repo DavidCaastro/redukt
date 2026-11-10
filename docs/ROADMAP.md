@@ -2853,10 +2853,13 @@ R-105 (tier rápido) ── independiente (investigación)
 | + R-100 (Q8, N=32) | 111 | **315** | medido |
 | + R-100 (F32, N=32) | 57.7 | **322.1** | medido |
 
-Aproximadamente **9x agregado** sobre los 34 tok/s de partida (315/34 = 9.3x). El coste estimado baja de ≈$47 a ≈$5 por GB
-raw (spot $0.022/vCPU-h; 315 tok/s ≈ 1.2 KB/s con la conversión de 3.8 B/token de la línea base de 130 B/s;
-cálculo manual con la fórmula de `scripts/breakeven.py`, no una medida de bytes/s). La meseta es compute-bound desde N~8
-(sin FMA). Siguiente palanca: FMA / kernels (nuevo perfil numérico) y GPU batch (R-103).
+Aproximadamente **9x agregado por máquina** sobre los 34 tok/s de partida (315/34 = 9.3x). El coste por GB NO baja en
+la misma proporción: la línea base usaba ~1-2 cores y el lockstep satura los 12 hilos, así que la eficiencia por vCPU
+mejora solo ~1.5-2x. Estimación (fórmula de `scripts/breakeven.py`, 3.8 B/token): 1,180 B/s con 12 vCPU spot
+($0.26/h) ≈ **$50-60 por GB raw** (≈$19 en dedicado Hetzner); GPU T4 N=128 (4.2 KB/s, $0.13-0.25/h) ≈ **$9-17/GB**.
+Umbral de viabilidad: $0.06-0.33/GB (CLAUDE.md "Commercial Target"). Corrige la estimación anterior "≈$5/GB", que
+asumía el mismo número de vCPU que la línea base. La meseta es compute-bound desde N~8 (sin FMA). Siguiente palanca:
+FMA / kernels (nuevo perfil numérico) y kernels GPU batch optimizados (R-103).
 
 **Proyección anterior (trazabilidad, 2026-11-09, NO medida)**:
 
@@ -2865,11 +2868,12 @@ cálculo manual con la fórmula de `scripts/breakeven.py`, no una medida de byte
 | Hoy (F32, in/out_proj en 1 hilo) | 34 | 34 | ~130 | ≈$47 |
 | + R-099 | ~70 | ~70 | ~270 | — |
 | + R-098 (con R-099) | ~250-300 | ~280 | ~1.1 KB/s | — |
-| + R-100 (N ≈ 16) | ~250 | ~700-1,500 | 3-6 KB/s | ≈$12 |
+| + R-100 (N ≈ 16) | ~250 | ~700-1,500 | 3-6 KB/s | ≈$12 (asumía 1 vCPU; inválido) |
 
 Contraste: R-099 quedó en 53.6 (proyectado ~70), R-098 en 111-127 single (proyectado 250-300) y R-100 en 315 agregados
-(proyectado 700-1,500): el compute sin FMA, no el ancho de banda, es el límite. Con ≈$5/GB el sistema sigue por encima del
-umbral económico (18-100 KB/s por vCPU): R-105 (tier rápido) y/o GPU (R-103) siguen siendo necesarios.
+(proyectado 700-1,500): el compute sin FMA, no el ancho de banda, es el límite. Con ≈$50-60/GB en CPU y ≈$9-17/GB en
+GPU T4 el sistema sigue 30-500x por encima del umbral económico ($0.06-0.33/GB): R-105 (tier rápido), kernels GPU
+optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
 R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
@@ -3182,6 +3186,7 @@ R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1 ✅, F2/F3 pendien
 | 2026-11-09 | R-104 determinismo cross-máquina — P0 bloqueante de producto (Kaggle 0.9633 vs local 0.9609, roundtrip entre máquinas no probado) |
 | 2026-11-09 | R-105 tier rápido (backbone 3-30M, referencia L3TC) — investigación; decisión con medida, no proyección |
 | 2026-11-09 | Economía: coste hoy ≈$47/GB raw (spot, 130 B/s); equilibrio a 7 años enwik8 en S3 Standard 18 KB/s por vCPU (scripts/breakeven.py) |
+| 2026-11-10 | Objetivo comercial añadido a CLAUDE.md ("Commercial Target": umbral $0.06-0.33/GB, estado $50-60 CPU / $9-17 GPU T4, 3 vías); corregida la estimación "$5/GB" de Fase 19 |
 | 2026-11-09 | docs: CLAUDE.md corregido (Q8 solo RWKV; 42.7 GB/s dual channel); speculative.rs y parallel_scan.rs anotados como borrados en 1dc6402 (nunca medidos) |
 | 2026-11-10 | 2565cef docs(fase-19): throughput audit by properties, refuted premises, R-098..R-105 |
 | 2026-11-10 | 86331ee feat(deploy): GCP reference deployment (Cloud Run, Cloud Batch, GCE CUDA) — R-102 verificado en local |

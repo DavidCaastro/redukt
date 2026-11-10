@@ -12,7 +12,23 @@ Hybrid CM (5 models + adaptive SGD mixer) + RWKV-7/Mamba (pretrained) + arithmet
 CPU-only, zero external dependencies, single Rust binary.
 
 Origin: extracted from original research project.
-Purpose: production-grade compression product for batch/archival workloads.
+Purpose: production-grade compression product for batch workloads where bytes are expensive
+(hot object storage, metered links, regulated retention). Deep/cold archive is NOT a target.
+
+## Commercial Target (2026-11-10)
+
+Viability metric: compute cost per raw GB must be below the client's cumulative saving over its
+retention horizon (model: `scripts/breakeven.py`). Reference thresholds (7 years, spot compute):
+<= $0.33/GB for text in hot object storage (enwik8-like), <= $0.12/GB for e-invoice XML,
+<= $0.06/GB for logs. Bytes saved in cold/deep archive ($0.001/GB-month) are worth ~0.
+Measured status (2026-11-10): CPU lockstep ~1,180 B/s on 12 vCPU = $50-60/GB (spot) / ~$19 (dedicated);
+GPU T4 batch N=128 ~4.2 KB/s = $9-17/GB. Gap to threshold: 30x-500x.
+Admitted paths to close it (every new phase must justify itself against one of them):
+1. GPU kernels at cuBLAS/tensor-core efficiency (current CUDA plugin uses ~4% of T4 peak).
+2. Fast tier: 3-30M-param backbone + CM recipe (R-105; L3TC reference ~1.10 bpb at 27 KB/s mobile CPU).
+3. Segments where bytes are expensive to move or retention is regulated (satellite/IoT links,
+   egress, compliance), where the threshold is far lower than storage savings.
+The metric is cost per GB (throughput per vCPU or per GPU-hour), NOT throughput per machine.
 
 ## Product Scope
 
@@ -264,8 +280,9 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.
-Aggregate gain ~9x over the 34 tok/s start; cost per raw GB estimated ~$47 -> ~$5 (spot). Next lever: FMA/kernels
-(new numeric profile) and GPU batch.
+Aggregate gain ~9x per machine over the 34 tok/s start, but per-vCPU efficiency only ~1.5-2x (the baseline used
+1-2 cores, lockstep saturates 12 threads): cost per raw GB stays ~$50-60 on CPU spot; GPU T4 N=128 ~$9-17.
+See "Commercial Target". Next lever: FMA/kernels (new numeric profile) and optimized GPU batch kernels.
 The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) and an independent review confirmed the BPB
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
 (sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 295 unit + 5 integration.
