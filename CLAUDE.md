@@ -300,7 +300,9 @@ That scale test is RWKV-only. **With the Mamba backbone the ratio COLLAPSES with
 to near-uniform logits beyond ~16-18K tokens; reproduced with the HF reference implementation, so it is the model,
 not the runtime (`data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2026-11-10.md`). RWKV-7 does not drift (1.29 bpb at 100 KB).
 Mitigation measured: resetting the backbone state every 4096 tokens (`REDUKT_MAMBA_RESET_EVERY`, experimental,
-encoder and decoder must agree) gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) at zero extra compute; productizing
+encoder and decoder must agree) gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) and wins all five whole industry files
+again (apache 0.185 vs brotli 0.313, facturae 0.248 vs 0.395, UBL 0.235 vs 0.247, syslog 0.245 vs 0.379, openssh
+0.202 vs 0.359) at zero extra compute; productizing
 it requires the period in the AZTH header (R-108). Every headline Redukt figure is a 10 KB window inside the
 regime where the backbone still works. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
@@ -323,7 +325,7 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-103 CUDA plugin on Kaggle T4 (`kaggle-cuda/`) | roundtrip OK, BPB 0.9641 == CPU F32; batch N=1/8/32/128 = 151/951/1,076/1,117 tok/s | validated |
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
-| R-108 periodic backbone state reset (`REDUKT_MAMBA_RESET_EVERY`, experimental) | enwik8 100 KB 1.6327 -> 0.9950 bpb (reset 4096), roundtrip OK, default output byte-identical | measured, format change pending |
+| R-108 periodic backbone state reset (`REDUKT_MAMBA_RESET_EVERY`, experimental) | enwik8 100 KB 1.6327 -> 0.9950 bpb (reset 4096); 5/5 whole industry files win again (-5% to -44% vs brotli); roundtrip OK; default output byte-identical | measured, format change pending |
 | Plugin lockstep guard | `--jobs > 1 --backbone plugin` now rejected (single FFI v1 state) | done |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical

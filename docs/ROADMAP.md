@@ -2862,8 +2862,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     no el runtime. dickens 80 KB no colapsa (dependiente del contenido); RWKV-7+CM no deriva (1.29 bpb a 100 KB).
     Detalle: `data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2026-11-10.md`.
   - **Mitigación medida**: `REDUKT_MAMBA_RESET_EVERY=4096` (reinicio del estado conv+SSM, el CM sigue) ->
-    enwik8 100 KB 0.9950 bpb (8192: 0.9968; sin reinicio 1.6327); roundtrip CRC OK; salida por defecto idéntica
-    (sha 3779ba13…). Coste de cómputo cero.
+    enwik8 100 KB 0.9950 bpb (8192: 0.9968; sin reinicio 1.6327); ficheros industry completos: apache 0.185 (brotli
+    0.313), facturae 0.248 (0.395), UBL 0.235 (0.247), syslog 0.245 (0.379), openssh 0.202 (0.359) — vuelven a ganar los
+    cinco; roundtrip CRC OK; salida por defecto idéntica (sha 3779ba13…). Coste de cómputo cero.
   - **Subtareas**:
     - [x] Diagnóstico y reproducción con referencia externa
     - [x] Flag experimental por variable de entorno (encoder y decoder deben coincidir)

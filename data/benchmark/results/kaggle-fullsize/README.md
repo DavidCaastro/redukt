@@ -39,7 +39,23 @@ diagnosis file). Mitigation measured locally: resetting the backbone state every
 | openssh-auth.log | 225,216 | 1.1710 | 0.5532 | 0.3857 | 0.3857 | **0.3460** | 0.3592 | xz | 273 |
 
 Redukt loses on all five whole files (it won all five at 10 KB). Roundtrip OK on both XML files (decompress ≈ compress
-time). Mitigation on these files: see the diagnosis file (reset-4096 run).
+time).
+
+### Same files with the experimental state reset every 4096 tokens (local CPU, Q8)
+
+| File (local CRLF copy) | Size | no reset (Kaggle, LF copy) | **reset 4096** | best classical on the same bytes | Δ vs best classical |
+|---|---|---|---|---|---|
+| apache-access.log | 171,239 | 0.4937 | **0.1850** | brotli-11 0.3132 | **-41%** |
+| facturae-batch.xml | 39,384 | 0.4458 | **0.2484** | brotli-11 0.3951 | **-37%** |
+| ubl-invoice-batch.xml | 83,260 | 0.4810 | **0.2348** | brotli-11 0.2470 | **-5%** |
+| linux-syslog.log | 216,485 | 1.1145 | **0.2453** | brotli-11 0.3789 | **-35%** |
+| openssh-auth.log | 225,216 | 1.1710 | **0.2015** | brotli-11 0.3592 | **-44%** |
+
+Classical figures from `competitors-fullsize-2026-11-01.csv` (same CRLF bytes). Lockstep `--jobs 5`, Q8, local i5; the
+aggregate tok/s of this run (85.6) is NOT a throughput figure (it ran alongside builds and tests). LogShrink reports
+0.143 bpb and LogReducer 0.186 on the Loghub Apache_2k log that `apache-access.log` is: with the reset Redukt ties
+LogReducer and still trails LogShrink, at 3-4 orders of magnitude lower speed.
+
 
 ## C. Throughput and economic gate (run-a)
 
