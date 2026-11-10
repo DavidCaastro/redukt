@@ -42,6 +42,7 @@ REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt
 REDUKT_REF = os.environ.get("REDUKT_REF", "48dbb06")  # origin/master 2026-11-10 (code == local HEAD)
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("fullsize-out")
 DEADLINE_HOURS = float(os.environ.get("DEADLINE_HOURS", "9"))
+PHASES = os.environ.get("PHASES", "C,A2,B,A").split(",")   # C lockstep, A2 CPU points, B industry, A GPU curve
 T_START = time.time()
 ENWIK8_URL = "http://mattmahoney.net/dc/enwik8.zip"
 PREFIXES = [10_240, 51_200, 102_400, 512_000, 1_048_576, 2_097_152, 4_194_304]
@@ -333,6 +334,7 @@ def scale_curve_gpu(redukt, repo, wdir, prefixes):
 def scale_points_cpu(redukt, repo, wdir, prefixes):
     section("A'. Same machine, CPU Mamba F32 / Q8 at 10 KB and 100 KB")
     out = os.path.join(WORK_DIR, "azth")
+    os.makedirs(out, exist_ok=True)
     for n in (10_240, 102_400):
         for quant in ("f32", "q8"):
             if hours_left() < 1.2:
@@ -350,6 +352,7 @@ def scale_points_cpu(redukt, repo, wdir, prefixes):
 def industry_full(redukt, repo, wdir, industry):
     section("B. Whole industry files — GPU plugin single stream (F32)")
     out = os.path.join(WORK_DIR, "azth")
+    os.makedirs(out, exist_ok=True)
     for name, path in industry.items():
         n = os.path.getsize(path)
         if estimate_seconds(n, 0, 450.0) / 3600 > hours_left() - 0.6:
@@ -466,8 +469,8 @@ def main():
     ap = argparse.ArgumentParser(description="Redukt full-size benchmark (Kaggle T4 + CPU)")
     ap.add_argument("--repo", default=None)
     args = ap.parse_args()
-    os.makedirs(WORK_DIR, exist_ok=True)
-    log(f"deadline {DEADLINE_HOURS} h; ref {REDUKT_REF}")
+    os.makedirs(os.path.join(WORK_DIR, "azth"), exist_ok=True)
+    log(f"deadline {DEADLINE_HOURS} h; ref {REDUKT_REF}; phases {PHASES}")
     repo = get_repo(args.repo)
     redukt = build(repo)
     wdir = prepare_weights(repo)
@@ -478,10 +481,14 @@ def main():
     files.update(industry)
     classical(files, have)
     try:
-        lockstep_cpu(redukt, repo, wdir, slices)          # short, gives the per-vCPU number early
-        scale_points_cpu(redukt, repo, wdir, prefixes)
-        industry_full(redukt, repo, wdir, industry)
-        scale_curve_gpu(redukt, repo, wdir, prefixes)     # longest, consumes whatever time is left
+        if "C" in PHASES:
+            lockstep_cpu(redukt, repo, wdir, slices)      # short, gives the per-vCPU number early
+        if "A2" in PHASES:
+            scale_points_cpu(redukt, repo, wdir, prefixes)
+        if "B" in PHASES:
+            industry_full(redukt, repo, wdir, industry)
+        if "A" in PHASES:
+            scale_curve_gpu(redukt, repo, wdir, prefixes)  # longest, consumes whatever time is left
     finally:
         gate(industry, prefixes)
         flush_outputs()
