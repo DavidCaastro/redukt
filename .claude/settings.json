@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/docker-cleanup.sh\"",
+            "timeout": 180,
+            "statusMessage": "Cleaning Redukt Docker test images and build cache..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cargo-check.sh\"",
+            "timeout": 240,
+            "statusMessage": "cargo check (Rust file edited)..."
+          }
+        ]
+      }
+    ]
+  }
+}

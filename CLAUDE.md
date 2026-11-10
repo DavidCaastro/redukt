@@ -319,6 +319,9 @@ F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates
 - `--numeric fma` on batches with N >= 8 (+12-22%); default stays contract 1 until api.rs supports contract 2
 - Agents/sessions that build Docker images MUST clean up: `docker rm -f` test containers, `docker rmi` test tags,
   `docker builder prune -af` at the end. Keep only base images (rust, nvidia/cuda) if a rebuild is expected.
+- Claude Code hooks (.claude/settings.json): SessionEnd runs .claude/hooks/docker-cleanup.sh (redukt:* images,
+  containers, build cache); PostToolUse Edit|Write on *.rs runs .claude/hooks/cargo-check.sh and feeds
+  warnings/errors back to the model. Review with /hooks.
 - `--jobs N` = N lockstep streams sharing every weight fetch (default 8; N=16-32 for large hosts);
   `decompress --input-dir` is supported. The old independent-thread batch mode was removed.
 - `REDUKT_THREADS=N` overrides the persistent worker pool size (default: available parallelism)
