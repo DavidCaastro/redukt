@@ -1,0 +1,23 @@
+metric,value,note
+nvcc_build_seconds,5.0,
+nvcc_warnings,0,
+rbin_header,v2 vocab=50280 tok=1,expect v2 vocab=50280 tok=1
+ffi_version,1,expect 1 (base contract unchanged)
+abi_version,2,expect 2
+v1_vs_numpy_max_rel_err,2.36e-06,"8 steps, expect < 1e-3"
+v1_vs_numpy_argmax_match,8/8,
+v1_vs_batch8_bit_exact,PASS,"16 steps, slot 5"
+batch_reset_slot_then_step0,PASS,
+duplicate_slot_rejected,PASS,
+v1_tok_per_s,151.1,single stream
+batch1_tok_per_s,150.6,6.64 ms/step
+batch8_tok_per_s,951.3,8.41 ms/step
+batch32_tok_per_s,1076.1,29.74 ms/step
+batch128_tok_per_s,1116.9,114.61 ms/step
+bpb_plugin,0.9641,CPU ref 0.9641 (delta -0.00%)
+bpb_cpu_same_machine,0.9641,
+compress_seconds_plugin,33.0,cpu 84.9
+sha256_gpu_azth,302d399d636c3104,
+sha256_cpu_f32_azth,797320862ccd8aab,expected DIFFERENT from GPU
+determinism_plugin_2_runs,PASS,
+roundtrip_plugin,PASS,CRC-32 verified by decoder

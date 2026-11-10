@@ -40,9 +40,9 @@ import time
 import numpy as np
 
 REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt.git")
-REDUKT_REF = os.environ.get("REDUKT_REF", "master")
+REDUKT_REF = os.environ.get("REDUKT_REF", "88782bc")   # commit on origin/master
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("cuda-test-out")
-CPU_REF_BPB = 0.9609          # CLAUDE.md: Mamba+CM AZTH v4, enwik8 10KB, CPU
+CPU_REF_BPB = 0.9641          # enwik8 10KB, CPU F32 (AZTH v5); Q8 reference is 0.9688
 BATCH_SIZES = (1, 8, 32, 128)
 ENWIK8_URL = "http://mattmahoney.net/dc/enwik8.zip"
 BACKEND_OK, BACKEND_INIT_FAILED, BACKEND_INVALID_ARGUMENT = 0, 1, 5
@@ -90,7 +90,8 @@ def get_repo(explicit):
             return dst
     dst = os.path.join(WORK_DIR, "redukt")
     if not os.path.isdir(dst):
-        run(f"git clone --depth 1 --branch {REDUKT_REF} {REPO_URL} {dst}")
+        run(f"git clone {REPO_URL} {dst}")
+        run(f"git checkout {REDUKT_REF}", cwd=dst)
     return dst
 
 
@@ -294,7 +295,7 @@ def cli_roundtrip(redukt, repo, wdir, data):
     section("4. CLI roundtrip --backbone plugin (enwik8 10KB)")
     out = os.path.join(WORK_DIR, "data")
     runs = {}
-    for tag, extra in (("gpu1", "--backbone plugin"), ("gpu2", "--backbone plugin"), ("cpu", "--backbone mamba")):
+    for tag, extra in (("gpu1", "--backbone plugin"), ("gpu2", "--backbone plugin"), ("cpu", "--backbone mamba --quant f32")):
         azth = f"{out}/enwik8.{tag}.azth"
         t0 = time.time()
         run(f"{redukt} compress --input {data} --output {azth} {extra} --weights {wdir} --bytes 10240", cwd=repo)
@@ -306,6 +307,10 @@ def cli_roundtrip(redukt, repo, wdir, data):
     record("bpb_cpu_same_machine", f"{cpu_bpb:.4f}")
     record("compress_seconds_plugin", f"{runs['gpu1'][1]:.1f}", f"cpu {runs['cpu'][1]:.1f}")
     same = open(runs["gpu1"][0], "rb").read() == open(runs["gpu2"][0], "rb").read()
+    import hashlib
+    sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]
+    record("sha256_gpu_azth", sha(runs["gpu1"][0]))
+    record("sha256_cpu_f32_azth", sha(runs["cpu"][0]), "expected DIFFERENT from GPU")
     record("determinism_plugin_2_runs", "PASS" if same else "FAIL")
     dec = f"{out}/enwik8.gpu1.dec"
     run(f"{redukt} decompress --input {runs['gpu1'][0]} --output {dec} --weights {wdir}", cwd=repo)
