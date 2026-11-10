@@ -1,0 +1,67 @@
+# Kaggle full-size benchmark — 2026-11-10 (T4 + 4 vCPU Xeon)
+
+Kernels: `redukt-gpu-fullsize-bench` (run-a: phases C lockstep + A GPU scale curve) and
+`redukt-gpu-fullsize-bench-b` (run-b: phases A' CPU points + B whole industry files). Script:
+`notebooks/redukt-gpu-fullsize-bench.py`, source at commit 48dbb06 (code identical to the 2026-11-10 HEAD).
+Raw: `run-a/`, `run-b/` (`fullsize-results.csv`, `classical-fullsize.csv`, `gate-table.csv`, `fullsize-report.txt`).
+Diagnosis of the length collapse and its mitigation: `mamba-length-collapse-2026-11-10.md`.
+
+## A. Scale curve — enwik8 prefixes, Mamba-130M + CM, F32, single stream (T4 CUDA plugin via CLI)
+
+| Prefix | Redukt bpb | gzip -9 | zstd -19 | zstd -22 --ultra --long | xz -9e | brotli -11 w24 | Redukt B/s (T4) |
+|---|---|---|---|---|---|---|---|
+| 10 KB | **0.9641** | 3.666 | 2.901 | 2.941 | 2.931 | 2.363 | 297 |
+| 50 KB | 1.0539 | 3.47 | 2.70 | 2.75 | 2.72 | 2.35 | 396 |
+| 100 KB | 1.6295 | 3.37 | 2.64 | 2.70 | 2.64 | 2.351 | 405 |
+| 500 KB | **3.3099** | ~3.2 | ~2.4 | ~2.4 | ~2.3 | ~2.26 | 370 |
+| 1 MB | **3.7096** | ~3.1 | ~2.3 | ~2.3 | ~2.2 | ~2.24 | 373 |
+| 2 MB | **3.9056** | 3.05 | 2.28 | 2.26 | 2.17 | 2.242 | 375 |
+| 100 MB (classical only) | — | 2.9156 | 2.1564 | 2.0267 | 1.9865 | 2.0594 | — |
+
+(Classical values for the 50 KB-1 MB rows: see `run-a/classical-fullsize.csv` for the exact figures; the table rounds.)
+The 4 MB point was skipped by the deadline guard. CPU on the same machine (run-b, 4 vCPU): 10 KB F32 0.9641 / Q8
+0.9688; 100 KB F32 1.6299 / Q8 1.6327 — identical curve to the GPU plugin, so this is the model, not the device.
+Roundtrips (10 KB, 100 KB) OK; `.azth` sha256 at 10 KB equals the 2026-11-10 CUDA validation (302d399d…).
+
+**Redukt is worse than gzip -9 from ~500 KB onwards and worse than xz/brotli from ~300 KB.** Cause: Mamba-130M's
+recurrent state degenerates beyond ~16-18K tokens (reproduced with the HF reference implementation; see the
+diagnosis file). Mitigation measured locally: resetting the backbone state every 4096 tokens gives **0.9950 bpb on the
+100 KB prefix** (vs 1.6327 without), roundtrip verified.
+
+## B. Whole industry files (run-b, T4 plugin, F32, single stream; LF line endings on Kaggle)
+
+| File | Size | Redukt | gzip -9 | zstd -19 | zstd -22 | xz -9e | brotli -11 | best classical | Redukt B/s |
+|---|---|---|---|---|---|---|---|---|---|
+| facturae-batch.xml | 38,371 | 0.4458 | 0.5696 | 0.4739 | 0.4679 | 0.4428 | **0.4078** | brotli | 252 |
+| ubl-invoice-batch.xml | 81,558 | 0.4810 | 0.3883 | 0.2938 | 0.2827 | 0.2809 | **0.2519** | brotli | 238 |
+| apache-access.log | 171,239 | 0.4937 | 0.4298 | 0.3370 | 0.3375 | 0.3151 | **0.3132** | brotli | 305 |
+| linux-syslog.log | 216,485 | 1.1145 | 0.5421 | 0.4204 | 0.4204 | **0.3697** | 0.3789 | xz | 269 |
+| openssh-auth.log | 225,216 | 1.1710 | 0.5532 | 0.3857 | 0.3857 | **0.3460** | 0.3592 | xz | 273 |
+
+Redukt loses on all five whole files (it won all five at 10 KB). Roundtrip OK on both XML files (decompress ≈ compress
+time). Mitigation on these files: see the diagnosis file (reset-4096 run).
+
+## C. Throughput and economic gate (run-a)
+
+| System | Config | Aggregate B/s | Per vCPU / per T4 | $/GB (spot, Nov 2026) |
+|---|---|---|---|---|
+| CPU 4 vCPU Xeon (Kaggle) | lockstep Q8 jobs=4, 12 × 10 KB | 255.8 | 64 B/s per vCPU | ~$61 (c7i spot $0.014/vCPU-h) |
+| CPU 4 vCPU Xeon | lockstep Q8 jobs=12 | 275.9 | 69 B/s per vCPU | **$56** |
+| CPU 4 vCPU Xeon | lockstep F32 jobs=12 | 238.4 | 60 B/s per vCPU | $65 |
+| T4 via CLI | single stream F32, enwik8 | 297-405 | 405 B/s per T4 | **$169** (g4dn spot $0.247/h) |
+| T4 via FFI (2026-11-10 validation) | batch N=128 | ~4,200 (1,117 tok/s) | — | ~$16 |
+| Laptop i5-1235U, 12 threads (reference) | lockstep Q8 N=32 | ~1,180 | ~98 B/s per vCPU | $50-60 |
+
+Classical compute cost on the same machine, enwik8 100 MB, one core: zstd -19 1.40 MB/s ($0.003/GB), xz -9e
+1.00 MB/s ($0.004/GB), brotli -11 0.34 MB/s ($0.011/GB), gzip -9 13 MB/s.
+
+Gate: with the 2 MB figure the saving vs brotli is negative, so R* is undefined; with the reset mitigation and the
+10 KB-like ratios, R* stays 18-100 KB/s per vCPU (`scripts/breakeven.py`), i.e. 260-1,450x the measured 69 B/s.
+
+## Defect found: `--jobs N --backbone plugin` corrupts predictions
+
+run-a lockstep with the plugin (jobs=12, 12 slices) gave **1.9492 bpb vs 0.7503 on CPU** for the same files. The
+FFI v1 plugin keeps ONE process-global recurrent state (`PluginState` holds only a reset fn), so interleaved streams
+overwrite each other's state. Output is still decodable only if the decoder replays the identical interleaving; a
+single-file decompress of such an archive would fail. Guard added: the CLI rejects `--jobs > 1` with the plugin until
+the lockstep uses the FFI v2 slot API.

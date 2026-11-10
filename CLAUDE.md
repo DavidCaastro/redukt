@@ -23,6 +23,9 @@ retention horizon (model: `scripts/breakeven.py`). Reference thresholds (7 years
 <= $0.06/GB for logs. Bytes saved in cold/deep archive ($0.001/GB-month) are worth ~0.
 Measured status (2026-11-10): CPU lockstep ~1,180 B/s on 12 vCPU = $50-60/GB (spot) / ~$19 (dedicated);
 GPU T4 batch N=128 ~4.2 KB/s = $9-17/GB. Gap to threshold: 30x-500x.
+Kaggle re-measurement (2026-11-10, `data/benchmark/results/kaggle-fullsize/README.md`): 4-vCPU Xeon lockstep Q8 69 B/s per vCPU
+= $56/GB (c7i spot); T4 through the CLI is single-stream only (405 B/s = $169/GB) because the plugin lockstep is
+rejected (single FFI v1 state). The $9-17/GB T4 figure exists only at FFI level (batch N=128).
 Admitted paths to close it (every new phase must justify itself against one of them):
 1. GPU kernels at cuBLAS/tensor-core efficiency. The binding T4 limit at N=128 is recurrent-state traffic (~4.8 MB per
    token and stream in F32, ~55k tok/s ceiling), not the 65 TFLOPS: the plugin's 1,117 tok/s is ~2% of that ceiling and
@@ -290,10 +293,16 @@ Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 | dickens | 1.797 | 1.503 | 1.457 | 2.649 | -45% |
 | samba | 1.298 | 1.356 | 1.206 | 1.944 | -38% |
 
-That scale test is RWKV-only. With the Mamba backbone the only scale datum goes the other way: enwik8 0.963 (10 KB) ->
-1.054 (50 KB), +9.4% (`market-readiness-diagnostic-2026-11-01.md`). "Advantage grows with size" is NOT established for
-the current backbone; whole-file Mamba runs are in progress (Kaggle T4, `notebooks/redukt-gpu-fullsize-bench.py`).
-RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
+That scale test is RWKV-only. **With the Mamba backbone the ratio COLLAPSES with length** (Kaggle T4 + local CPU,
+2026-11-10, `data/benchmark/results/kaggle-fullsize/README.md`): enwik8 0.964 (10 KB), 1.054 (50 KB), 1.630 (100 KB), 3.31 (500 KB),
+3.71 (1 MB), 3.91 (2 MB) — worse than gzip from ~500 KB. Whole industry files lose to brotli/xz on all five
+(apache 0.494 vs 0.313, UBL 0.481 vs 0.252, syslog 1.11 vs 0.37). Cause: Mamba-130M's recurrent state degenerates
+to near-uniform logits beyond ~16-18K tokens; reproduced with the HF reference implementation, so it is the model,
+not the runtime (`data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2026-11-10.md`). RWKV-7 does not drift (1.29 bpb at 100 KB).
+Mitigation measured: resetting the backbone state every 4096 tokens (`REDUKT_MAMBA_RESET_EVERY`, experimental,
+encoder and decoder must agree) gives 0.9950 bpb on enwik8 100 KB (vs 1.6327) at zero extra compute; productizing
+it requires the period in the AZTH header (R-108). Every headline Redukt figure is a 10 KB window inside the
+regime where the backbone still works. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 
 ### Fase 19 — CPU Limit & Market Viability (2026-11-10, measured)
@@ -313,6 +322,9 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-104 F1 pure-Rust exp/log + numeric contract | 0 ulp on 43 golden values, <=1 ulp vs std over 1e6; Windows<->Linux OK | done |
 | R-103 CUDA plugin on Kaggle T4 (`kaggle-cuda/`) | roundtrip OK, BPB 0.9641 == CPU F32; batch N=1/8/32/128 = 151/951/1,076/1,117 tok/s | validated |
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
+| Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
+| R-108 periodic backbone state reset (`REDUKT_MAMBA_RESET_EVERY`, experimental) | enwik8 100 KB 1.6327 -> 0.9950 bpb (reset 4096), roundtrip OK, default output byte-identical | measured, format change pending |
+| Plugin lockstep guard | `--jobs > 1 --backbone plugin` now rejected (single FFI v1 state) | done |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.

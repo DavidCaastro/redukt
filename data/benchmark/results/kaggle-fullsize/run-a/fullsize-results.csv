@@ -1,0 +1,11 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=4,11524,0.7503,480.4,255.8,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=12,11524,0.7503,445.3,275.9,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba f32 jobs=12,11493,0.7482,515.4,238.4,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-T4,plugin f32 jobs=12,29940,1.9492,365.1,336.6,aggregate incl. model load
+A-scale,enwik8[10240],10240,redukt-T4,plugin F32 single,1234,0.9641,34.5,297.2,sha256 302d399d636c3104; roundtrip OK decompress 34s
+A-scale,enwik8[51200],51200,redukt-T4,plugin F32 single,6745,1.0539,129.4,395.6,sha256 5dccc3c3ff01c7a1
+A-scale,enwik8[102400],102400,redukt-T4,plugin F32 single,20858,1.6295,253.0,404.7,sha256 919129c0b034e2b1; roundtrip OK decompress 250s
+A-scale,enwik8[512000],512000,redukt-T4,plugin F32 single,211834,3.3099,1384.0,369.9,sha256 a4e3db0c58c99d1f
+A-scale,enwik8[1048576],1048576,redukt-T4,plugin F32 single,486228,3.7096,2809.7,373.2,sha256 78b2e6ec1dd81949
+A-scale,enwik8[2097152],2097152,redukt-T4,plugin F32 single,1023838,3.9056,5594.7,374.8,sha256 d48a027969a2e4f1

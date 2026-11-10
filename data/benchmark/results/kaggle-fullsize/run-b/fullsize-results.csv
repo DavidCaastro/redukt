@@ -1,0 +1,10 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+A-scale,enwik8[10240],10240,redukt-CPU4,mamba f32 single,1234,0.9641,86.1,118.9,sha256 797320862ccd8aab
+A-scale,enwik8[10240],10240,redukt-CPU4,mamba q8 single,1240,0.9688,56.2,182.3,sha256 3779ba13052e76a3
+A-scale,enwik8[102400],102400,redukt-CPU4,mamba f32 single,20863,1.6299,645.7,158.6,sha256 2405e600226f8f16
+A-scale,enwik8[102400],102400,redukt-CPU4,mamba q8 single,20899,1.6327,416.0,246.2,sha256 77c7e44692bcdbee
+B-full,facturae-batch.xml,38371,redukt-T4,plugin F32 single,2138,0.4458,152.5,251.6,sha256 936bb38539bcb33c; roundtrip OK decompress 156s
+B-full,ubl-invoice-batch.xml,81558,redukt-T4,plugin F32 single,4904,0.4810,343.1,237.7,sha256 cfe7de4df017e2dd; roundtrip OK decompress 340s
+B-full,apache-access.log,171239,redukt-T4,plugin F32 single,10568,0.4937,561.6,304.9,sha256 e4d3a47761f64e99
+B-full,linux-syslog.log,216485,redukt-T4,plugin F32 single,30159,1.1145,803.8,269.3,sha256 1f3f70c8b7265d33
+B-full,openssh-auth.log,225216,redukt-T4,plugin F32 single,32965,1.1710,824.1,273.3,sha256 5f64fbc0d641fa67

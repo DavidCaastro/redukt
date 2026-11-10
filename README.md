@@ -57,9 +57,12 @@ windows**: classical codecs improve far more than Redukt when they see the whole
 | enwik8 | Text/encyclopedia | **0.964** | 2.352 | -59% | 2.061 (100 MB) |
 
 Wins 8/12 files vs brotli-11 at 10 KB; loses on high-entropy binary (sao +45%, ooffice +37%, osdb +21%, x-ray +6%).
-Whole-file Redukt figures are being measured (Kaggle T4 run, 2026-11-10); the only scale data with the Mamba backbone so
-far shows enwik8 getting worse from 10 KB to 50 KB (0.963 → 1.054), so "the advantage grows with size" is not
-established for the current backbone.
+**Whole-file results (Kaggle T4, 2026-11-10, `data/benchmark/results/kaggle-fullsize/`)**: with the current Mamba
+backbone the ratio collapses with length — enwik8 0.964 (10 KB) → 1.63 (100 KB) → 3.91 (2 MB), and all five whole
+industry files lose to brotli-11/xz. The cause is Mamba-130M's recurrent state degenerating beyond ~16K tokens
+(reproduced with the HF reference implementation). An experimental periodic state reset
+(`REDUKT_MAMBA_RESET_EVERY=4096`, encoder and decoder must agree) restores 0.995 bpb on the 100 KB prefix; putting
+the period in the format is roadmap item R-108. Until then, treat every figure above as a 10 KB-window figure.
 
 Throughput (Mamba backbone, i5-1235U laptop, measured 2026-11-10): 53.6 tok/s single-stream F32, 111-127 tok/s Q8
 weight-only, 315-322 tok/s aggregate with lockstep batching (N=32 streams), 366 tok/s with `--numeric fma`.

@@ -1,0 +1,4 @@
+file,redukt_bpb,best_classical,classical_bpb,gb_saved_per_raw_gb,storage,value_7y_usd_per_gb,rstar_kbs_per_vcpu,measured_kbs_per_vcpu,speedup_needed,cost_cpu_spot_usd_per_gb,cost_t4_spot_usd_per_gb
+enwik8[2097152],3.9056,brotli-11-w24,2.2420,0.0000,S3 Standard,0.0000,inf,0.069,inf,56.4,169.5
+enwik8[2097152],3.9056,brotli-11-w24,2.2420,0.0000,Backblaze B2,0.0000,inf,0.069,inf,56.4,169.5
+enwik8[2097152],3.9056,brotli-11-w24,2.2420,0.0000,Deep Archive,0.0000,inf,0.069,inf,56.4,169.5

@@ -279,6 +279,7 @@ pub struct MambaState {
     // Per layer: conv_state (d_inner, d_conv-1) + ssm_state (d_inner, d_state)
     conv_states: Vec<Vec<f32>>,  // n_layer × (d_inner * (d_conv-1))
     ssm_states: Vec<Vec<f32>>,   // n_layer × (d_inner * d_state)
+    tokens_since_reset: u64,     // for the experimental periodic reset (see `reset_every`)
 }
 
 impl MambaState {
@@ -288,13 +289,40 @@ impl MambaState {
         Self {
             conv_states: (0..config.n_layer).map(|_| vec![0.0; conv_len]).collect(),
             ssm_states: (0..config.n_layer).map(|_| vec![0.0; ssm_len]).collect(),
+            tokens_since_reset: 0,
         }
     }
 
     pub fn reset(&mut self) {
         for s in &mut self.conv_states { s.fill(0.0); }
         for s in &mut self.ssm_states { s.fill(0.0); }
+        self.tokens_since_reset = 0;
     }
+
+    /// Experimental length-collapse mitigation (2026-11-10 diagnosis): zero the
+    /// recurrent state every `REDUKT_MAMBA_RESET_EVERY` tokens. Mamba-130M degenerates
+    /// to near-uniform logits beyond ~16-18K tokens on some inputs (reproduced with the
+    /// HF reference implementation). Encoder and decoder must use the same value; this
+    /// is NOT part of the AZTH format yet, so the variable is for measurement only.
+    fn maybe_periodic_reset(&mut self) {
+        let every = reset_every();
+        if every > 0 && self.tokens_since_reset >= every {
+            self.reset();
+        }
+        self.tokens_since_reset += 1;
+    }
+}
+
+/// `REDUKT_MAMBA_RESET_EVERY=N` (0 or unset = never), read once.
+fn reset_every() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let v = std::env::var("REDUKT_MAMBA_RESET_EVERY").ok().and_then(|v| v.trim().parse::<u64>().ok());
+        if let Some(n) = v.filter(|n| *n > 0) {
+            eprintln!("[mamba] EXPERIMENTAL: recurrent state reset every {} tokens (REDUKT_MAMBA_RESET_EVERY)", n);
+        }
+        v.unwrap_or(0)
+    })
 }
 
 // --- Scratch ---
@@ -617,6 +645,7 @@ impl MambaModel {
         let ds = self.config.d_state;
         let dc = self.config.d_conv;
         let dr = self.config.dt_rank;
+        state.maybe_periodic_reset();
 
         // Embedding lookup (Q8 profile: dequantize the row)
         self.emb_w.row_into(&mut scratch.x[..d], token);
@@ -756,6 +785,9 @@ impl MambaModel {
                 self.forward_layers_normed(tokens[i], states[i], scratches[i]);
             }
             return;
+        }
+        for st in states.iter_mut() {
+            st.maybe_periodic_reset();
         }
         let d = self.config.d_model;
         let di = self.config.d_inner;

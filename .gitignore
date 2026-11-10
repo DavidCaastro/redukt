@@ -30,3 +30,6 @@ data/benchmark/results/kaggle-cuda/redukt/
 data/benchmark/results/kaggle-v3/redukt/
 data/benchmark/results/kaggle-v3/benchmark-data/
 weights/mambabyte-353m/
+# Kaggle full-size outputs: regenerable copies of the repo / weights / raw inputs
+data/benchmark/results/kaggle-fullsize/*/redukt/
+data/benchmark/results/kaggle-fullsize/*/data/

@@ -543,6 +543,15 @@ fn compress_admission(
 
 /// Load the model of a group and report per-stream memory.
 fn load_group_model(key: &GroupKey, opts: &BatchOptions, slots: usize) -> AzResult<(DynModel, DynTokenizer)> {
+    if key.backbone == BackboneChoice::Plugin && slots > 1 {
+        // FFI v1 keeps ONE process-global recurrent state: interleaved streams would overwrite
+        // each other (measured 2026-11-10 on Kaggle: 1.949 bpb vs 0.750 on CPU for the same 12 files,
+        // and the archive is only decodable by replaying the same interleaving).
+        return Err(AzError::ModelLoad(
+            "the GPU plugin backbone supports --jobs 1 only (single FFI v1 state); \
+             use --jobs 1 or a CPU backbone".into(),
+        ));
+    }
     let quant_override = if opts.quant.is_empty() { None } else { model_loader::parse_quant_flag(&opts.quant) };
     let t_load = Instant::now();
     let (mut model, tokenizer) = model_loader::load_dyn_model(

@@ -2851,6 +2851,33 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - Informe con BPB y KB/s medidos (no proyectados) por archivo
     - Decisión GO/NO-GO documentada con el umbral económico explícito
 
+- R-108: Colapso de Mamba-130M con la longitud — reinicio periódico del estado en el formato
+  - **Estado**: MEDIDO (mitigación experimental), formato PENDIENTE
+  - **Prioridad**: P0 — sin esto Redukt pierde contra gzip a partir de ~500 KB y contra brotli/xz en todos los
+    ficheros industry completos
+  - **Hallazgo (2026-11-10, Kaggle T4 + CPU local, `data/benchmark/results/kaggle-fullsize/README.md`)**: enwik8 0.964 (10 KB) ->
+    1.054 (50 KB) -> 1.630 (100 KB) -> 3.31 (500 KB) -> 3.71 (1 MB) -> 3.91 (2 MB). Backbone solo (`mamba-eval`):
+    ~1.1 bpb estable hasta ~17.5K tokens y después 16-19 bits/token (uniforme). La implementación de referencia HF
+    (transformers 5.18, F32) reproduce la degradación en la misma posición (5.4 -> 12 bits/token): es el modelo,
+    no el runtime. dickens 80 KB no colapsa (dependiente del contenido); RWKV-7+CM no deriva (1.29 bpb a 100 KB).
+    Detalle: `data/benchmark/results/kaggle-fullsize/mamba-length-collapse-2026-11-10.md`.
+  - **Mitigación medida**: `REDUKT_MAMBA_RESET_EVERY=4096` (reinicio del estado conv+SSM, el CM sigue) ->
+    enwik8 100 KB 0.9950 bpb (8192: 0.9968; sin reinicio 1.6327); roundtrip CRC OK; salida por defecto idéntica
+    (sha 3779ba13…). Coste de cómputo cero.
+  - **Subtareas**:
+    - [x] Diagnóstico y reproducción con referencia externa
+    - [x] Flag experimental por variable de entorno (encoder y decoder deben coincidir)
+    - [ ] Periodo de reinicio en la cabecera AZTH (v6 o bloque opcional v5) y rechazo si el decoder no lo soporta
+    - [ ] Barrido del periodo (1024-8192) y re-warm opcional (re-alimentar K tokens tras el reinicio)
+    - [ ] Repetir la curva de escala y los ficheros industry completos con el periodo elegido; actualizar README
+  - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
+- R-109: Lockstep con plugin GPU vía slots FFI v2
+  - **Estado**: PENDIENTE (guardarraíl aplicado)
+  - **Hallazgo**: `--jobs 12 --backbone plugin` dio 1.949 bpb frente a 0.750 en CPU sobre los mismos 12 ficheros:
+    FFI v1 mantiene UN estado global y los streams se pisan. La CLI ahora rechaza `--jobs > 1` con el plugin.
+  - **Subtareas**: `PluginState` por slot usando `batch_init/batch_reset/forward_batch` (R-096); gate batch == single
+    con el plugin; medir tok/s agregados por la CLI (hoy 1,117 tok/s solo por FFI).
+
 **Paralelización**: R-098 y R-099 son independientes entre sí. R-100 requiere ambos. R-101 requiere R-098.
 R-102 y R-105 son independientes del resto. R-103 depende de R-090. R-104 es transversal y bloquea la entrega
 a clientes externos.
@@ -3233,3 +3260,5 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | 23cafed docs(research): informe de posición competitiva (`docs/internal/research/competitive-position-2026-11-10/REPORT.md`): categoría comercial vacía por economía; Nacrith 0.9389 enwik8 completo; estirpe Hutter 2026 0.73-0.78 bpb enwik9 a 4.5-9 KB/s/núcleo; cmix 1.170 a ~$3/GB vs Redukt $50-60 |
 | 2026-11-10 | Erratas aplicadas: README (cifras era RWKV, "best-in-class"), CLAUDE.md (techo T4 = tráfico de estado, L3TC, -50.5% etiquetado 10 KB, escala), ROADMAP (Nacrith, L3TC), strata-competitive-landscape, business-case marcado SUPERSEDED; cmix unificado a 1.170 bpb |
 | 2026-11-10 | Lanzado `notebooks/redukt-gpu-fullsize-bench.py` en Kaggle T4: curva de escala enwik8 (10 KB-4 MB) con Mamba, ficheros industry completos vs zstd/xz/brotli, lockstep por vCPU y gate económico (resultados en `data/benchmark/results/kaggle-fullsize/`) |
+| 2026-11-10 | Kaggle full-size (T4 + 4 vCPU): colapso de Mamba con la longitud (enwik8 0.964 -> 3.91 bpb de 10 KB a 2 MB; 5/5 industry completos pierden vs brotli/xz); reproducido con HF transformers; R-108 definido; mitigación `REDUKT_MAMBA_RESET_EVERY=4096` -> 0.9950 bpb a 100 KB |
+| 2026-11-10 | Defecto: `--jobs>1 --backbone plugin` corrompe predicciones (estado FFI v1 único) -> guardarraíl en `lockstep::load_group_model`; R-109 definido |
