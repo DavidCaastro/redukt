@@ -1688,7 +1688,7 @@ fn no_simd_override() -> bool {
 
 /// Returns true if REDUKT_NO_PREFETCH env var is set (disables software prefetch).
 /// Read once per process (R-098).
-fn no_prefetch_override() -> bool {
+pub(crate) fn no_prefetch_override() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var("REDUKT_NO_PREFETCH").map(|v| v == "1").unwrap_or(false))
 }

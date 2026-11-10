@@ -262,3 +262,13 @@ F1 de R-104 está hecha (commit `51dafd9`):
   enwik8 F32 10 KB = 0.9641 BPB (0.9633 en v4). Roundtrip Windows<->Linux OK.
 - Pendientes: F2 (orden escalar = lanes AVX2) y F3 (CI multiplataforma y lint de libm).
 
+## Contrato numérico 2: fma-v1 (R-107, 2026-11-10)
+
+- PROFILE bits 4-5 = 2: transcendentales fmath-v1 (igual que el contrato 1) + GEMV/GEMM con FMA en el backbone Mamba
+  (`src/domain/gemv_fma.rs`). Mismo orden que el contrato 1 (8 lanes, mismo hsum, cola secuencial); cada `acc + w*x`
+  pasa a `fma(w, x, acc)`. El escalar (`f32::mul_add`) es bit-idéntico al SIMD (1e6 tripletas con subnormales y
+  cancelación exacta, contra `vfmadd` escalar y contra `fmaf` de UCRT en un build `target-cpu=x86-64`).
+- Opt-in: `compress --numeric fma`; por defecto se sigue escribiendo el contrato 1. Solo familia Mamba (RWKV + 2 se
+  rechaza al parsear). Conv1d, scan, softplus, SiLU y normas no cambian: siguen sujetos a la regla de tier SIMD.
+- Windows (MSVC, native) <-> Linux (glibc, x86-64-v3): enwik8 10 KB Q8 y F32 con contrato 2, sha idéntico y CRC OK en
+  ambos sentidos.

@@ -24,7 +24,8 @@
 //! Floating-point exception flags are not raised (Rust cannot observe them).
 //!
 //! `NumericContract` selects, per archive, which `exp`/`ln` feed the coded
-//! probability stream (AZTH v5 PROFILE bits 4-5, see docs/api/FORMAT-SPEC.md).
+//! probability stream and (R-107) whether the Mamba GEMV/GEMM kernels use
+//! fused multiply-add (AZTH v5 PROFILE bits 4-5, see docs/api/FORMAT-SPEC.md).
 
 /// Numeric contract of an archive: which transcendental implementation
 /// produced the probabilities that the range coder saw.
@@ -36,6 +37,10 @@ pub enum NumericContract {
     LegacyLibm,
     /// 1: `fmath` v1 (this module). Identical on every IEEE-754 platform.
     FmathV1,
+    /// 2: `fma-v1` (R-107): the `fmath` v1 transcendentals of contract 1 plus
+    /// fused multiply-add GEMV/GEMM kernels in the Mamba family
+    /// (`crate::domain::gemv_fma`). Only valid with a Mamba/MambaByte backbone.
+    FmaV1,
 }
 
 impl NumericContract {
@@ -47,15 +52,31 @@ impl NumericContract {
         match self {
             Self::LegacyLibm => 0,
             Self::FmathV1 => 1,
+            Self::FmaV1 => 2,
         }
     }
 
-    /// Decode the 2-bit code. `None` for reserved codes (2, 3).
+    /// Decode the 2-bit code. `None` for the reserved code 3.
     pub fn from_header_code(c: u8) -> Option<Self> {
         match c {
             0 => Some(Self::LegacyLibm),
             1 => Some(Self::FmathV1),
+            2 => Some(Self::FmaV1),
             _ => None,
+        }
+    }
+
+    /// Whether the backbone GEMV/GEMM kernels use fused multiply-add (R-107).
+    pub fn uses_fma(self) -> bool {
+        self == Self::FmaV1
+    }
+
+    /// Short name used by the CLI and the logs.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::LegacyLibm => "legacy-libm",
+            Self::FmathV1 => "fmath-v1",
+            Self::FmaV1 => "fma-v1",
         }
     }
 
@@ -66,7 +87,8 @@ impl NumericContract {
             // Legacy branch kept on purpose: decoding a pre-R-104 archive with
             // the same libm that encoded it is the only bit-exact option there.
             Self::LegacyLibm => x.exp(),
-            Self::FmathV1 => exp_f64(x),
+            // Contract 2 changes only the GEMV kernels; transcendentals are fmath v1.
+            Self::FmathV1 | Self::FmaV1 => exp_f64(x),
         }
     }
 
@@ -75,7 +97,7 @@ impl NumericContract {
     pub fn ln(self, x: f64) -> f64 {
         match self {
             Self::LegacyLibm => x.ln(),
-            Self::FmathV1 => log_f64(x),
+            Self::FmathV1 | Self::FmaV1 => log_f64(x),
         }
     }
 }
@@ -648,16 +670,21 @@ mod tests {
 
     #[test]
     fn contract_codes_and_dispatch() {
-        for c in [NumericContract::LegacyLibm, NumericContract::FmathV1] {
+        for c in [NumericContract::LegacyLibm, NumericContract::FmathV1, NumericContract::FmaV1] {
             assert_eq!(NumericContract::from_header_code(c.header_code()), Some(c));
         }
-        assert_eq!(NumericContract::from_header_code(2), None);
+        assert_eq!(NumericContract::FmaV1.header_code(), 2);
         assert_eq!(NumericContract::from_header_code(3), None);
+        assert!(NumericContract::FmaV1.uses_fma());
+        assert!(!NumericContract::FmathV1.uses_fma() && !NumericContract::LegacyLibm.uses_fma());
         assert_eq!(NumericContract::CURRENT, NumericContract::FmathV1);
         let x = -3.75;
         assert_eq!(NumericContract::LegacyLibm.exp(x).to_bits(), x.exp().to_bits());
         assert_eq!(NumericContract::FmathV1.exp(x).to_bits(), exp_f64(x).to_bits());
         assert_eq!(NumericContract::LegacyLibm.ln(7.0).to_bits(), 7.0f64.ln().to_bits());
         assert_eq!(NumericContract::FmathV1.ln(7.0).to_bits(), log_f64(7.0).to_bits());
+        // R-107: contract 2 shares contract 1's transcendentals bit for bit.
+        assert_eq!(NumericContract::FmaV1.exp(x).to_bits(), exp_f64(x).to_bits());
+        assert_eq!(NumericContract::FmaV1.ln(7.0).to_bits(), log_f64(7.0).to_bits());
     }
 }

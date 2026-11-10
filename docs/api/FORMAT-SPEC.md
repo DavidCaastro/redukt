@@ -190,10 +190,11 @@ Header size: **14 bytes** minimum (15 for a Mamba archive: +1 BACKBONE), 35 byte
 | Bits | Field             | Values |
 |------|-------------------|--------|
 | 0–3  | QUANT             | `0` = F32, `1` = Q8 (recipe below), `2` = Q6 (reserved, rejected), `3`–`15` reserved (rejected) |
-| 4–5  | NUMERIC_CONTRACT  | `0` = legacy libm, `1` = fmath-v1 (written since R-104 F1), `2`–`3` reserved (rejected) |
+| 4–5  | NUMERIC_CONTRACT  | `0` = legacy libm, `1` = fmath-v1 (default since R-104 F1), `2` = fma-v1 (R-107, Mamba family only, opt-in), `3` reserved (rejected) |
 | 6–7  | —                 | Reserved, must be 0 (decoder rejects) |
 
-Values written by the current encoder: `0x10` (F32) and `0x11` (Q8).
+Values written by the current encoder: `0x10` (F32) and `0x11` (Q8) by default;
+`0x20` (F32) and `0x21` (Q8) with `compress --numeric fma` (Mamba / MambaByte).
 A non-F32 profile is only valid for the Mamba / MambaByte backbones;
 the decoder rejects it for RWKV (RWKV's own `--quant` is not part of the format).
 
@@ -208,15 +209,49 @@ f32 kernels of R-013b.
 |------|-------------|------------------------------------------|-------------|
 | 0    | legacy libm | `f64::exp` / `f64::ln` of the platform libm (MSVC UCRT, glibc, …) | bit-exact only where the decoder's libm equals the encoder's (UCRT and glibc differ in 0.5% of `exp` values by 1 ulp; masked in practice, latent risk ~1e-8–1e-6 per token) |
 | 1    | fmath-v1    | `src/domain/fmath.rs`: port of musl `exp.c`/`log.c` (ARM optimized-routines, MIT), non-FMA path, pure IEEE f64 arithmetic, < 0.52 ulp | identical on every IEEE-754 platform; golden values and a golden sweep hash in the unit tests |
+| 2    | fma-v1      | same as contract 1 (fmath-v1), **plus** fused multiply-add GEMV/GEMM kernels in the Mamba backbone (below) | as contract 1; the GEMV/GEMM is in addition SIMD/scalar tier-invariant (scalar `f32::mul_add`) |
 
 Interpretation by version: v2, v3, v4 and v5 with bits 4–5 = 0 → contract 0.
 A decoder selects the implementation from the header, so legacy archives keep
 being decoded with the platform libm (the only bit-exact choice on the platform
-that wrote them). An unknown contract (2–3) is rejected while parsing the
-header, before the model is loaded.
+that wrote them). An unknown contract (3) is rejected while parsing the
+header, before the model is loaded; so is contract 2 with a non-Mamba backbone
+(RWKV / plugin). Decoders older than R-107 reject contract 2 the same way
+(`numeric contract 2 not supported by this build`), never with a CRC mismatch.
 
-The contract does **not** cover the SIMD tier: F32 GEMV / SSM accumulation
+Contracts 0 and 1 do **not** cover the SIMD tier: F32 GEMV / SSM accumulation
 order still differs between the AVX2 and scalar kernels (R-104 F2).
+
+### Numeric contract 2: fma-v1 GEMV/GEMM (R-107)
+
+Covers every matrix-vector product of the Mamba backbone: `in_proj`, `x_proj`,
+`dt_proj`, `out_proj` and the embedding / LM head (F32 and Q8 weights, single
+and lockstep multi-stream). Each `acc + w·x` of contract 1 becomes one IEEE 754
+`fusedMultiplyAdd(w, x, acc)` (single rounding); the order is unchanged:
+
+1. per output row (F32) or per (row, column group) (Q8): 8 lanes; lane `l`
+   accumulates columns `c ≡ l (mod 8)` of the 8-aligned body in column order,
+   `acc_l = fma(w_c, x_c, acc_l)`, from +0;
+2. horizontal sum `((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7))` (plain adds);
+3. sequential tail `s = fma(w_c, x_c, s)` over the remaining `K mod 8` columns;
+4. Q8: `int8 → f32` exactly, row = `sum = fma(dot_g, scale_g, sum)` over the
+   groups in order from +0 (same recipe as QUANT = 1).
+
+Register tiling (rows × streams), thread count and lockstep stream count never
+change the per-output order, hence never the bits. Not covered (unchanged
+contract-1 code): conv1d, selective scan (`exp`), softplus, SiLU, norms,
+residual adds — so contract 2 keeps the SIMD-tier rule for those phases.
+
+Implementation: `src/domain/gemv_fma.rs` (AVX2+FMA `vfmadd231ps` kernels and a
+scalar `f32::mul_add` emulation; unit-tested bit-identical, including 10^6
+random triples with subnormals and exact cancellation, against both the hardware
+scalar `vfmadd` and the MSVC UCRT `fmaf`). A decoder on a CPU with AVX2 but
+without FMA (or with `REDUKT_NO_FMA=1`) uses the scalar kernels — bit-exact,
+much slower — and prints a warning. Selection: `compress --numeric fma`
+(default `fmath` = contract 1); decompression always follows the header. A
+`decompress --input-dir` batch must not mix contract 2 with contracts 0/1 for
+Mamba archives (rejected before loading the model). The HTTP API (`api`) writes
+and loads contract 1 only.
 
 ### Q8 profile recipe (QUANT = 1)
 
@@ -267,7 +302,7 @@ means byte count implies token count).
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
 | v4      | `\x04`      | 13–34       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, skip, backbone, CM) |
-| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104) |
+| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104; contract 2 fma-v1, R-107) |
 
 The decoder accepts v2, v3, v4 and v5 files:
 - **v2**: no CRC check (backward compatible)
@@ -276,7 +311,8 @@ The decoder accepts v2, v3, v4 and v5 files:
 - **v5**: as v4, plus the weight profile and the numeric contract are taken from PROFILE
 
 The encoder writes **v5** for every archive since R-104 F1 (PROFILE `0x10` for
-F32, `0x11` for Q8). Before that, F32 archives were written as v4. A timing-based
+F32, `0x11` for Q8; `0x20` / `0x21` with `--numeric fma`, R-107). Before that,
+F32 archives were written as v4. A timing-based
 auto-selection of the weight profile is never used: it would make the bitstream
 machine-dependent.
 
@@ -421,7 +457,8 @@ Decompression produces byte-identical output if and only if:
 6. Same weight profile (stored in the v5 PROFILE byte since R-099; v2–v4 imply F32)
 7. Same numeric contract (v5 PROFILE bits 4–5 since R-104). Contract 1 (fmath-v1)
    is OS/libm-independent; contract 0 (v2–v4 and R-099 v5) relies on the
-   platform libm `exp`
+   platform libm `exp`; contract 2 (fma-v1, R-107) is contract 1 plus FMA
+   GEMV/GEMM kernels, whose scalar fallback (`f32::mul_add`) is bit-identical
 8. Same SIMD tier (`REDUKT_NO_SIMD=1` must match on both sides), for every
    profile: the AVX2 (no-FMA) and scalar f32 kernels (GEMV accumulation order,
    SSM `exp`, SiLU) are NOT bit-compatible. In the Q8 profile the int8 GEMV

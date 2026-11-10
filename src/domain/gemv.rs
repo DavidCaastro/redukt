@@ -17,11 +17,18 @@
 //! then a fixed horizontal-sum tree, then a sequential tail; the row result is
 //! `0 + Σ_g dot_g * scale_g` in group order. The scalar kernel emulates exactly
 //! that operation order with plain f32 arithmetic, so SIMD and scalar produce
-//! bit-identical results (unit-tested). FMA is deliberately not used: the
-//! scalar path would need a correctly-rounded libm `fmaf` to match it.
+//! bit-identical results (unit-tested). FMA is deliberately not used here.
+//!
+//! - R-107: every public GEMV takes a [`Kernel`]. `Kernel::Plain` is the
+//!   contract above (numeric contracts 0 and 1); `Kernel::Fma` selects the
+//!   fused multiply-add kernels of numeric contract 2 (`fma-v1`) in
+//!   [`crate::domain::gemv_fma`]: same accumulation order, one rounding per
+//!   multiply-add, SIMD and scalar (`f32::mul_add`) bit-identical.
 
 use std::sync::OnceLock;
 
+use crate::domain::fmath::NumericContract;
+use crate::domain::gemv_fma;
 use crate::domain::par_pool::{self, Pool, SyncPtr, MAX_BLOCKS};
 use crate::domain::tensor::{Tensor, mat_vec_mul_scalar_raw};
 #[cfg(target_arch = "x86_64")]
@@ -52,6 +59,30 @@ pub fn simd_avx2() -> bool {
             false
         }
     })
+}
+
+/// GEMV/GEMM kernel family, fixed by the archive's numeric contract (R-107).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kernel {
+    /// Separate multiply and add (numeric contracts 0 and 1).
+    Plain,
+    /// Fused multiply-add, same accumulation order (numeric contract 2).
+    Fma,
+}
+
+impl Kernel {
+    /// Kernel family a numeric contract prescribes.
+    pub fn for_contract(c: NumericContract) -> Self {
+        if c.uses_fma() { Self::Fma } else { Self::Plain }
+    }
+
+    /// Contract an encoder running this kernel family writes.
+    pub fn write_contract(self) -> NumericContract {
+        match self {
+            Self::Plain => NumericContract::CURRENT,
+            Self::Fma => NumericContract::FmaV1,
+        }
+    }
 }
 
 /// Total threads used by pooled GEMV (1 = no worker threads).
@@ -143,9 +174,13 @@ fn check_multi_shapes(n_outs: usize, xs: &[&[f32]], cols: usize) {
 
 // ---- F32 (bit-identical to the single-thread kernel) ----
 
-/// Single-thread f32 rows kernel: same dispatch as `mat_vec_mul_into`'s
-/// single-thread path (AVX2 noFMA > scalar).
-pub fn f32_rows(out: &mut [f32], m: &[f32], v: &[f32], cols: usize) {
+/// Single-thread f32 rows kernel. Plain: same dispatch as `mat_vec_mul_into`'s
+/// single-thread path (AVX2 noFMA > scalar). Fma: contract-2 kernel (R-107).
+pub fn f32_rows(out: &mut [f32], m: &[f32], v: &[f32], cols: usize, k: Kernel) {
+    if k == Kernel::Fma {
+        gemv_fma::f32_rows_fma(out, m, v, cols);
+        return;
+    }
     let rows = out.len();
     #[cfg(target_arch = "x86_64")]
     if simd_avx2() {
@@ -157,27 +192,27 @@ pub fn f32_rows(out: &mut [f32], m: &[f32], v: &[f32], cols: usize) {
 }
 
 /// out = mat @ v on the global pool. Bit-identical to the single-thread path.
-pub fn gemv_f32_into(out: &mut [f32], mat: &Tensor, v: &[f32]) {
-    gemv_f32_with(par_pool::global(), out, mat, v);
+pub fn gemv_f32_into(out: &mut [f32], mat: &Tensor, v: &[f32], k: Kernel) {
+    gemv_f32_with(par_pool::global(), out, mat, v, k);
 }
 
-fn gemv_f32_with(pool: &Pool, out: &mut [f32], mat: &Tensor, v: &[f32]) {
+fn gemv_f32_with(pool: &Pool, out: &mut [f32], mat: &Tensor, v: &[f32], k: Kernel) {
     let rows = mat.shape[0];
     let cols = mat.shape[1];
     let data = &mat.data;
     par_rows(pool, &mut out[..rows], cols * 4, |r0, o| {
         let r1 = r0 + o.len();
-        f32_rows(o, &data[r0 * cols..r1 * cols], &v[..cols], cols);
+        f32_rows(o, &data[r0 * cols..r1 * cols], &v[..cols], cols, k);
     });
 }
 
 /// outs[s] = mat @ xs[s] for every stream, sharing each weight fetch (R-100).
-/// Bit-identical to `gemv_f32_into(outs[s], mat, xs[s])` for every s.
-pub fn gemv_f32_multi(outs: &mut [&mut [f32]], mat: &Tensor, xs: &[&[f32]]) {
-    gemv_f32_multi_with(par_pool::global(), outs, mat, xs);
+/// Bit-identical to `gemv_f32_into(outs[s], mat, xs[s], k)` for every s.
+pub fn gemv_f32_multi(outs: &mut [&mut [f32]], mat: &Tensor, xs: &[&[f32]], k: Kernel) {
+    gemv_f32_multi_with(par_pool::global(), outs, mat, xs, k);
 }
 
-fn gemv_f32_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Tensor, xs: &[&[f32]]) {
+fn gemv_f32_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Tensor, xs: &[&[f32]], k: Kernel) {
     let rows = mat.shape[0];
     let cols = mat.shape[1];
     let data = &mat.data;
@@ -187,8 +222,12 @@ fn gemv_f32_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Tensor, xs: &
         for sub0 in (0..len).step_by(MULTI_SUB_ROWS) {
             let sub1 = (sub0 + MULTI_SUB_ROWS).min(len);
             let w = &data[(r0 + sub0) * cols..(r0 + sub1) * cols];
+            if k == Kernel::Fma {
+                gemv_fma::f32_rows_multi_fma(blocks, sub0..sub1, w, xs, cols);
+                continue;
+            }
             for (o, x) in blocks.iter_mut().zip(xs) {
-                f32_rows(&mut o[sub0..sub1], w, &x[..cols], cols);
+                f32_rows(&mut o[sub0..sub1], w, &x[..cols], cols, k);
             }
         }
     });
@@ -255,28 +294,31 @@ impl Q8wMatrix {
 }
 
 /// out = dequant(mat) @ v on the global pool (Q8 weights, f32 activations).
-pub fn gemv_q8w_into(out: &mut [f32], mat: &Q8wMatrix, v: &[f32]) {
-    gemv_q8w_with(par_pool::global(), out, mat, v);
+pub fn gemv_q8w_into(out: &mut [f32], mat: &Q8wMatrix, v: &[f32], k: Kernel) {
+    gemv_q8w_with(par_pool::global(), out, mat, v, k);
 }
 
-fn gemv_q8w_with(pool: &Pool, out: &mut [f32], mat: &Q8wMatrix, v: &[f32]) {
+fn gemv_q8w_with(pool: &Pool, out: &mut [f32], mat: &Q8wMatrix, v: &[f32], k: Kernel) {
     let (rows, cols, group) = (mat.rows, mat.cols, mat.group);
     let gpr = mat.groups_per_row();
     let (q, sc) = (&mat.q, &mat.scales);
     par_rows(pool, &mut out[..rows], cols + gpr * 4, |r0, o| {
         let r1 = r0 + o.len();
         let blk = Q8Rows { q: &q[r0 * cols..r1 * cols], scales: &sc[r0 * gpr..r1 * gpr], cols, group };
-        q8w_rows(o, &blk, &v[..cols]);
+        match k {
+            Kernel::Plain => q8w_rows(o, &blk, &v[..cols]),
+            Kernel::Fma => gemv_fma::q8w_rows_fma(o, &blk, &v[..cols]),
+        }
     });
 }
 
 /// outs[s] = dequant(mat) @ xs[s] for every stream, sharing each weight fetch
-/// (R-100). Bit-identical to `gemv_q8w_into(outs[s], mat, xs[s])` for every s.
-pub fn gemv_q8w_multi(outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs: &[&[f32]]) {
-    gemv_q8w_multi_with(par_pool::global(), outs, mat, xs);
+/// (R-100). Bit-identical to `gemv_q8w_into(outs[s], mat, xs[s], k)` for every s.
+pub fn gemv_q8w_multi(outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs: &[&[f32]], k: Kernel) {
+    gemv_q8w_multi_with(par_pool::global(), outs, mat, xs, k);
 }
 
-fn gemv_q8w_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs: &[&[f32]]) {
+fn gemv_q8w_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs: &[&[f32]], k: Kernel) {
     let (rows, cols, group) = (mat.rows, mat.cols, mat.group);
     let gpr = mat.groups_per_row();
     let (q, sc) = (&mat.q, &mat.scales);
@@ -285,7 +327,10 @@ fn gemv_q8w_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs
     par_rows_multi(pool, outs, rows, cols + gpr * 4, |r0, blocks| {
         let r1 = r0 + blocks[0].len();
         let blk = Q8Rows { q: &q[r0 * cols..r1 * cols], scales: &sc[r0 * gpr..r1 * gpr], cols, group };
-        q8w_rows_multi(blocks, &blk, xs);
+        match k {
+            Kernel::Plain => q8w_rows_multi(blocks, &blk, xs),
+            Kernel::Fma => gemv_fma::q8w_rows_multi_fma(blocks, &blk, xs),
+        }
     });
 }
 
@@ -293,7 +338,20 @@ fn gemv_q8w_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs
 const Q8_FUSED_MAX: usize = 8;
 /// Below this many streams the 4-row single kernel per stream has more
 /// independent accumulator chains than the fused one.
-const Q8_FUSED_MIN: usize = 4;
+pub(crate) const Q8_FUSED_MIN: usize = 4;
+
+/// Streams for the next fused call when `left >= Q8_FUSED_MIN` remain: up to
+/// Q8_FUSED_MAX, leaving at least Q8_FUSED_MIN for the next call when possible.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+pub(crate) fn fused_take(left: usize) -> usize {
+    let take = left.min(Q8_FUSED_MAX);
+    let rest = left - take;
+    if rest > 0 && rest < Q8_FUSED_MIN && take > Q8_FUSED_MIN {
+        take - (Q8_FUSED_MIN - rest)
+    } else {
+        take
+    }
+}
 
 /// Q8 rows for N streams. AVX2: streams in groups of 4..8 through the fused
 /// kernel (each int8 weight chunk converted once, multiplied into S
@@ -306,13 +364,7 @@ fn q8w_rows_multi(outs: &mut [&mut [f32]], m: &Q8Rows, xs: &[&[f32]]) {
     #[cfg(target_arch = "x86_64")]
     if simd_avx2() {
         while n - s0 >= Q8_FUSED_MIN {
-            let take = (n - s0).min(Q8_FUSED_MAX);
-            // Leave at least Q8_FUSED_MIN for the next fused call when possible.
-            let take = if n - s0 - take > 0 && n - s0 - take < Q8_FUSED_MIN && take > Q8_FUSED_MIN {
-                take - (Q8_FUSED_MIN - (n - s0 - take))
-            } else {
-                take
-            };
+            let take = fused_take(n - s0);
             // SAFETY: AVX2 detected; caller ran check_multi_shapes (xs[s] >= cols) and
             // par_rows_multi gives every outs[s] the same row count as `m`.
             unsafe { q8w_rows_fused_avx2(&mut outs[s0..s0 + take], m, &xs[s0..s0 + take]) };
@@ -385,11 +437,11 @@ unsafe fn q8w_rows_fused_n<const S: usize>(outs: &mut [&mut [f32]], m: &Q8Rows, 
 }
 
 /// A contiguous run of Q8 rows (kernel input).
-struct Q8Rows<'a> {
-    q: &'a [i8],
-    scales: &'a [f32],
-    cols: usize,
-    group: usize,
+pub(crate) struct Q8Rows<'a> {
+    pub(crate) q: &'a [i8],
+    pub(crate) scales: &'a [f32],
+    pub(crate) cols: usize,
+    pub(crate) group: usize,
 }
 
 fn q8w_rows(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
@@ -405,7 +457,7 @@ fn q8w_rows(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
 /// Horizontal sum of 8 lanes in the exact order of `hsum8_avx`:
 /// ((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7)).
 #[inline]
-fn hsum8_scalar(a: &[f32; 8]) -> f32 {
+pub(crate) fn hsum8_scalar(a: &[f32; 8]) -> f32 {
     let s0 = a[0] + a[4];
     let s1 = a[1] + a[5];
     let s2 = a[2] + a[6];
@@ -451,7 +503,7 @@ fn q8w_rows_scalar(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn load_i8x8_ps(p: *const i8) -> __m256 {
+pub(crate) unsafe fn load_i8x8_ps(p: *const i8) -> __m256 {
     let b = _mm_loadl_epi64(p as *const __m128i);
     _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(b))
 }
@@ -460,7 +512,7 @@ unsafe fn load_i8x8_ps(p: *const i8) -> __m256 {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn hsum8_avx(v: __m256) -> f32 {
+pub(crate) unsafe fn hsum8_avx(v: __m256) -> f32 {
     let hi = _mm256_extractf128_ps::<1>(v);
     let lo = _mm256_castps256_ps128(v);
     let sum4 = _mm_add_ps(lo, hi);
@@ -582,6 +634,8 @@ mod tests {
         (384, 768), (768, 1536), (80, 1536), (1536, 48), (1003, 771), (4100, 64),
     ];
 
+    const KERNELS: [Kernel; 2] = [Kernel::Plain, Kernel::Fma];
+
     #[test]
     fn pooled_f32_gemv_bit_identical_to_single_thread() {
         let pools = [
@@ -592,13 +646,15 @@ mod tests {
         for (i, &(rows, cols)) in SHAPES.iter().enumerate() {
             let m = rand_tensor(rows, cols, 7 + i as u32);
             let v = rand_vec(cols, 99 + i as u32);
-            let mut reference = vec![0.0f32; rows];
-            f32_rows(&mut reference, &m.data, &v, cols);
-            for pool in &pools {
-                let mut out = vec![f32::NAN; rows];
-                gemv_f32_with(pool, &mut out, &m, &v);
-                assert_eq!(bits(&out), bits(&reference),
-                    "shape {}x{} threads={}", rows, cols, pool.threads());
+            for k in KERNELS {
+                let mut reference = vec![0.0f32; rows];
+                f32_rows(&mut reference, &m.data, &v, cols, k);
+                for pool in &pools {
+                    let mut out = vec![f32::NAN; rows];
+                    gemv_f32_with(pool, &mut out, &m, &v, k);
+                    assert_eq!(bits(&out), bits(&reference),
+                        "shape {}x{} threads={} {:?}", rows, cols, pool.threads(), k);
+                }
             }
         }
     }
@@ -612,7 +668,7 @@ mod tests {
             let mut legacy = vec![0.0f32; rows];
             crate::domain::tensor::mat_vec_mul_into(&mut legacy, &m, &v);
             let mut pooled = vec![0.0f32; rows];
-            gemv_f32_into(&mut pooled, &m, &v);
+            gemv_f32_into(&mut pooled, &m, &v, Kernel::Plain);
             assert_eq!(bits(&pooled), bits(&legacy), "shape {}x{}", rows, cols);
         }
     }
@@ -686,11 +742,11 @@ mod tests {
         let t = rand_tensor(rows, cols, 41);
         let v = rand_vec(cols, 43);
         let mut f = vec![0.0f32; rows];
-        f32_rows(&mut f, &t.data, &v, cols);
+        f32_rows(&mut f, &t.data, &v, cols, Kernel::Plain);
         for group in [cols, 64] {
             let q = Q8wMatrix::quantize(&t, group);
             let mut o = vec![0.0f32; rows];
-            gemv_q8w_into(&mut o, &q, &v);
+            gemv_q8w_into(&mut o, &q, &v, Kernel::Plain);
             // Per-element error ≤ step/2 → |Δdot| ≤ Σ|v|·max_step/2 (hard bound).
             let sum_abs_v: f32 = v.iter().map(|x| x.abs()).sum();
             for r in 0..rows {
@@ -708,19 +764,29 @@ mod tests {
         let v = rand_vec(cols, 53);
         for group in [cols, 64] {
             let q = Q8wMatrix::quantize(&t, group);
-            let mut reference = vec![0.0f32; rows];
-            q8w_rows(&mut reference, &rows_of(&q), &v);
-            for n in [1usize, 2, 5, 12] {
-                let pool = Pool::new(n, Duration::from_micros(50));
-                let mut out = vec![f32::NAN; rows];
-                gemv_q8w_with(&pool, &mut out, &q, &v);
-                assert_eq!(bits(&out), bits(&reference), "threads={} group={}", n, group);
+            for k in KERNELS {
+                let mut reference = vec![0.0f32; rows];
+                q8_rows_k(&mut reference, &rows_of(&q), &v, k);
+                for n in [1usize, 2, 5, 12] {
+                    let pool = Pool::new(n, Duration::from_micros(50));
+                    let mut out = vec![f32::NAN; rows];
+                    gemv_q8w_with(&pool, &mut out, &q, &v, k);
+                    assert_eq!(bits(&out), bits(&reference), "threads={} group={} {:?}", n, group, k);
+                }
             }
         }
     }
 
+    fn q8_rows_k(out: &mut [f32], m: &Q8Rows, v: &[f32], k: Kernel) {
+        match k {
+            Kernel::Plain => q8w_rows(out, m, v),
+            Kernel::Fma => gemv_fma::q8w_rows_fma(out, m, v),
+        }
+    }
+
     /// R-100: every stream of the multi-stream kernels is bit-identical to the
-    /// single-stream GEMV of that stream, for any N and any thread count.
+    /// single-stream GEMV of that stream, for any N and any thread count
+    /// (R-107: for both kernel families).
     #[test]
     fn multi_stream_f32_bit_identical_to_single_stream() {
         let pools = [
@@ -730,21 +796,21 @@ mod tests {
         ];
         for (i, &(rows, cols)) in SHAPES.iter().enumerate() {
             let m = rand_tensor(rows, cols, 61 + i as u32);
-            for n in [1usize, 2, 3, 5, 8] {
+            for (n, k) in [1usize, 2, 3, 4, 5, 8, 9].into_iter().flat_map(|n| KERNELS.map(|k| (n, k))) {
                 let xs: Vec<Vec<f32>> = (0..n).map(|s| rand_vec(cols, 100 + 7 * s as u32 + i as u32)).collect();
                 let refs: Vec<Vec<f32>> = xs.iter().map(|x| {
                     let mut r = vec![0.0f32; rows];
-                    f32_rows(&mut r, &m.data, x, cols);
+                    f32_rows(&mut r, &m.data, x, cols, k);
                     r
                 }).collect();
                 for pool in &pools {
                     let mut outs: Vec<Vec<f32>> = vec![vec![f32::NAN; rows]; n];
                     let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
                     let x_refs: Vec<&[f32]> = xs.iter().map(|x| x.as_slice()).collect();
-                    gemv_f32_multi_with(pool, &mut out_refs, &m, &x_refs);
+                    gemv_f32_multi_with(pool, &mut out_refs, &m, &x_refs, k);
                     for s in 0..n {
                         assert_eq!(bits(&outs[s]), bits(&refs[s]),
-                            "shape {}x{} n={} s={} threads={}", rows, cols, n, s, pool.threads());
+                            "shape {}x{} n={} s={} threads={} {:?}", rows, cols, n, s, pool.threads(), k);
                     }
                 }
             }
@@ -756,28 +822,84 @@ mod tests {
         let pools = [Pool::new(1, Duration::from_micros(0)), Pool::new(5, Duration::from_micros(50))];
         for (i, &(rows, cols)) in SHAPES.iter().enumerate() {
             let t = rand_tensor(rows, cols, 71 + i as u32);
-            for group in [cols, 64] {
+            for (group, k) in [cols, 64].into_iter().flat_map(|g| KERNELS.map(|k| (g, k))) {
                 let q = Q8wMatrix::quantize(&t, group);
                 for n in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 17] {
                     let xs: Vec<Vec<f32>> = (0..n).map(|s| rand_vec(cols, 200 + 3 * s as u32 + i as u32)).collect();
                     let refs: Vec<Vec<f32>> = xs.iter().map(|x| {
                         let mut r = vec![0.0f32; rows];
-                        q8w_rows(&mut r, &rows_of(&q), x);
+                        q8_rows_k(&mut r, &rows_of(&q), x, k);
                         r
                     }).collect();
                     for pool in &pools {
                         let mut outs: Vec<Vec<f32>> = vec![vec![f32::NAN; rows]; n];
                         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
                         let x_refs: Vec<&[f32]> = xs.iter().map(|x| x.as_slice()).collect();
-                        gemv_q8w_multi_with(pool, &mut out_refs, &q, &x_refs);
+                        gemv_q8w_multi_with(pool, &mut out_refs, &q, &x_refs, k);
                         for s in 0..n {
                             assert_eq!(bits(&outs[s]), bits(&refs[s]),
-                                "shape {}x{} group={} n={} s={}", rows, cols, q.group, n, s);
+                                "shape {}x{} group={} n={} s={} {:?}", rows, cols, q.group, n, s, k);
                         }
                     }
                 }
             }
         }
+    }
+
+    /// R-107: SIMD-FMA kernels (single and multi-stream, F32 and Q8) are
+    /// bit-identical to the scalar `f32::mul_add` emulation, including K not a
+    /// multiple of 8 / 64, and they really differ from the Plain kernels.
+    #[test]
+    fn fma_kernels_simd_bit_identical_to_scalar_mul_add() {
+        if !gemv_fma::simd_fma() {
+            eprintln!("SKIP: AVX2+FMA unavailable or REDUKT_NO_SIMD=1");
+            return;
+        }
+        let mut differs_from_plain = 0usize;
+        let shapes: &[(usize, usize)] = &[(384, 768), (80, 1536), (1536, 48), (1003, 771), (37, 13), (9, 5), (66, 200)];
+        for (i, &(rows, cols)) in shapes.iter().enumerate() {
+            let m = rand_tensor(rows, cols, 301 + i as u32);
+            let xs: Vec<Vec<f32>> = (0..9).map(|s| rand_vec(cols, 400 + 11 * s as u32 + i as u32)).collect();
+            let x_refs: Vec<&[f32]> = xs.iter().map(|x| x.as_slice()).collect();
+            // F32: single SIMD vs scalar, then the 4-stream tile path vs scalar.
+            let scalar: Vec<Vec<f32>> = xs.iter().map(|x| {
+                let mut r = vec![0.0f32; rows];
+                gemv_fma::f32_rows_fma_scalar(&mut r, &m.data, x, cols);
+                r
+            }).collect();
+            let mut single = vec![0.0f32; rows];
+            gemv_fma::f32_rows_fma(&mut single, &m.data, &xs[0], cols);
+            assert_eq!(bits(&single), bits(&scalar[0]), "f32 single {}x{}", rows, cols);
+            let mut plain = vec![0.0f32; rows];
+            f32_rows(&mut plain, &m.data, &xs[0], cols, Kernel::Plain);
+            differs_from_plain += (bits(&plain) != bits(&single)) as usize;
+            let mut outs: Vec<Vec<f32>> = vec![vec![f32::NAN; rows]; xs.len()];
+            let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+            gemv_fma::f32_rows_multi_fma(&mut o, 0..rows, &m.data, &x_refs, cols);
+            for s in 0..xs.len() {
+                assert_eq!(bits(&outs[s]), bits(&scalar[s]), "f32 multi {}x{} s={}", rows, cols, s);
+            }
+            // Q8: every valid group size, single and fused (9 streams = 5 fused + 4 fused).
+            for group in [cols, 64, 8] {
+                let q = Q8wMatrix::quantize(&m, group);
+                let scalar: Vec<Vec<f32>> = xs.iter().map(|x| {
+                    let mut r = vec![0.0f32; rows];
+                    gemv_fma::q8w_rows_fma_scalar(&mut r, &rows_of(&q), x);
+                    r
+                }).collect();
+                let mut single = vec![0.0f32; rows];
+                gemv_fma::q8w_rows_fma(&mut single, &rows_of(&q), &xs[0]);
+                assert_eq!(bits(&single), bits(&scalar[0]), "q8 single {}x{} group={}", rows, cols, q.group);
+                let mut outs: Vec<Vec<f32>> = vec![vec![f32::NAN; rows]; xs.len()];
+                let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+                gemv_fma::q8w_rows_multi_fma(&mut o, &rows_of(&q), &x_refs);
+                for s in 0..xs.len() {
+                    assert_eq!(bits(&outs[s]), bits(&scalar[s]),
+                        "q8 multi {}x{} group={} s={}", rows, cols, q.group, s);
+                }
+            }
+        }
+        assert!(differs_from_plain >= 4, "FMA kernels must round differently from Plain ({})", differs_from_plain);
     }
 
     /// Kernel-level lockstep benchmark: weight GB/s of single GEMV vs N-stream
@@ -790,7 +912,7 @@ mod tests {
         for &(rows, cols, name) in &[(3072usize, 768usize, "in_proj"), (768, 1536, "out_proj"), (50280, 768, "head")] {
             let t = rand_tensor(rows, cols, 5);
             let q = Q8wMatrix::quantize(&t, 64);
-            for n in [1usize, 2, 4, 8, 16, 32] {
+            for (n, k) in [1usize, 2, 4, 8, 16, 32].into_iter().flat_map(|n| KERNELS.map(|k| (n, k))) {
                 let xs: Vec<Vec<f32>> = (0..n).map(|s| rand_vec(cols, 9 + s as u32)).collect();
                 let x_refs: Vec<&[f32]> = xs.iter().map(|x| x.as_slice()).collect();
                 let mut outs: Vec<Vec<f32>> = vec![vec![0.0; rows]; n];
@@ -798,30 +920,30 @@ mod tests {
                 let mut best = [f64::MAX; 4];
                 for _ in 0..3 {
                     let t0 = Instant::now();
-                    for _ in 0..reps { for s in 0..n { gemv_q8w_with(pool, &mut outs[s], &q, &xs[s]); } }
+                    for _ in 0..reps { for s in 0..n { gemv_q8w_with(pool, &mut outs[s], &q, &xs[s], k); } }
                     best[0] = best[0].min(t0.elapsed().as_secs_f64() / reps as f64);
                     let t0 = Instant::now();
                     for _ in 0..reps {
                         let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
-                        gemv_q8w_multi_with(pool, &mut o, &q, &x_refs);
+                        gemv_q8w_multi_with(pool, &mut o, &q, &x_refs, k);
                     }
                     best[1] = best[1].min(t0.elapsed().as_secs_f64() / reps as f64);
                     let t0 = Instant::now();
-                    for _ in 0..reps { for s in 0..n { gemv_f32_with(pool, &mut outs[s], &t, &xs[s]); } }
+                    for _ in 0..reps { for s in 0..n { gemv_f32_with(pool, &mut outs[s], &t, &xs[s], k); } }
                     best[2] = best[2].min(t0.elapsed().as_secs_f64() / reps as f64);
                     let t0 = Instant::now();
                     for _ in 0..reps {
                         let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
-                        gemv_f32_multi_with(pool, &mut o, &t, &x_refs);
+                        gemv_f32_multi_with(pool, &mut o, &t, &x_refs, k);
                     }
                     best[3] = best[3].min(t0.elapsed().as_secs_f64() / reps as f64);
                 }
                 let (qb, fb) = (q.bytes() as f64, (rows * cols * 4) as f64);
                 let gbs = |bytes: f64, secs: f64| bytes * n as f64 / secs / 1e9;
-                eprintln!("{:8} n={:2} | Q8: {:7.3} ms ({:5.1} GB/s) vs GEMM {:7.3} ms ({:5.1} GB/s eff) {:4.2}x",
-                    name, n, best[0] * 1e3, gbs(qb, best[0]), best[1] * 1e3, gbs(qb, best[1]), best[0] / best[1]);
-                eprintln!("{:8} n={:2} | F32: {:7.3} ms ({:5.1} GB/s) vs GEMM {:7.3} ms ({:5.1} GB/s eff) {:4.2}x",
-                    name, n, best[2] * 1e3, gbs(fb, best[2]), best[3] * 1e3, gbs(fb, best[3]), best[2] / best[3]);
+                eprintln!("{:8} {:5?} n={:2} | Q8: {:7.3} ms ({:5.1} GB/s) vs GEMM {:7.3} ms ({:5.1} GB/s) {:4.2}x",
+                    name, k, n, best[0] * 1e3, gbs(qb, best[0]), best[1] * 1e3, gbs(qb, best[1]), best[0] / best[1]);
+                eprintln!("{:8} {:5?} n={:2} | F32: {:7.3} ms ({:5.1} GB/s) vs GEMM {:7.3} ms ({:5.1} GB/s) {:4.2}x",
+                    name, k, n, best[2] * 1e3, gbs(fb, best[2]), best[3] * 1e3, gbs(fb, best[3]), best[2] / best[3]);
             }
         }
     }
@@ -838,14 +960,14 @@ mod tests {
                 let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
                 let mut xs: Vec<&[f32]> = vec![full.as_slice(); 5];
                 if bad { xs[4] = short.as_slice(); }
-                gemv_q8w_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &q, &xs);
+                gemv_q8w_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &q, &xs, Kernel::Plain);
             });
             assert_eq!(r.is_err(), bad, "q8 short input must panic (bad={})", bad);
             let r = std::panic::catch_unwind(|| {
                 let mut outs: Vec<Vec<f32>> = vec![vec![0.0; 64]; 3];
                 let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
                 let xs: Vec<&[f32]> = vec![full.as_slice(); if bad { 2 } else { 3 }];
-                gemv_f32_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &t, &xs);
+                gemv_f32_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &t, &xs, Kernel::Plain);
             });
             assert_eq!(r.is_err(), bad, "f32 missing input must panic, not skip a stream (bad={})", bad);
         }

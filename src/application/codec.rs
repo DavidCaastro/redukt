@@ -23,8 +23,8 @@ pub const HEADER_SIZE: usize = 28; // v2/v3: 8 magic + 4 total_bytes + 4 token_c
 pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
 pub const V5_HEADER_BASE: usize = 14; // v5: v4 base + 1 profile
 /// v5 PROFILE byte: bits 0-3 = weight quant code (0=F32, 1=Q8, 2=Q6 reserved),
-/// bits 4-5 = NUMERIC_CONTRACT (0=legacy libm, 1=fmath-v1, 2-3 reserved; R-104),
-/// bits 6-7 reserved (must be 0).
+/// bits 4-5 = NUMERIC_CONTRACT (0=legacy libm, 1=fmath-v1, 2=fma-v1 (R-107, Mamba
+/// family only), 3 reserved; R-104), bits 6-7 reserved (must be 0).
 pub const V5_PROFILE_QUANT_MASK: u8 = 0x0F;
 pub const V5_PROFILE_QUANT_Q6_RESERVED: u8 = 2;
 pub const V5_PROFILE_CONTRACT_SHIFT: u8 = 4;
@@ -153,7 +153,7 @@ pub fn parse_profile_byte(b: u8) -> AzResult<(WeightProfile, NumericContract)> {
     let contract = NumericContract::from_header_code(contract_code).ok_or_else(|| {
         AzError::Format(format!(
             "AZTH v5 numeric contract {} not supported by this build (known: 0 = legacy libm, \
-             1 = fmath-v1); a newer Redukt is required to decode this archive", contract_code
+             1 = fmath-v1, 2 = fma-v1); a newer Redukt is required to decode this archive", contract_code
         ))
     })?;
     let code = b & V5_PROFILE_QUANT_MASK;
@@ -333,6 +333,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             };
 
             let enhanced_cm = flags & V4_FLAG_ENHANCED_CM != 0;
+            check_contract_backbone(numeric_contract, backbone)?;
 
             Ok(HeaderInfo {
                 version, total_bytes, token_count: None,
@@ -346,6 +347,68 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             "unsupported AZTH version {}", version
         ))),
     }
+}
+
+/// Mamba / MambaByte: the only backbones with FMA kernels (numeric contract 2).
+fn is_mamba_family(backbone: BackboneChoice) -> bool {
+    matches!(backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte)
+}
+
+/// Contract 2 (fma-v1) is only defined for the Mamba family (R-107): reject it
+/// for any other backbone while parsing, before a model is loaded.
+fn check_contract_backbone(contract: NumericContract, backbone: BackboneChoice) -> AzResult<()> {
+    if contract.uses_fma() && !is_mamba_family(backbone) {
+        return Err(AzError::Format(format!(
+            "AZTH numeric contract {} is only defined for the Mamba family, not backbone {}",
+            contract.name(), backbone
+        )));
+    }
+    Ok(())
+}
+
+/// Numeric contract for `--numeric` (R-107): "" / "auto" / "fmath" -> contract 1
+/// (default: unchanged bitstreams), "fma" -> contract 2 (FMA GEMV kernels).
+pub fn parse_numeric_flag(s: &str) -> AzResult<NumericContract> {
+    match s.to_ascii_lowercase().as_str() {
+        "" | "auto" | "fmath" | "fmath-v1" | "1" => Ok(NumericContract::FmathV1),
+        "fma" | "fma-v1" | "2" => Ok(NumericContract::FmaV1),
+        _ => Err(AzError::Parse { context: "--numeric".into(), value: format!("{} (expected fmath|fma)", s) }),
+    }
+}
+
+/// Header of one archive file, read from its first bytes (None if unreadable).
+fn read_header_prefix(p: &std::path::Path) -> Option<HeaderInfo> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(64);
+    std::fs::File::open(p).ok()?.take(64).read_to_end(&mut buf).ok()?;
+    validate_magic(&buf).ok()?;
+    parse_header(&buf).ok()
+}
+
+/// Numeric contract of a `decompress --input-dir` batch (R-107). The process
+/// loads one kernel family, so all Mamba-family archives of the batch must agree
+/// on FMA vs plain kernels; a mixed batch fails before any model load.
+/// Unreadable archives are skipped here (the batch itself reports them).
+fn batch_numeric_contract(dir: &str) -> AzResult<NumericContract> {
+    let entries = std::fs::read_dir(dir).map_err(|e| AzError::Io { path: dir.to_string(), source: e })?;
+    let (mut fma, mut plain) = (0usize, 0usize);
+    for p in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+        if !p.is_file() || p.extension().map_or(true, |e| e != "azth") {
+            continue;
+        }
+        match read_header_prefix(&p) {
+            Some(h) if is_mamba_family(h.backbone) && h.numeric_contract.uses_fma() => fma += 1,
+            Some(h) if is_mamba_family(h.backbone) => plain += 1,
+            _ => {}
+        }
+    }
+    if fma > 0 && plain > 0 {
+        return Err(AzError::Format(format!(
+            "batch mixes numeric contracts ({} fma-v1 and {} plain-kernel Mamba archives); \
+             decompress them from separate directories", fma, plain
+        )));
+    }
+    Ok(if fma > 0 { NumericContract::FmaV1 } else { NumericContract::CURRENT })
 }
 
 /// Extract stream and CRC from AZTH payload given header size and version.
@@ -451,8 +514,10 @@ pub fn build_v4_header(
 
 /// Build the AZTH header for a given weight profile (R-099).
 /// Always v5 since R-104 F1: v4 layout with version 5 and PROFILE inserted after
-/// FLAGS, carrying the quant code and `NumericContract::CURRENT` (fmath-v1), which
-/// is what `cdf_from_logits` uses. Pre-R-104 decoders reject it up front
+/// FLAGS, carrying the quant code and the numeric contract. Mamba-family
+/// archives carry `model_loader::process_contract()` (the contract the loaded
+/// models' kernels implement, R-107; default fmath-v1); other backbones always
+/// `NumericContract::CURRENT`. Pre-R-104 decoders reject it up front
 /// (reserved PROFILE bit 4), never with a CRC mismatch.
 pub fn build_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
@@ -460,13 +525,36 @@ pub fn build_header(
     skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
     profile: WeightProfile,
 ) -> Vec<u8> {
+    let contract = if is_mamba_family(backbone) { model_loader::process_contract() } else { NumericContract::CURRENT };
     let mut hdr = build_v4_header(
         total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
         shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
     );
-    hdr[..8].copy_from_slice(MAGIC_V5);
-    hdr.insert(V4_HEADER_BASE, profile_byte(profile, NumericContract::CURRENT));
+    set_v5_profile(&mut hdr, profile, contract);
     hdr
+}
+
+/// Turn a v4 header into v5 with PROFILE = `profile` | `contract` << 4.
+fn set_v5_profile(hdr: &mut Vec<u8>, profile: WeightProfile, contract: NumericContract) {
+    hdr[..8].copy_from_slice(MAGIC_V5);
+    hdr.insert(V4_HEADER_BASE, profile_byte(profile, contract));
+}
+
+/// `build_header` with an explicit numeric contract (R-107), e.g. the one the
+/// loaded model's kernels implement (`DynModel::write_contract`).
+pub fn build_header_with(
+    total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
+    emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
+    skip_threshold: u8, backbone: BackboneChoice, enhanced_cm: bool,
+    profile: WeightProfile, contract: NumericContract,
+) -> AzResult<Vec<u8>> {
+    check_contract_backbone(contract, backbone)?;
+    let mut hdr = build_v4_header(
+        total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
+        shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
+    );
+    set_v5_profile(&mut hdr, profile, contract);
+    Ok(hdr)
 }
 
 /// Resolve the Mamba weight profile for compression from `--quant` (R-099).
@@ -758,6 +846,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut tokenizer_mode = String::new();
     let mut model_size = String::new();
     let mut backbone_str = String::new();
+    let mut numeric_str = String::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -788,10 +877,16 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
             "--tokenizer" => { tokenizer_mode = next_arg(args, &mut i, "--tokenizer")?.to_string(); }
             "--model-size" => { model_size = next_arg(args, &mut i, "--model-size")?.to_string(); }
             "--backbone" => { backbone_str = next_arg(args, &mut i, "--backbone")?.to_string(); }
+            "--numeric" => { numeric_str = next_arg(args, &mut i, "--numeric")?.to_string(); }
             _ => {}
         }
         i += 1;
     }
+
+    // Numeric contract (R-107): fixed for the whole process before any model load;
+    // Mamba-family models get its kernels and every Mamba archive records it.
+    let numeric = parse_numeric_flag(&numeric_str)?;
+    model_loader::set_process_contract(numeric);
 
     // Infrastructure gates: GPU, BPE tokenizer, model-size (R-033 framework)
     if gpu_requested {
@@ -867,8 +962,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     // Weight profile (R-099): recorded in the header (v5) when != F32.
     let mamba_profile = resolve_compress_profile(&quant_str, backbone_choice)?;
-    if matches!(backbone_choice, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
+    if is_mamba_family(backbone_choice) {
         eprintln!("[compress] weight profile: {}", mamba_profile);
+    } else if numeric.uses_fma() {
+        eprintln!("[compress] WARNING: --numeric fma applies to the Mamba family only; {} uses fmath-v1",
+            backbone_choice);
     }
 
     timer.start("model_load");
@@ -877,6 +975,8 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         backbone_choice, &weights_dir, quant_override, mamba_profile,
     );
     let v = model.vocab_size();
+    let contract = model.write_contract();
+    eprintln!("[compress] numeric contract: {} ({})", contract.header_code(), contract.name());
 
     if !emb_surgery.is_empty() {
         model.embedding_surgery(&emb_surgery);
@@ -1110,11 +1210,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let input_crc = crc32::crc32(compress_slice);
     let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
 
-    let hdr = build_header(
+    let hdr = build_header_with(
         total_u32, bias_lr, ngram_scale, mix_eta, &emb_surgery,
         e8e9_applied, shuffle_applied, delta_applied, adaptive_skip,
-        backbone_choice, true, mamba_profile,
-    );
+        backbone_choice, true, mamba_profile, contract,
+    )?;
     let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
     output.extend_from_slice(&hdr);
     output.extend_from_slice(&compressed);
@@ -1139,7 +1239,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("  coder overhead: {:.4} BPB", metrics.overhead_bpb());
     eprintln!("  coder efficiency: {:.2}%", metrics.efficiency_pct());
     eprintln!("  CRC-32:         {:08X}", input_crc);
-    eprintln!("  format:         AZTH v{} (profile {})", hdr[4], mamba_profile);
+    eprintln!("  format:         AZTH v{} (profile {}, numeric contract {})", hdr[4], mamba_profile, contract.name());
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     eprintln!("  output:         {}", output_path);
 
@@ -1204,6 +1304,8 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             e8e9_mode: String::new(), shuffle_mode: String::new(), delta_mode: String::new(),
             backbone: String::new(),
         };
+        let contract = batch_numeric_contract(&input_dir)?;
+        model_loader::set_process_contract(contract);
         return crate::application::lockstep::decompress_dir(&input_dir, &output_dir, &opts, Some(&governor));
     }
 
@@ -1292,6 +1394,10 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             "loaded weight profile {} != header profile {}", model.weight_profile(), mamba_profile
         )));
     }
+    // Numeric contract from header (R-107): selects the FMA or plain GEMV kernels.
+    model.set_numeric_contract(hdr.numeric_contract).map_err(AzError::Format)?;
+    eprintln!("[decompress] numeric contract: {} ({}, from header)",
+        hdr.numeric_contract.header_code(), hdr.numeric_contract.name());
     let v = model.vocab_size();
 
     if !effective_surgery.is_empty() {
@@ -2646,11 +2752,56 @@ mod tests {
 
     #[test]
     fn unknown_numeric_contract_fails_while_parsing() {
-        for byte in [0x21u8, 0x30, 0x20] {
+        for byte in [0x31u8, 0x30] {
             let mut hdr = all_fields_header(WeightProfile::Q8);
             hdr[13] = byte;
             let err = parse_header(&with_payload(&hdr)).err().map(|e| e.to_string()).unwrap_or_default();
             assert!(err.contains("numeric contract"), "0x{:02X}: {}", byte, err);
+        }
+    }
+
+    /// R-107: contract 2 (fma-v1) is written for Mamba and parsed back; it is
+    /// rejected for RWKV both when writing and when parsing.
+    #[test]
+    fn fma_contract_header_write_parse_and_backbone_check() {
+        let fma = NumericContract::FmaV1;
+        for (profile, byte) in [(WeightProfile::F32, 0x20u8), (WeightProfile::Q8, 0x21)] {
+            assert_eq!(profile_byte(profile, fma), byte);
+            assert_eq!(parse_profile_byte(byte).unwrap(), (profile, fma));
+            for backbone in [BackboneChoice::Mamba, BackboneChoice::MambaByte] {
+                let hdr = build_header_with(4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
+                    backbone, true, profile, fma).unwrap();
+                let plain = build_header_with(4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50,
+                    backbone, true, profile, NumericContract::CURRENT).unwrap();
+                assert_eq!(hdr[13], byte);
+                assert_eq!((&hdr[..13], &hdr[14..]), (&plain[..13], &plain[14..])); // only PROFILE differs
+                let info = parse_header(&with_payload(&hdr)).unwrap();
+                assert_eq!((info.profile, info.numeric_contract), (profile, fma));
+            }
+        }
+        let rwkv = build_header_with(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
+            BackboneChoice::Rwkv, true, WeightProfile::F32, fma);
+        assert!(rwkv.unwrap_err().to_string().contains("Mamba family"));
+        // Hand-crafted RWKV + contract 2 fails while parsing.
+        let mut file = with_payload(&build_header(10, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
+            BackboneChoice::Rwkv, true, WeightProfile::F32));
+        file[V4_HEADER_BASE] = 0x20;
+        let err = parse_header(&file).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("Mamba family"), "{}", err);
+        // The default writer contract is unchanged (contract 1).
+        assert_eq!(all_fields_header(WeightProfile::Q8)[13], 0x11);
+    }
+
+    #[test]
+    fn numeric_flag_parsing() {
+        for s in ["", "auto", "fmath", "FMATH", "fmath-v1", "1"] {
+            assert_eq!(parse_numeric_flag(s).unwrap(), NumericContract::FmathV1, "{}", s);
+        }
+        for s in ["fma", "FMA", "fma-v1", "2"] {
+            assert_eq!(parse_numeric_flag(s).unwrap(), NumericContract::FmaV1, "{}", s);
+        }
+        for s in ["0", "3", "legacy", "fmadd"] {
+            assert!(parse_numeric_flag(s).is_err(), "{}", s);
         }
     }
 
@@ -2722,7 +2873,7 @@ mod tests {
         let q6 = parse_profile_byte(V5_PROFILE_QUANT_Q6_RESERVED).unwrap_err().to_string();
         assert!(q6.contains("Q6"), "{}", q6);
         assert!(parse_profile_byte(7).is_err());
-        assert!(parse_profile_byte(0x20).is_err()); // contract 2 (reserved)
+        assert!(parse_profile_byte(0x22).is_err()); // contract 2 with reserved quant Q6
         assert!(parse_profile_byte(0x30).is_err()); // contract 3 (reserved)
         assert!(parse_profile_byte(0x40).is_err()); // reserved bit 6
         assert!(parse_profile_byte(0x81).is_err()); // reserved bit 7
@@ -2731,7 +2882,7 @@ mod tests {
     #[test]
     fn parse_header_v5_rejects_bad_profile() {
         let mut hdr = all_fields_header(WeightProfile::Q8);
-        hdr[13] = 0x20;
+        hdr[13] = 0x31;
         assert!(parse_header(&with_payload(&hdr)).is_err());
         hdr[13] = V5_PROFILE_QUANT_Q6_RESERVED;
         assert!(parse_header(&with_payload(&hdr)).is_err());
@@ -2784,10 +2935,17 @@ mod tests {
 
     /// Toy Q8 "model": logits = E_q8 · dequant(E_q8[prev_token]) through the
     /// pooled Q8 GEMV — exercises quantize → pooled kernel → CDF → coder →
-    /// v5 container → parse → decode, without real weights.
+    /// v5 container → parse → decode, without real weights. R-107: for both
+    /// numeric contracts; the decoder picks the kernel from the header.
     #[test]
     fn q8_small_roundtrip_through_v5_container() {
-        use crate::domain::gemv::{gemv_q8w_into, Q8wMatrix};
+        for contract in [NumericContract::FmathV1, NumericContract::FmaV1] {
+            q8_small_roundtrip(contract);
+        }
+    }
+
+    fn q8_small_roundtrip(contract: NumericContract) {
+        use crate::domain::gemv::{gemv_q8w_into, Kernel, Q8wMatrix};
         use crate::domain::tensor::Tensor;
         let (vocab, d) = (96usize, 64usize);
         let mut seed = 12345u32;
@@ -2798,24 +2956,25 @@ mod tests {
             (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
         }).collect();
         let emb = Q8wMatrix::quantize(&Tensor::from_data(data, vec![vocab, d]), 64);
-        let logits_after = |tok: usize| {
+        let logits_after = |tok: usize, k: Kernel| {
             let mut h = vec![0.0f32; d];
             emb.dequant_row_into(&mut h, tok);
             let mut l = vec![0.0f32; vocab];
-            gemv_q8w_into(&mut l, &emb, &h);
+            gemv_q8w_into(&mut l, &emb, &h, k);
             l
         };
+        let enc_kernel = Kernel::for_contract(contract);
         let tokens: Vec<usize> = (0..200).map(|i| (i * 7 + i / 3) % vocab).collect();
 
         let mut enc = RangeEncoder::new();
         enc.encode_symbol(tokens[0], &Cdf::uniform(vocab));
         for t in 1..tokens.len() {
-            enc.encode_symbol(tokens[t], &cdf_from_logits(&logits_after(tokens[t - 1])));
+            enc.encode_symbol(tokens[t], &cdf_from_logits(&logits_after(tokens[t - 1], enc_kernel)));
         }
         let stream = enc.finish();
         let payload: Vec<u8> = tokens.iter().map(|&t| t as u8).collect();
-        let hdr = build_header(payload.len() as u32, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
-            BackboneChoice::Mamba, true, WeightProfile::Q8);
+        let hdr = build_header_with(payload.len() as u32, 0.30, 0.50, 0.01, "", false, 0, 0, 0,
+            BackboneChoice::Mamba, true, WeightProfile::Q8, contract).unwrap();
         let mut file = hdr.clone();
         file.extend_from_slice(&stream);
         file.extend_from_slice(&crc32::crc32(&payload).to_le_bytes());
@@ -2823,11 +2982,13 @@ mod tests {
         assert_eq!(validate_magic(&file).unwrap(), 5);
         let info = parse_header(&file).unwrap();
         assert_eq!(resolve_decompress_profile("", &info).unwrap(), WeightProfile::Q8);
+        assert_eq!(info.numeric_contract, contract);
+        let dec_kernel = Kernel::for_contract(info.numeric_contract);
         let (s, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version).unwrap();
         let mut dec = RangeDecoder::new(s);
         let mut out = vec![decode_checked(&mut dec, &Cdf::uniform(vocab), vocab, 0).unwrap() as usize];
         for t in 1..tokens.len() {
-            let cdf = cdf_from_logits_with(&logits_after(out[t - 1]), info.numeric_contract);
+            let cdf = cdf_from_logits_with(&logits_after(out[t - 1], dec_kernel), info.numeric_contract);
             out.push(decode_checked(&mut dec, &cdf, vocab, t).unwrap() as usize);
         }
         assert_eq!(out, tokens);

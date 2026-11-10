@@ -9,6 +9,7 @@ pub mod tensor;
 pub mod fmath;
 pub mod par_pool;
 pub mod gemv;
+pub mod gemv_fma;
 pub mod ngram;
 pub mod bias_head;
 pub mod mixer;

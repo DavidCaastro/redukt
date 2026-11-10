@@ -533,7 +533,7 @@ fn mamba_q8_profile_roundtrip_and_mismatch() {
     }
     let azth = std::fs::read(&az_n).unwrap();
     assert_eq!(&azth[..8], b"AZTH\x05\x00\x00\x00", "Q8 archive must be AZTH v5");
-    assert_eq!(azth[13], 1, "PROFILE byte must carry quant code 1 (Q8)");
+    assert_eq!(azth[13], 0x11, "PROFILE byte must carry quant 1 (Q8) + numeric contract 1 (fmath-v1)");
     assert_eq!(azth, std::fs::read(&az_1).unwrap(), "Q8 bytes differ between 1 and 4 threads");
 
     let o = run_redukt(&bin, &["decompress", "--input", nn, "--output", restored.to_str().unwrap()], "4");
@@ -570,7 +570,7 @@ fn mamba_f32_pooled_gemv_thread_count_invariant() {
         assert!(o.status.success(), "F32 compress failed (threads={})", threads);
         outputs.push(std::fs::read(&out).unwrap());
     }
-    assert_eq!(&outputs[0][..5], b"AZTH\x04", "F32 archives must stay AZTH v4");
+    assert_eq!(&outputs[0][..5], b"AZTH\x05", "F32 archives are AZTH v5 since R-104 (numeric contract)");
     assert!(outputs.iter().all(|o| *o == outputs[0]), "F32 bytes depend on thread count");
 
     std::fs::remove_dir_all(&tmp).ok();
@@ -629,6 +629,73 @@ fn lockstep_batch_matches_single_file_both_directions() {
     assert!(o.status.success(), "single decompress of a batched archive failed");
     assert_eq!(std::fs::read(&restored).unwrap(), texts[2].to_vec());
 
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
+// R-107: numeric contract 2 (fma-v1)
+// ---------------------------------------------------------------------------
+
+/// Contract 2 with real Mamba weights, Q8 and F32: PROFILE = quant | 2 << 4,
+/// byte-identical restore, decodable through the scalar `mul_add` kernels
+/// (`REDUKT_NO_FMA=1` = AVX2 CPU without FMA), lockstep batch == single file,
+/// and a batch mixing contracts 1 and 2 is rejected before any decoding.
+#[test]
+#[ignore] // requires Mamba weights; run with --release for speed
+fn fma_contract_roundtrip_real_weights() {
+    let bin = ensure_bin();
+    if !has_mamba_weights() { eprintln!("SKIP: no mamba weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_fma_contract");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (inp, outd, decd, mixed) = (tmp.join("in"), tmp.join("out"), tmp.join("dec"), tmp.join("mixed"));
+    for d in [&inp, &mixed] { std::fs::create_dir_all(d).unwrap(); }
+    let text = b"<invoice id=\"42\"><total currency=\"EUR\">1234.56</total></invoice>\n\
+        The quick brown fox jumps over the lazy dog. 0123456789\n";
+    let input = inp.join("t.txt");
+    std::fs::write(&input, text).unwrap();
+    let s = |p: &Path| p.to_str().unwrap().to_string();
+
+    for (quant, profile) in [("q8", 0x21u8), ("f32", 0x20u8)] {
+        let az = tmp.join(format!("{}.azth", quant));
+        let plain = tmp.join(format!("{}-plain.azth", quant));
+        let o = run_redukt(&bin, &["compress", "--input", &s(&input), "--output", &s(&az),
+            "--quant", quant, "--numeric", "fma", "--no-governor"], "4");
+        assert!(o.status.success(), "fma compress failed: {}", String::from_utf8_lossy(&o.stderr));
+        let o = run_redukt(&bin, &["compress", "--input", &s(&input), "--output", &s(&plain),
+            "--quant", quant, "--no-governor"], "4");
+        assert!(o.status.success(), "default compress failed");
+        let (a, p) = (std::fs::read(&az).unwrap(), std::fs::read(&plain).unwrap());
+        assert_eq!(a[13], profile, "{}: PROFILE must be quant | contract 2 << 4", quant);
+        assert_eq!(p[13], profile - 0x10, "{}: default must stay contract 1", quant);
+        for no_fma in ["0", "1"] {
+            let out = tmp.join(format!("{}-{}.txt", quant, no_fma));
+            let o = Command::new(&bin)
+                .args(["decompress", "--input", &s(&az), "--output", &s(&out), "--no-governor"])
+                .env("REDUKT_THREADS", "4").env("REDUKT_NO_FMA", no_fma)
+                .output().expect("failed to run redukt");
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            assert!(o.status.success(), "{} decode (REDUKT_NO_FMA={}) failed: {}", quant, no_fma, stderr);
+            assert_eq!(std::fs::read(&out).unwrap(), text.to_vec(), "{} REDUKT_NO_FMA={}", quant, no_fma);
+            assert_eq!(stderr.contains("scalar mul_add"), no_fma == "1", "fallback warning");
+        }
+        // Lockstep batch with --numeric fma == single-file bytes; batch decode restores.
+        let o = run_redukt(&bin, &["compress", "--input-dir", &s(&inp), "--output-dir", &s(&outd),
+            "--jobs", "2", "--quant", quant, "--numeric", "fma", "--no-governor"], "4");
+        assert!(o.status.success(), "fma batch compress failed");
+        assert_eq!(std::fs::read(outd.join("t.txt.azth")).unwrap(), a, "{}: batch != single", quant);
+        let o = run_redukt(&bin, &["decompress", "--input-dir", &s(&outd), "--output-dir", &s(&decd),
+            "--jobs", "2", "--no-governor"], "4");
+        assert!(o.status.success(), "fma batch decompress failed");
+        assert_eq!(std::fs::read(decd.join("t.txt")).unwrap(), text.to_vec());
+        // Mixed contracts in one batch directory: rejected up front.
+        std::fs::copy(&az, mixed.join("a.azth")).unwrap();
+        std::fs::copy(&plain, mixed.join("b.azth")).unwrap();
+        let o = run_redukt(&bin, &["decompress", "--input-dir", &s(&mixed), "--output-dir",
+            &s(&tmp.join("mixed-out")), "--no-governor"], "4");
+        assert!(!o.status.success(), "mixed-contract batch must fail");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("mixes numeric contracts"));
+    }
     std::fs::remove_dir_all(&tmp).ok();
 }
 

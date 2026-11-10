@@ -4,10 +4,13 @@
 //! DynModel/DynTokenizer provide unified dynamic dispatch (R-039).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::domain::backbone::{
     Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice, WeightProfile,
 };
+use crate::domain::fmath::NumericContract;
+use crate::domain::gemv::Kernel;
 use crate::domain::quant::{QuantLevel, QuantPolicy};
 use crate::infrastructure::rwkv7::model::Rwkv7Model;
 use crate::infrastructure::rwkv7::tokenizer::WorldTokenizer;
@@ -309,6 +312,30 @@ impl DynModel {
         }
     }
 
+    /// Configure the GEMV/GEMM kernels for numeric contract `c` (R-107): the
+    /// FMA kernels for contract 2, the plain ones otherwise. Contract 2 is only
+    /// defined for the Mamba family; RWKV/Plugin reject it.
+    pub fn set_numeric_contract(&mut self, c: NumericContract) -> Result<(), String> {
+        match self {
+            Self::Mamba(m) | Self::MambaByte(m) => {
+                m.set_kernel(Kernel::for_contract(c));
+                Ok(())
+            }
+            Self::Rwkv(_) | Self::Plugin(_) if c.uses_fma() => Err(format!(
+                "numeric contract {} is only defined for the Mamba family", c.name()
+            )),
+            Self::Rwkv(_) | Self::Plugin(_) => Ok(()),
+        }
+    }
+
+    /// Numeric contract an encoder running this model must write (R-107).
+    pub fn write_contract(&self) -> NumericContract {
+        match self {
+            Self::Mamba(m) | Self::MambaByte(m) => m.kernel().write_contract(),
+            Self::Rwkv(_) | Self::Plugin(_) => NumericContract::CURRENT,
+        }
+    }
+
     /// Mamba activation sparsity stats (R-059).
     pub fn mamba_sparsity(scratch: &DynScratch) -> Option<(u64, u64)> {
         match scratch {
@@ -320,8 +347,26 @@ impl DynModel {
     }
 }
 
+/// Numeric contract of the Mamba-family models of this process (R-107), as a
+/// PROFILE contract code. Set once by the CLI before any model is loaded
+/// (`compress --numeric`, or the archives of a `decompress --input-dir` batch);
+/// `load_dyn_model` applies it and `codec::build_header` writes it. Default:
+/// contract 1 (fmath-v1, plain kernels), so the default bitstream never changes.
+static PROCESS_CONTRACT: AtomicU8 = AtomicU8::new(1);
+
+/// Set the process numeric contract (see `PROCESS_CONTRACT`).
+pub fn set_process_contract(c: NumericContract) {
+    PROCESS_CONTRACT.store(c.header_code(), Ordering::Relaxed);
+}
+
+/// Process numeric contract for Mamba-family models (see `PROCESS_CONTRACT`).
+pub fn process_contract() -> NumericContract {
+    NumericContract::from_header_code(PROCESS_CONTRACT.load(Ordering::Relaxed)).unwrap_or(NumericContract::CURRENT)
+}
+
 /// Load a DynModel + DynTokenizer for the given backbone choice.
 /// `quant_override` applies to RWKV only; `mamba_profile` to Mamba/MambaByte (R-099).
+/// Mamba-family models get the kernels of `process_contract()` (R-107).
 pub fn load_dyn_model(
     backbone: BackboneChoice,
     rwkv_weights: &str,
@@ -339,7 +384,8 @@ pub fn load_dyn_model(
             } else {
                 rwkv_weights // fallback: user may pass mamba path via --weights
             };
-            let (m, t) = load_mamba_model_and_tokenizer(mamba_dir, mamba_profile);
+            let (mut m, t) = load_mamba_model_and_tokenizer(mamba_dir, mamba_profile);
+            m.set_kernel(Kernel::for_contract(process_contract()));
             (DynModel::Mamba(m), DynTokenizer::Bpe(t))
         }
         BackboneChoice::MambaByte => {
@@ -349,7 +395,8 @@ pub fn load_dyn_model(
                 rwkv_weights // fallback: user may pass path via --weights
             };
             let path = Path::new(mb_dir);
-            let model = MambaModel::load_with_profile(path, mamba_profile);
+            let mut model = MambaModel::load_with_profile(path, mamba_profile);
+            model.set_kernel(Kernel::for_contract(process_contract()));
             let tokenizer = ByteTokenizer::new();
             (DynModel::MambaByte(model), DynTokenizer::Byte(tokenizer))
         }

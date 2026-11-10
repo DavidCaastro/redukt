@@ -11,8 +11,9 @@ use crate::domain::tensor::{
     silu_inplace, gated_silu_mul, ssm_recurrence_d16,
 };
 use crate::domain::gemv::{
-    f32_rows, gemv_f32_into, gemv_f32_multi, gemv_q8w_into, gemv_q8w_multi, Q8wMatrix,
+    f32_rows, gemv_f32_into, gemv_f32_multi, gemv_q8w_into, gemv_q8w_multi, Kernel, Q8wMatrix,
 };
+use crate::domain::gemv_fma::simd_fma;
 use crate::domain::par_pool;
 use crate::domain::backbone::WeightProfile;
 use crate::domain::ram_monitor::check_ram_or_abort;
@@ -71,20 +72,20 @@ impl MambaMatrix {
 
     /// out = W @ v (pooled, row-partitioned, bit-identical for any thread count).
     #[inline]
-    fn gemv(&self, out: &mut [f32], v: &[f32]) {
+    fn gemv(&self, out: &mut [f32], v: &[f32], k: Kernel) {
         match self {
-            Self::F32(t) => gemv_f32_into(out, t, v),
-            Self::Q8(q) => gemv_q8w_into(out, q, v),
+            Self::F32(t) => gemv_f32_into(out, t, v, k),
+            Self::Q8(q) => gemv_q8w_into(out, q, v, k),
         }
     }
 
     /// outs[s] = W @ xs[s] for N lockstep streams, one weight fetch per row
     /// block (R-100). Bit-identical to `gemv` per stream.
     #[inline]
-    fn gemv_multi(&self, outs: &mut [&mut [f32]], xs: &[&[f32]]) {
+    fn gemv_multi(&self, outs: &mut [&mut [f32]], xs: &[&[f32]], k: Kernel) {
         match self {
-            Self::F32(t) => gemv_f32_multi(outs, t, xs),
-            Self::Q8(q) => gemv_q8w_multi(outs, q, xs),
+            Self::F32(t) => gemv_f32_multi(outs, t, xs, k),
+            Self::Q8(q) => gemv_q8w_multi(outs, q, xs, k),
         }
     }
 
@@ -160,15 +161,24 @@ struct ScanInputs<'a> {
     z: &'a [f32],
 }
 
+/// Shape and kernel parameters of the scan phase (shared by every block).
+#[derive(Clone, Copy)]
+struct ScanDims {
+    dr: usize,
+    ds: usize,
+    k: Kernel,
+}
+
 /// dt = softplus(dt_proj·dt_raw + bias) → SSM recurrence → y·silu(z), for
 /// channels `j0..j0+dt.len()`. Per-channel independent → partition-invariant.
 fn scan_block(
-    lw: &MambaLayerWeights, dr: usize, ds: usize, j0: usize, inp: &ScanInputs,
+    lw: &MambaLayerWeights, dims: ScanDims, j0: usize, inp: &ScanInputs,
     dt: &mut [f32], ss: &mut [f32], y: &mut [f32], gated: &mut [f32],
 ) {
+    let ScanDims { dr, ds, k } = dims;
     let n = dt.len();
     let j1 = j0 + n;
-    f32_rows(dt, &lw.dt_proj_w.data[j0 * dr..j1 * dr], inp.dt_raw, dr);
+    f32_rows(dt, &lw.dt_proj_w.data[j0 * dr..j1 * dr], inp.dt_raw, dr, k);
     for (jj, d) in dt.iter_mut().enumerate() {
         *d = portable_softplus(*d + lw.dt_proj_b[j0 + jj]);
     }
@@ -252,6 +262,7 @@ pub struct MambaModel {
     emb_w: MambaMatrix,             // (vocab_size, d_model) — embedding (tied head)
     lm_head_w: Option<MambaMatrix>, // (vocab_size, d_model) — separate LM head (untied)
     profile: WeightProfile,         // R-099: numeric weight profile
+    kernel: Kernel,                 // R-107: GEMV kernel family (numeric contract)
     layers: Vec<MambaLayerWeights>,
     norm_f_w: Vec<f32>,        // (d_model,)
     norm_f_b: Option<Vec<f32>>, // (d_model,) — LayerNorm bias (R-088)
@@ -457,6 +468,7 @@ impl MambaModel {
             emb_w,
             lm_head_w,
             profile,
+            kernel: Kernel::Plain,
             layers,
             norm_f_w: norm_f.data,
             norm_f_b,
@@ -609,6 +621,7 @@ impl MambaModel {
         // Embedding lookup (Q8 profile: dequantize the row)
         self.emb_w.row_into(&mut scratch.x[..d], token);
         let pool = par_pool::global();
+        let k = self.kernel;
 
         for layer_idx in 0..self.config.n_layer {
             let lw = &self.layers[layer_idx];
@@ -617,7 +630,7 @@ impl MambaModel {
             layer_norm_step(lw, scratch);
 
             // in_proj: (2*d_inner, d_model) @ normed → xz
-            lw.in_proj_w.gemv(&mut scratch.xz, &scratch.normed);
+            lw.in_proj_w.gemv(&mut scratch.xz, &scratch.normed, k);
 
             // Split into x_branch and z_branch
             let (x_branch, z_branch) = scratch.xz.split_at(di);
@@ -639,7 +652,7 @@ impl MambaModel {
             }
 
             // x_proj: (dt_rank + 2*d_state, d_inner) @ conv_out → z_proj [f32, narrow]
-            gemv_f32_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out);
+            gemv_f32_into(&mut scratch.z_proj, &lw.x_proj_w, &scratch.conv_out, k);
 
             // Split z_proj → dt_raw, B, C
             scratch.dt_raw[..dr].copy_from_slice(&scratch.z_proj[..dr]);
@@ -662,10 +675,11 @@ impl MambaModel {
                     .zip(scratch.gated[..di].chunks_mut(SSM_BLOCK))
                     .map(|(((dt, ss), y), g)| Mutex::new((dt, ss, y, g)))
                     .collect();
+                let dims = ScanDims { dr, ds, k };
                 pool.run(parts.len(), &|bi| {
                     let mut g = lock(&parts[bi]);
                     let (dt_b, ss_b, y_b, g_b) = &mut *g;
-                    scan_block(lw, dr, ds, bi * SSM_BLOCK, &inp, dt_b, ss_b, y_b, g_b);
+                    scan_block(lw, dims, bi * SSM_BLOCK, &inp, dt_b, ss_b, y_b, g_b);
                 });
             }
 
@@ -673,7 +687,7 @@ impl MambaModel {
             count_gated_sparsity(scratch, di);
 
             // out_proj: (d_model, d_inner) @ gated → result
-            lw.out_proj_w.gemv(&mut scratch.result, &scratch.gated);
+            lw.out_proj_w.gemv(&mut scratch.result, &scratch.gated, k);
 
             // Residual add
             for j in 0..d {
@@ -746,6 +760,7 @@ impl MambaModel {
         let d = self.config.d_model;
         let di = self.config.d_inner;
         let dr = self.config.dt_rank;
+        let k = self.kernel;
 
         for (sc, &tok) in scratches.iter_mut().zip(tokens) {
             self.emb_w.row_into(&mut sc.x[..d], tok);
@@ -756,17 +771,17 @@ impl MambaModel {
             for sc in scratches.iter_mut() {
                 layer_norm_step(lw, sc);
             }
-            Self::in_proj_multi(lw, scratches);
+            Self::in_proj_multi(lw, scratches, k);
             Self::conv_phase_multi(lw, &self.config, layer_idx, states, scratches);
-            Self::x_proj_multi(lw, scratches, di);
+            Self::x_proj_multi(lw, scratches, di, k);
             for sc in scratches.iter_mut() {
                 sc.dt_raw[..dr].copy_from_slice(&sc.z_proj[..dr]);
             }
-            Self::scan_phase_multi(lw, &self.config, layer_idx, states, scratches);
+            Self::scan_phase_multi(lw, &self.config, layer_idx, states, scratches, k);
             for sc in scratches.iter_mut() {
                 count_gated_sparsity(sc, di);
             }
-            Self::out_proj_multi(lw, scratches, di);
+            Self::out_proj_multi(lw, scratches, di, k);
             for sc in scratches.iter_mut() {
                 for j in 0..d {
                     sc.x[j] += sc.result[j];
@@ -782,7 +797,7 @@ impl MambaModel {
     }
 
     /// in_proj as an N-stream GEMM: normed -> xz.
-    fn in_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch]) {
+    fn in_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], k: Kernel) {
         let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
         let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
         for sc in scratches.iter_mut() {
@@ -790,11 +805,11 @@ impl MambaModel {
             xs.push(normed.as_slice());
             outs.push(xz.as_mut_slice());
         }
-        lw.in_proj_w.gemv_multi(&mut outs, &xs);
+        lw.in_proj_w.gemv_multi(&mut outs, &xs, k);
     }
 
     /// x_proj as an N-stream GEMM: conv_out -> z_proj.
-    fn x_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize) {
+    fn x_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize, k: Kernel) {
         let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
         let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
         for sc in scratches.iter_mut() {
@@ -802,11 +817,11 @@ impl MambaModel {
             xs.push(&conv_out[..di]);
             outs.push(z_proj.as_mut_slice());
         }
-        gemv_f32_multi(&mut outs, &lw.x_proj_w, &xs);
+        gemv_f32_multi(&mut outs, &lw.x_proj_w, &xs, k);
     }
 
     /// out_proj as an N-stream GEMM: gated -> result.
-    fn out_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize) {
+    fn out_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize, k: Kernel) {
         let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
         let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
         for sc in scratches.iter_mut() {
@@ -814,7 +829,7 @@ impl MambaModel {
             xs.push(&gated[..di]);
             outs.push(result.as_mut_slice());
         }
-        lw.out_proj_w.gemv_multi(&mut outs, &xs);
+        lw.out_proj_w.gemv_multi(&mut outs, &xs, k);
     }
 
     /// Conv1d + SiLU for all streams: pool units = (stream, channel block).
@@ -845,7 +860,7 @@ impl MambaModel {
     /// dt_proj + softplus + SSM + gate for all streams: units = (stream, channel block).
     fn scan_phase_multi(
         lw: &MambaLayerWeights, cfg: &MambaConfig, layer_idx: usize,
-        states: &mut [&mut MambaState], scratches: &mut [&mut MambaScratch],
+        states: &mut [&mut MambaState], scratches: &mut [&mut MambaScratch], k: Kernel,
     ) {
         let (di, ds, dr) = (cfg.d_inner, cfg.d_state, cfg.dt_rank);
         let mut inputs: Vec<ScanInputs> = Vec::with_capacity(scratches.len());
@@ -867,17 +882,18 @@ impl MambaModel {
                 parts.push(Mutex::new(ScanPart { stream, j0: bi * SSM_BLOCK, dt, ss, y, gated }));
             }
         }
+        let dims = ScanDims { dr, ds, k };
         par_pool::global().run(parts.len(), &|bi| {
             let mut g = lock(&parts[bi]);
             let p = &mut *g;
-            scan_block(lw, dr, ds, p.j0, &inputs[p.stream], p.dt, p.ss, p.y, p.gated);
+            scan_block(lw, dims, p.j0, &inputs[p.stream], p.dt, p.ss, p.y, p.gated);
         });
     }
 
     /// LM head for N streams from their normed hidden vectors (R-100).
     pub fn compute_head_multi(&self, hiddens: &[&[f32]], out_logits: &mut [&mut [f32]]) {
         let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
-        head.gemv_multi(out_logits, hiddens);
+        head.gemv_multi(out_logits, hiddens, self.kernel);
     }
 
     /// Lockstep forward: N tokens in (one per stream), N logit vectors out.
@@ -896,12 +912,30 @@ impl MambaModel {
     /// Uses separate lm_head weights if untied (R-088), otherwise embedding weights.
     pub fn compute_head_into(&self, hidden: &[f32], out_logits: &mut [f32]) {
         let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
-        head.gemv(out_logits, hidden);
+        head.gemv(out_logits, hidden, self.kernel);
     }
 
     /// Numeric weight profile this model was loaded with (R-099).
     pub fn profile(&self) -> WeightProfile {
         self.profile
+    }
+
+    /// GEMV/GEMM kernel family in use (R-107).
+    pub fn kernel(&self) -> Kernel {
+        self.kernel
+    }
+
+    /// Select the GEMV/GEMM kernel family (R-107): `Kernel::Fma` implements
+    /// numeric contract 2. Without AVX2+FMA (or with `REDUKT_NO_SIMD=1`) the
+    /// FMA family runs its scalar `f32::mul_add` kernels: bit-identical, slower.
+    pub fn set_kernel(&mut self, k: Kernel) {
+        if k == Kernel::Fma && !simd_fma() {
+            eprintln!(
+                "[mamba] WARNING: numeric contract fma-v1 without AVX2+FMA (or REDUKT_NO_SIMD=1): \
+                 using the scalar mul_add kernels (bit-exact, much slower)"
+            );
+        }
+        self.kernel = k;
     }
 
     /// Single-step forward pass (RNN mode).
@@ -911,7 +945,7 @@ impl MambaModel {
     ) {
         self.forward_layers_normed(token, state, scratch);
         let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
-        head.gemv(out_logits, &scratch.x);
+        head.gemv(out_logits, &scratch.x, self.kernel);
     }
 }
 
@@ -1002,6 +1036,7 @@ mod tests {
             emb_w: MambaMatrix::new(rand_tensor(vocab, d_model, next(), 1.0), profile),
             lm_head_w: None,
             profile,
+            kernel: Kernel::Plain,
             layers,
             norm_f_w: rand_vec(d_model, next(), 0.5).iter().map(|x| 1.0 + x).collect(),
             norm_f_b: None,
@@ -1017,14 +1052,18 @@ mod tests {
     }
 
     /// R-100: lockstep forward of N streams == N independent single forwards
-    /// (logits and recurrent state), for both weight profiles.
+    /// (logits and recurrent state), for both weight profiles and (R-107) both
+    /// kernel families.
     #[test]
     fn forward_multi_bit_identical_to_single_stream() {
-        for profile in [WeightProfile::F32, WeightProfile::Q8] {
+        let cases = [WeightProfile::F32, WeightProfile::Q8]
+            .into_iter().flat_map(|p| [(p, Kernel::Plain), (p, Kernel::Fma)]);
+        for (profile, kernel) in cases {
             // vocab*d_model*4 > PAR_MIN_BYTES so the head GEMM takes the pooled path.
-            let model = synthetic_model(64, 2, 1200, profile);
+            let mut model = synthetic_model(64, 2, 1200, profile);
+            model.set_kernel(kernel);
             let v = model.config.vocab_size;
-            for n in [2usize, 3, 5] {
+            for n in [2usize, 3, 5, 9] {
                 let steps = 6;
                 let toks: Vec<Vec<usize>> = (0..n)
                     .map(|s| (0..steps).map(|t| (s * 131 + t * 977 + 7) % v).collect())
@@ -1050,7 +1089,7 @@ mod tests {
                     model.forward_multi(&step, &mut st, &mut sc, &mut lo);
                 }
                 for s in 0..n {
-                    assert_eq!(bits(&logits[s]), bits(&ref_logits[s]), "{} n={} stream {}", profile, n, s);
+                    assert_eq!(bits(&logits[s]), bits(&ref_logits[s]), "{} {:?} n={} stream {}", profile, kernel, n, s);
                     for l in 0..model.config.n_layer {
                         assert_eq!(bits(&states[s].ssm_states[l]), bits(&ref_states[s].ssm_states[l]));
                         assert_eq!(bits(&states[s].conv_states[l]), bits(&ref_states[s].conv_states[l]));
@@ -1071,8 +1110,10 @@ mod tests {
             eprintln!("SKIP: no mamba weights");
             return;
         }
+        let fma = std::env::var("REDUKT_BENCH_FMA").map(|v| v == "1").unwrap_or(false);
         for profile in [WeightProfile::Q8, WeightProfile::F32] {
-            let model = MambaModel::load_with_profile(dir, profile);
+            let mut model = MambaModel::load_with_profile(dir, profile);
+            model.set_kernel(if fma { Kernel::Fma } else { Kernel::Plain });
             let v = model.config.vocab_size;
             for n in [1usize, 2, 4, 8, 16, 32] {
                 let mut states: Vec<MambaState> = (0..n).map(|_| model.create_state()).collect();
