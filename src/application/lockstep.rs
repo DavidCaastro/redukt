@@ -167,6 +167,7 @@ pub fn run_lockstep<M: Backbone, T: BackendTokenizer>(
 ) -> AzResult<RunStats> {
     let v = model.vocab_size();
     let slots = slots.clamp(1, MAX_SLOTS);
+    model.prepare_streams(slots).map_err(AzError::ModelLoad)?; // R-109: plugin slot pool
     let mut states: Vec<M::State> = (0..slots).map(|_| model.create_state()).collect();
     let mut scratches: Vec<M::Scratch> = (0..slots).map(|_| model.create_scratch()).collect();
     let mut works: Vec<Work> = (0..slots).map(|_| Work {
@@ -558,15 +559,9 @@ fn compress_admission(
 
 /// Load the model of a group and report per-stream memory.
 fn load_group_model(key: &GroupKey, opts: &BatchOptions, slots: usize) -> AzResult<(DynModel, DynTokenizer)> {
-    if key.backbone == BackboneChoice::Plugin && slots > 1 {
-        // FFI v1 keeps ONE process-global recurrent state: interleaved streams would overwrite
-        // each other (measured 2026-11-10 on Kaggle: 1.949 bpb vs 0.750 on CPU for the same 12 files,
-        // and the archive is only decodable by replaying the same interleaving).
-        return Err(AzError::ModelLoad(
-            "the GPU plugin backbone supports --jobs 1 only (single FFI v1 state); \
-             use --jobs 1 or a CPU backbone".into(),
-        ));
-    }
+    // R-109: with FFI v2 every lockstep stream gets its own device slot (`prepare_streams`);
+    // a v1-only plugin (one global state) is rejected there for slots > 1 — never silently
+    // interleaved (2026-11-10 Kaggle: 1.949 bpb vs 0.750 on CPU for the same 12 files).
     let quant_override = if opts.quant.is_empty() { None } else { model_loader::parse_quant_flag(&opts.quant) };
     let t_load = Instant::now();
     let (mut model, tokenizer) = model_loader::load_dyn_model(

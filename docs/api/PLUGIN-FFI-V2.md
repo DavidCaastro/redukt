@@ -60,7 +60,8 @@ returned an unexpected value as an enum, that would be an invalid discriminant (
   `batch_init` allocates. The host never holds device pointers. The plugin can lay the states out
   contiguously, as `[layer][slot][...]`, and gather them by index inside the kernels.
   An index is easy to validate (`< max_streams`, no duplicates). A raw pointer is not.
-- **This fits the lockstep multi-stream codec.** Each file gets a slot. At every step the active
+- **This fits the lockstep multi-stream codec** (wired by R-109, 2026-11-10: `Backbone::prepare_streams(n)` calls
+  `batch_init(n)`, each `PluginState` owns a slot, `forward_multi` issues one `forward_batch`). Each file gets a slot. At every step the active
   streams pass `(slot, token)` pairs. A stream that has finished is simply left out:
   `n_streams` can shrink and slots don't need to be contiguous.
 

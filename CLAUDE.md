@@ -24,8 +24,8 @@ retention horizon (model: `scripts/breakeven.py`). Reference thresholds (7 years
 Measured status (2026-11-10): CPU lockstep ~1,180 B/s on 12 vCPU = $50-60/GB (spot) / ~$19 (dedicated);
 GPU T4 batch N=128 ~4.2 KB/s = $9-17/GB. Gap to threshold: 30x-500x.
 Kaggle re-measurement (2026-11-10, `data/benchmark/results/kaggle-fullsize/README.md`): 4-vCPU Xeon lockstep Q8 69 B/s per vCPU
-= $56/GB (c7i spot); T4 through the CLI is single-stream only (405 B/s = $169/GB) because the plugin lockstep is
-rejected (single FFI v1 state). The $9-17/GB T4 figure exists only at FFI level (batch N=128).
+= $56/GB (c7i spot); T4 through the CLI was single-stream only (405 B/s = $169/GB) until R-109 wired the FFI v2
+slot batch into the lockstep (CLI aggregate on T4 pending measurement; FFI-level N=128 gave $9-17/GB).
 Admitted paths to close it (every new phase must justify itself against one of them):
 1. GPU kernels at cuBLAS/tensor-core efficiency. The binding T4 limit at N=128 is recurrent-state traffic (~4.8 MB per
    token and stream in F32, ~55k tok/s ceiling), not the 65 TFLOPS: the plugin's 1,117 tok/s is ~2% of that ceiling and
@@ -330,7 +330,7 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
 | R-108 periodic backbone state reset — in the format (PROFILE bit 6 + RESET_LOG2, default 4096 for Mamba) | enwik8 100 KB 1.6327 -> 0.9951 bpb; 5/5 whole industry files win again (-5% to -44% vs brotli); header-driven decompress roundtrip OK; `--reset-every 0` = old output; 10 KB references +1 B | done |
-| Plugin lockstep guard | `--jobs > 1 --backbone plugin` now rejected (single FFI v1 state) | done |
+| R-109 plugin lockstep over FFI v2 slots | `prepare_streams` -> `batch_init(n)`, one slot per stream, `forward_multi` -> `forward_batch`; v1-only plugin with `--jobs > 1` rejected (it interleaved one state: 1.949 bpb) | implemented, T4 gate pending |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.

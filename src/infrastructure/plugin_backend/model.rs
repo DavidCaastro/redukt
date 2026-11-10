@@ -24,8 +24,15 @@ use super::loader::PluginLibrary;
 // ---------------------------------------------------------------------------
 
 /// Recurrent state managed by the plugin (opaque from host side).
+///
+/// R-109: with the FFI v2 batch API every state owns a device-side **slot** of the pool
+/// allocated by `prepare_streams`, so N lockstep streams are independent. Without a pool
+/// (single-file path, or a v1-only plugin) the state is the plugin's process-global v1
+/// state and `slot` is `None`.
 pub struct PluginState {
     reset_fn: BackendResetFn,
+    slot: Option<u32>,
+    v2: Option<BackendVTableV2>,
 }
 
 // SAFETY: Plugin functions are process-global, called single-threaded.
@@ -33,7 +40,46 @@ unsafe impl Send for PluginState {}
 
 impl BackboneState for PluginState {
     fn reset(&mut self) {
-        unsafe { (self.reset_fn)(); }
+        match (self.slot, self.v2.as_ref()) {
+            (Some(slot), Some(v2)) => {
+                let slots = [slot];
+                // SAFETY: the vtable fn is valid while the library is loaded (the backend that
+                // created this state keeps it alive); `slots` is a live 1-element array.
+                let code = unsafe { (v2.batch_reset)(slots.as_ptr(), 1) };
+                if BackendResult::from_code(code) != BackendResult::Ok {
+                    panic!("[plugin] batch_reset(slot {}) failed: {}", slot, code);
+                }
+            }
+            // SAFETY: process-global v1 reset, no caller memory.
+            _ => unsafe { (self.reset_fn)() },
+        }
+    }
+}
+
+/// Host-side bookkeeping of the FFI v2 slot pool (R-109): `init(n)` after `batch_init(n)`,
+/// then one `take()` per `create_state`.
+#[derive(Default)]
+struct SlotPool {
+    cap: u32,
+    next: u32,
+    seen: Vec<bool>,
+}
+
+impl SlotPool {
+    fn init(&mut self, cap: u32) {
+        self.cap = cap;
+        self.next = 0;
+        self.seen = vec![false; cap as usize];
+    }
+
+    /// Next free slot, or None when the pool is exhausted (or absent).
+    fn take(&mut self) -> Option<u32> {
+        if self.next < self.cap {
+            self.next += 1;
+            Some(self.next - 1)
+        } else {
+            None
+        }
     }
 }
 
@@ -188,8 +234,9 @@ pub struct PluginBackend {
     reset_fn: BackendResetFn,
     tokenizer: TokenizerSpec,
     v2: Option<BackendVTableV2>,
-    batch_cap: u32,
-    batch_seen: Vec<bool>,
+    pool: Mutex<SlotPool>,
+    /// Row-major `n * vocab` logits buffer reused by `forward_multi` (R-109).
+    multi_buf: Mutex<Vec<f32>>,
 }
 
 // SAFETY: Plugin functions are process-global, called single-threaded in codec.
@@ -224,8 +271,8 @@ impl PluginBackend {
             info,
             tokenizer,
             v2,
-            batch_cap: 0,
-            batch_seen: Vec::new(),
+            pool: Mutex::new(SlotPool::default()),
+            multi_buf: Mutex::new(Vec::new()),
         })
     }
 
@@ -233,60 +280,43 @@ impl PluginBackend {
     pub fn info(&self) -> &BackendInfo { &self.info }
 }
 
-/// FFI v2 batch path (R-096).  Consumed by the lockstep multi-stream codec; until the
-/// application layer wires it, only tests call it, hence the scoped allow.
-#[allow(dead_code)]
+/// FFI v2 batch path (R-096), wired into the lockstep codec by R-109 (`prepare_streams`,
+/// slot states, `forward_multi`).
 impl PluginBackend {
     /// Tokenizer selected for this plugin model.
+    #[allow(dead_code)] // diagnostic accessor used by tests/notebooks
     pub fn tokenizer_spec(&self) -> &TokenizerSpec { &self.tokenizer }
 
     /// ABI revision if the plugin implements the batch API, else `None` (v1 only).
     pub fn batch_abi(&self) -> Option<u32> { self.v2.as_ref().map(|v| v.abi_version) }
 
-    /// Number of stream slots currently allocated (0 = no pool).
-    pub fn batch_capacity(&self) -> u32 { self.batch_cap }
-
-    /// Allocate `max_streams` zeroed state slots on the device (0 releases the pool).
-    pub fn batch_init(&mut self, max_streams: u32) -> Result<(), BackendResult> {
+    /// Allocate `max_streams` zeroed state slots on the device (0 releases the pool) and
+    /// restart slot assignment: the next `max_streams` `create_state` calls get slots 0..N.
+    pub fn batch_init(&self, max_streams: u32) -> Result<(), BackendResult> {
         let v2 = self.v2.as_ref().ok_or(BackendResult::VersionMismatch)?;
         // SAFETY: `v2` was resolved from the loaded library, which `self` keeps alive, so the
         // fn pointer is valid; batch_init takes only a scalar and no caller memory.
         let code = unsafe { (v2.batch_init)(max_streams) };
         match BackendResult::from_code(code) {
             BackendResult::Ok => {
-                self.batch_cap = max_streams;
-                self.batch_seen = vec![false; max_streams as usize];
+                lock(&self.pool).init(max_streams);
                 Ok(())
             }
             err => Err(err),
         }
     }
 
-    /// Zero the listed slots (`None` = every slot).
-    pub fn batch_reset(&self, slots: Option<&[u32]>) -> Result<(), BackendResult> {
-        let v2 = self.v2.as_ref().ok_or(BackendResult::VersionMismatch)?;
-        if let Some(s) = slots {
-            if s.len() > self.batch_cap as usize || s.iter().any(|&x| x >= self.batch_cap) {
-                return Err(BackendResult::InvalidArgument);
-            }
-        }
-        let (ptr, n) = slots.map_or((std::ptr::null(), 0), |s| (s.as_ptr(), s.len() as u32));
-        // SAFETY: the vtable pointer is valid while the library is loaded. `ptr`/`n` come from a
-        // live slice (or null/0 for "all"), and every slot was checked above to be < batch_cap.
-        let code = unsafe { (v2.batch_reset)(ptr, n) };
-        match BackendResult::from_code(code) {
-            BackendResult::Ok => Ok(()),
-            err => Err(err),
-        }
-    }
-
     /// One step for `slots.len()` streams; `out` = `n * vocab` logits, row b = slots[b].
     pub fn forward_batch(
-        &mut self, slots: &[u32], tokens: &[u32], out: &mut [f32],
+        &self, slots: &[u32], tokens: &[u32], out: &mut [f32],
     ) -> Result<(), BackendResult> {
         let v2 = self.v2.as_ref().ok_or(BackendResult::VersionMismatch)?;
         let vocab = self.info.vocab_size;
-        validate_batch_args(slots, tokens, out.len(), vocab, self.batch_cap, &mut self.batch_seen)?;
+        {
+            let mut pool = lock(&self.pool);
+            let cap = pool.cap;
+            validate_batch_args(slots, tokens, out.len(), vocab, cap, &mut pool.seen)?;
+        }
         if slots.is_empty() {
             return Ok(());
         }
@@ -305,22 +335,38 @@ impl PluginBackend {
     }
 }
 
+/// Lock a poisoned-tolerant mutex (the plugin calls never unwind across it).
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl Backbone for PluginBackend {
     type State = PluginState;
     type Scratch = PluginScratch;
 
     fn vocab_size(&self) -> usize { self.info.vocab_size as usize }
 
+    /// After `prepare_streams(n)` the next `n` states own device slots 0..n (independent
+    /// streams); otherwise the state is the plugin's process-global v1 state.
     fn create_state(&self) -> PluginState {
-        PluginState { reset_fn: self.reset_fn }
+        let slot = if self.v2.is_some() { lock(&self.pool).take() } else { None };
+        PluginState { reset_fn: self.reset_fn, slot, v2: self.v2.clone() }
     }
 
     fn create_scratch(&self) -> PluginScratch { PluginScratch }
 
     fn forward_into(
-        &self, token: usize, _state: &mut PluginState,
+        &self, token: usize, state: &mut PluginState,
         _scratch: &mut PluginScratch, out_logits: &mut [f32],
     ) {
+        if let Some(slot) = state.slot {
+            // Slot state: v2 batch of one. The FFI v2 contract makes v1 and v2 bit-identical.
+            if let Err(e) = self.forward_batch(&[slot], &[token as u32], out_logits) {
+                panic!("[plugin] forward_batch(slot {}) failed: {:?}", slot, e);
+            }
+            return;
+        }
+        // SAFETY: process-global v1 forward; `out_logits` is a live slice of `len` f32.
         let result = unsafe {
             (self.forward_fn)(
                 token as u32,
@@ -330,6 +376,52 @@ impl Backbone for PluginBackend {
         };
         if result != BackendResult::Ok {
             panic!("[plugin] forward failed: {:?}", result);
+        }
+    }
+
+    /// R-109: one `forward_batch` call for every slot state (sequential v1 fallback only for
+    /// states without a slot, i.e. when `prepare_streams` was not called).
+    fn forward_multi(
+        &self, tokens: &[usize], states: &mut [&mut PluginState],
+        scratches: &mut [&mut PluginScratch], out_logits: &mut [&mut [f32]],
+    ) {
+        let n = tokens.len();
+        let slots: Option<Vec<u32>> = states.iter().map(|s| s.slot).collect();
+        let slots = match slots {
+            Some(s) if n > 0 => s,
+            _ => {
+                for i in 0..n {
+                    self.forward_into(tokens[i], states[i], scratches[i], out_logits[i]);
+                }
+                return;
+            }
+        };
+        let vocab = self.info.vocab_size as usize;
+        let toks: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
+        let mut buf = lock(&self.multi_buf);
+        buf.resize(n * vocab, 0.0);
+        if let Err(e) = self.forward_batch(&slots, &toks, &mut buf[..n * vocab]) {
+            panic!("[plugin] forward_batch({} streams) failed: {:?}", n, e);
+        }
+        for (i, out) in out_logits.iter_mut().enumerate() {
+            out.copy_from_slice(&buf[i * vocab..(i + 1) * vocab]);
+        }
+    }
+
+    /// R-109: allocate the device slot pool for `n` lockstep streams. A v1-only plugin can
+    /// serve exactly one stream (its single global state).
+    fn prepare_streams(&self, n: usize) -> Result<(), String> {
+        match (self.v2.as_ref(), n) {
+            (_, 0 | 1) if self.v2.is_none() => Ok(()),
+            (None, _) => Err(format!(
+                "the GPU plugin implements FFI v1 only (one global state): --jobs {} needs the v2 batch API", n
+            )),
+            (Some(_), _) => {
+                let n = u32::try_from(n).map_err(|_| "too many streams".to_string())?;
+                self.batch_init(n).map_err(|e| format!("plugin batch_init({}) failed: {:?}", n, e))?;
+                eprintln!("[plugin] batch pool: {} slots (FFI v2, abi {})", n, self.batch_abi().unwrap_or(2));
+                Ok(())
+            }
         }
     }
 }
@@ -400,6 +492,17 @@ mod tests {
         let d = std::env::temp_dir().join(format!("redukt-plugin-{}-{}", tag, std::process::id()));
         std::fs::create_dir_all(&d).expect("create temp dir");
         d
+    }
+
+    #[test]
+    fn slot_pool_hands_out_each_slot_once_then_none() {
+        let mut p = SlotPool::default();
+        assert_eq!(p.take(), None); // no pool
+        p.init(3);
+        assert_eq!((p.take(), p.take(), p.take(), p.take()), (Some(0), Some(1), Some(2), None));
+        assert_eq!(p.seen.len(), 3);
+        p.init(1); // re-init restarts assignment
+        assert_eq!((p.take(), p.take()), (Some(0), None));
     }
 
     #[test]

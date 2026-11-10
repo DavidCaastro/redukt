@@ -2876,11 +2876,17 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - [ ] Repetir la curva de escala (Kaggle) y los 12 archivos con el periodo por defecto; actualizar tablas
   - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
 - R-109: Lockstep con plugin GPU vía slots FFI v2
-  - **Estado**: PENDIENTE (guardarraíl aplicado)
+  - **Estado**: IMPLEMENTADO (2026-11-10), validación en GPU PENDIENTE (kernel Kaggle v3 con gate batch == single)
+  - **Implementación**: `Backbone::prepare_streams(n)` (default no-op) -> `PluginBackend::batch_init(n)`; cada
+    `PluginState` recibe un slot (`SlotPool`); `forward_into` con slot usa `forward_batch` de 1; `forward_multi` del
+    plugin hace un `forward_batch` por paso sobre todos los slots; `reset()` por slot via `batch_reset`; el stream
+    único sin pool sigue por v1 (salida idéntica a la anterior). Un plugin solo-v1 con `--jobs > 1` se rechaza.
   - **Hallazgo**: `--jobs 12 --backbone plugin` dio 1.949 bpb frente a 0.750 en CPU sobre los mismos 12 ficheros:
     FFI v1 mantiene UN estado global y los streams se pisan. La CLI ahora rechaza `--jobs > 1` con el plugin.
-  - **Subtareas**: `PluginState` por slot usando `batch_init/batch_reset/forward_batch` (R-096); gate batch == single
-    con el plugin; medir tok/s agregados por la CLI (hoy 1,117 tok/s solo por FFI).
+  - **Subtareas**:
+    - [x] `PluginState` por slot usando `batch_init/batch_reset/forward_batch` (R-096)
+    - [ ] Gate batch == single con el plugin en T4 (notebook `redukt-gpu-fullsize-bench.py`, fase C)
+    - [ ] Medir tok/s agregados por la CLI con N=12 y N=32 (hoy 1,117 tok/s a N=128 solo por FFI)
 
 **Paralelización**: R-098 y R-099 son independientes entre sí. R-100 requiere ambos. R-101 requiere R-098.
 R-102 y R-105 son independientes del resto. R-103 depende de R-090. R-104 es transversal y bloquea la entrega
@@ -3267,3 +3273,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | Kaggle full-size (T4 + 4 vCPU): colapso de Mamba con la longitud (enwik8 0.964 -> 3.91 bpb de 10 KB a 2 MB; 5/5 industry completos pierden vs brotli/xz); reproducido con HF transformers; R-108 definido; mitigación `REDUKT_MAMBA_RESET_EVERY=4096` -> 0.9950 bpb a 100 KB |
 | 2026-11-10 | Defecto: `--jobs>1 --backbone plugin` corrompe predicciones (estado FFI v1 único) -> guardarraíl en `lockstep::load_group_model`; R-109 definido |
 | 2026-11-10 | R-108 COMPLETADO: periodo de reinicio del estado Mamba en AZTH v5 (PROFILE bit 6 + RESET_LOG2, default 4096); `--reset-every`; enwik8 100 KB 0.9951; referencias 10 KB +1 B (F32 0.9648, Q8 0.9695); golden 33 B |
+| 2026-11-10 | R-109 implementado: lockstep del plugin GPU sobre slots FFI v2 (`prepare_streams`, `SlotPool`, `forward_multi` -> `forward_batch`); stream único sigue por v1; 304 tests; validación T4 pendiente (kernel v3) |

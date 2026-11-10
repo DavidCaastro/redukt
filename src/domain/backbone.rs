@@ -175,6 +175,13 @@ pub trait Backbone: Sync {
     fn stream_bytes(&self) -> usize {
         0
     }
+
+    /// R-109: announce that up to `n` states will run in lockstep. Backbones whose state
+    /// lives outside the host (GPU plugin: FFI v2 slot pool) allocate it here; the next
+    /// `n` `create_state` calls then return independent streams. Default: nothing to do.
+    fn prepare_streams(&self, _n: usize) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Tokenizer backend — encode bytes to tokens and decode back.

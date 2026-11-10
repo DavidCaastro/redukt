@@ -190,15 +190,31 @@ impl Backbone for DynModel {
         }
     }
 
-    /// Lockstep forward (R-100): Mamba/MambaByte share weight fetches across
-    /// streams; RWKV and plugin backbones fall back to sequential forwards.
+    /// Lockstep forward (R-100): Mamba/MambaByte share weight fetches across streams; the
+    /// GPU plugin runs one FFI v2 `forward_batch` over its slot states (R-109); RWKV falls
+    /// back to sequential forwards.
     fn forward_multi(
         &self, tokens: &[usize], states: &mut [&mut DynState],
         scratches: &mut [&mut DynScratch], out_logits: &mut [&mut [f32]],
     ) {
         let m = match self {
             Self::Mamba(m) | Self::MambaByte(m) => m,
-            _ => {
+            Self::Plugin(p) => {
+                let mut st: Vec<&mut PluginState> = Vec::with_capacity(tokens.len());
+                let mut sc: Vec<&mut PluginScratch> = Vec::with_capacity(tokens.len());
+                for (s, c) in states.iter_mut().zip(scratches.iter_mut()) {
+                    match (&mut **s, &mut **c) {
+                        (DynState::Plugin(s), DynScratch::Plugin(c)) => {
+                            st.push(s);
+                            sc.push(c);
+                        }
+                        _ => panic!("DynModel/DynState/DynScratch type mismatch"),
+                    }
+                }
+                p.forward_multi(tokens, &mut st, &mut sc, out_logits);
+                return;
+            }
+            Self::Rwkv(_) => {
                 for i in 0..tokens.len() {
                     self.forward_into(tokens[i], states[i], scratches[i], out_logits[i]);
                 }
@@ -225,6 +241,14 @@ impl Backbone for DynModel {
             Self::Mamba(m) | Self::MambaByte(m) => m.stream_bytes(),
             Self::Rwkv(m) => m.stream_bytes(),
             Self::Plugin(m) => m.stream_bytes(),
+        }
+    }
+
+    /// R-109: only the plugin has device-side per-stream state to allocate.
+    fn prepare_streams(&self, n: usize) -> Result<(), String> {
+        match self {
+            Self::Plugin(m) => m.prepare_streams(n),
+            Self::Rwkv(_) | Self::Mamba(_) | Self::MambaByte(_) => Ok(()),
         }
     }
 }
