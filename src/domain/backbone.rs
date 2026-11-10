@@ -153,6 +153,25 @@ pub trait Backbone: Sync {
         &self, token: usize, state: &mut Self::State,
         scratch: &mut Self::Scratch, out_logits: &mut [f32],
     );
+
+    /// Lockstep forward of N independent streams, one token each (R-100).
+    /// `out_logits[i]` must be bit-identical to what `forward_into` produces
+    /// for stream `i` alone. Default: N sequential single-stream calls;
+    /// backbones override it to share each weight fetch across streams.
+    fn forward_multi(
+        &self, tokens: &[usize], states: &mut [&mut Self::State],
+        scratches: &mut [&mut Self::Scratch], out_logits: &mut [&mut [f32]],
+    ) {
+        for i in 0..tokens.len() {
+            self.forward_into(tokens[i], states[i], scratches[i], out_logits[i]);
+        }
+    }
+
+    /// Approximate bytes of one stream's state + scratch (0 = unknown).
+    /// Used for the lockstep memory report (R-100).
+    fn stream_bytes(&self) -> usize {
+        0
+    }
 }
 
 /// Tokenizer backend — encode bytes to tokens and decode back.

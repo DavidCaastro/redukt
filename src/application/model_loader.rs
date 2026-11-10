@@ -179,6 +179,44 @@ impl Backbone for DynModel {
             _ => panic!("DynModel/DynState/DynScratch type mismatch"),
         }
     }
+
+    /// Lockstep forward (R-100): Mamba/MambaByte share weight fetches across
+    /// streams; RWKV and plugin backbones fall back to sequential forwards.
+    fn forward_multi(
+        &self, tokens: &[usize], states: &mut [&mut DynState],
+        scratches: &mut [&mut DynScratch], out_logits: &mut [&mut [f32]],
+    ) {
+        let m = match self {
+            Self::Mamba(m) | Self::MambaByte(m) => m,
+            _ => {
+                for i in 0..tokens.len() {
+                    self.forward_into(tokens[i], states[i], scratches[i], out_logits[i]);
+                }
+                return;
+            }
+        };
+        let mut st: Vec<&mut MambaState> = Vec::with_capacity(tokens.len());
+        let mut sc: Vec<&mut MambaScratch> = Vec::with_capacity(tokens.len());
+        for (s, c) in states.iter_mut().zip(scratches.iter_mut()) {
+            match (&mut **s, &mut **c) {
+                (DynState::Mamba(s), DynScratch::Mamba(c))
+                | (DynState::MambaByte(s), DynScratch::MambaByte(c)) => {
+                    st.push(s);
+                    sc.push(c);
+                }
+                _ => panic!("DynModel/DynState/DynScratch type mismatch"),
+            }
+        }
+        m.forward_multi(tokens, &mut st, &mut sc, out_logits);
+    }
+
+    fn stream_bytes(&self) -> usize {
+        match self {
+            Self::Mamba(m) | Self::MambaByte(m) => m.stream_bytes(),
+            Self::Rwkv(m) => m.stream_bytes(),
+            Self::Plugin(m) => m.stream_bytes(),
+        }
+    }
 }
 
 impl BackendTokenizer for DynTokenizer {

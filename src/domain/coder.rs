@@ -208,12 +208,22 @@ pub struct RangeDecoder<'a> {
     low: u32,
     range: u32,
     code: u32,
-    input: &'a [u8],
+    input: std::borrow::Cow<'a, [u8]>,
     pos: usize,
 }
 
 impl<'a> RangeDecoder<'a> {
     pub fn new(input: &'a [u8]) -> Self {
+        Self::from_cow(std::borrow::Cow::Borrowed(input))
+    }
+
+    /// Decoder that owns its input (R-100: lockstep slots outlive any borrow).
+    /// Identical state transitions to `new`.
+    pub fn new_owned(input: Vec<u8>) -> RangeDecoder<'static> {
+        RangeDecoder::from_cow(std::borrow::Cow::Owned(input))
+    }
+
+    fn from_cow(input: std::borrow::Cow<'a, [u8]>) -> Self {
         let mut dec = Self {
             low: 0,
             range: 0xFFFF_FFFF,

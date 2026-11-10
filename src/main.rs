@@ -51,6 +51,7 @@ fn print_usage() {
     eprintln!("  redukt compress    --input <FILE> --output <FILE> [options]");
     eprintln!("  redukt compress    --input-dir <DIR> --output-dir <DIR> --jobs <N> [options]");
     eprintln!("  redukt decompress  --input <FILE> --output <FILE> [--weights <DIR>]");
+    eprintln!("  redukt decompress  --input-dir <DIR> --output-dir <DIR> [--jobs <N>]");
     eprintln!("  redukt hybrid-eval --input <FILE> [options] [--log <FILE>]");
     eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
     eprintln!("  redukt benchmark   --input <FILE_OR_DIR> --output <JSON> [options]");
@@ -75,9 +76,12 @@ fn print_usage() {
     eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
     eprintln!("  --delta <MODE>       Delta coding: auto (default), on, on:N, off");
     eprintln!("  --no-governor        Disable hardware governor (battery/RAM monitoring)");
-    eprintln!("  --input-dir <DIR>    Batch mode: input directory (compress all files)");
+    eprintln!("  --input-dir <DIR>    Batch mode: compress every file / decompress every .azth in DIR");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
-    eprintln!("  --jobs <N>           Batch mode: parallel worker threads (default: 1)");
+    eprintln!("  --jobs <N>           Batch mode: files advanced in lockstep per step (default: 8).");
+    eprintln!("                       Streams share each weight fetch (GEMV->GEMM); output per file is");
+    eprintln!("                       byte-identical to single-file mode. Memory ~6 MB per stream (Mamba).");
+    eprintln!("                       Worker threads are set by REDUKT_THREADS, not by --jobs.");
     eprintln!("  --verbose, -v        Show per-phase timing breakdown");
     eprintln!();
     eprintln!("Environment:");

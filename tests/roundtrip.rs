@@ -542,6 +542,62 @@ fn mamba_f32_pooled_gemv_thread_count_invariant() {
 }
 
 // ---------------------------------------------------------------------------
+// R-100: lockstep multi-stream batch == single-file, both directions
+// ---------------------------------------------------------------------------
+
+/// Four files of different lengths compressed in lockstep (`--jobs 4`, Q8) are
+/// byte-identical to `compress --input` of each file; `decompress --input-dir`
+/// restores them (CRC verified) and a batched archive decodes single-file.
+#[test]
+#[ignore] // requires Mamba weights; run with --release for speed
+fn lockstep_batch_matches_single_file_both_directions() {
+    let bin = ensure_bin();
+    if !has_mamba_weights() { eprintln!("SKIP: no mamba weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_lockstep");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (inp, outd, decd, single) = (tmp.join("in"), tmp.join("out"), tmp.join("dec"), tmp.join("single"));
+    for d in [&inp, &single] { std::fs::create_dir_all(d).unwrap(); }
+    let texts: [&[u8]; 4] = [
+        b"<invoice id=\"42\"><total currency=\"EUR\">1234.56</total></invoice>\n",
+        b"The quick brown fox jumps over the lazy dog. 0123456789\n",
+        b"GET /index.html HTTP/1.1 200 512\nGET /logo.png HTTP/1.1 200 2048\nPOST /api HTTP/1.1 201 17\n",
+        b"x",
+    ];
+    for (i, t) in texts.iter().enumerate() {
+        std::fs::write(inp.join(format!("f{}.txt", i)), t).unwrap();
+    }
+    let o = run_redukt(&bin, &["compress", "--input-dir", inp.to_str().unwrap(), "--output-dir",
+        outd.to_str().unwrap(), "--jobs", "4", "--quant", "q8", "--no-governor"], "4");
+    assert!(o.status.success(), "lockstep compress failed: {}", String::from_utf8_lossy(&o.stderr));
+
+    for i in 0..texts.len() {
+        let f = format!("f{}.txt", i);
+        let s_out = single.join(format!("{}.azth", f));
+        let o = run_redukt(&bin, &["compress", "--input", inp.join(&f).to_str().unwrap(), "--output",
+            s_out.to_str().unwrap(), "--quant", "q8", "--no-governor"], "4");
+        assert!(o.status.success(), "single compress failed for {}", f);
+        let batched = std::fs::read(outd.join(format!("{}.azth", f))).unwrap();
+        assert_eq!(batched, std::fs::read(&s_out).unwrap(), "{}: lockstep bytes != single-file bytes", f);
+    }
+
+    let o = run_redukt(&bin, &["decompress", "--input-dir", outd.to_str().unwrap(), "--output-dir",
+        decd.to_str().unwrap(), "--jobs", "3", "--no-governor"], "4");
+    assert!(o.status.success(), "lockstep decompress failed: {}", String::from_utf8_lossy(&o.stderr));
+    for (i, t) in texts.iter().enumerate() {
+        assert_eq!(std::fs::read(decd.join(format!("f{}.txt", i))).unwrap(), t.to_vec(), "f{} roundtrip", i);
+    }
+
+    let restored = tmp.join("f2.single");
+    let o = run_redukt(&bin, &["decompress", "--input", outd.join("f2.txt.azth").to_str().unwrap(),
+        "--output", restored.to_str().unwrap(), "--no-governor"], "4");
+    assert!(o.status.success(), "single decompress of a batched archive failed");
+    assert_eq!(std::fs::read(&restored).unwrap(), texts[2].to_vec());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
 // Utility: SHA-256 (minimal, no external deps)
 // ---------------------------------------------------------------------------
 

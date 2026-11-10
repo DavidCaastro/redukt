@@ -1,5 +1,7 @@
 //! Application commands — compress, decompress, hybrid-eval, baseline, cm-eval.
 
+use std::borrow::Cow;
+
 use crate::domain::error::{AzError, AzResult, parse_arg, next_arg, validate_u32_size};
 use crate::domain::tensor::{softmax_into, entropy_from_logits};
 use crate::domain::cm_ensemble::CmEnsemble;
@@ -7,9 +9,7 @@ use crate::domain::coder::{Cdf, RangeEncoder, RangeDecoder};
 use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
-use crate::domain::backbone::{
-    Backbone, BackboneState, BackboneScratch, BackendTokenizer, BackboneChoice, WeightProfile,
-};
+use crate::domain::backbone::{Backbone, BackendTokenizer, BackboneChoice, WeightProfile};
 
 /// v3 magic — kept for backward-compat parsing and tests.
 #[cfg(test)]
@@ -554,12 +554,138 @@ impl CoderMetrics {
     }
 }
 
+/// Result of content detection + preprocessing (R-027..R-031).
+pub struct Prepared<'a> {
+    /// Bytes that enter the tokenizer/coder (borrowed when no transform applied).
+    pub data: Cow<'a, [u8]>,
+    pub content_type: crate::domain::content_detect::ContentType,
+    pub e8e9: bool,
+    pub shuffle: u8,
+    pub delta: u8,
+}
+
+/// Content-type detection and E8E9 / byte-shuffle / delta preprocessing with the
+/// CLI modes of `compress` ("auto" = empty). Shared by single-file compress and
+/// the lockstep batch (R-100) so both take identical decisions; `tag` prefixes
+/// the log lines.
+pub fn preprocess_input<'a>(
+    input: &'a [u8], e8e9_mode: &str, shuffle_mode: &str, delta_mode: &str, tag: &str,
+) -> Prepared<'a> {
+    // Content-type detection (R-028): classify input for preprocessing dispatch
+    let (content_type, content_features) =
+        crate::domain::content_detect::detect_content_type(input);
+    eprintln!("[{}] content: {} ({})", tag, content_type, content_features);
+
+    // E8E9 preprocessing (R-027): detect and transform x86 executables
+    let (e8e9_applied, e8e9_data) = match e8e9_mode {
+        "on" => {
+            let (transformed, stats) =
+                crate::domain::preprocess::e8e9_encode_with_stats(input);
+            eprintln!("[{}] E8E9: forced ON — {} E8 + {} E9, {} transformed, {} skipped", tag,
+                      stats.e8_count, stats.e9_count, stats.transformed, stats.skipped);
+            (true, Some(transformed))
+        }
+        "off" => {
+            eprintln!("[{}] E8E9: disabled", tag);
+            (false, None)
+        }
+        _ => {
+            // auto-detect (default)
+            if crate::domain::preprocess::detect_e8e9(input) {
+                let (transformed, stats) =
+                    crate::domain::preprocess::e8e9_encode_with_stats(input);
+                eprintln!("[{}] E8E9: auto-detected — {} E8 + {} E9, {} transformed", tag,
+                          stats.e8_count, stats.e9_count, stats.transformed);
+                (true, Some(transformed))
+            } else {
+                (false, None)
+            }
+        }
+    };
+    let post_e8e9: &[u8] = e8e9_data.as_deref().unwrap_or(input);
+
+    // Byte-plane shuffle (R-029): cluster float exponent bytes
+    let (shuffle_applied, shuffle_data) = match shuffle_mode {
+        "off" => {
+            eprintln!("[{}] shuffle: disabled", tag);
+            (0u8, None)
+        }
+        s if s.starts_with("on:") => {
+            let stride: u8 = s[3..].parse().unwrap_or(4);
+            let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, stride as usize);
+            eprintln!("[{}] shuffle: forced ON stride={}", tag, stride);
+            (stride, Some(shuffled))
+        }
+        "on" => {
+            let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, 4);
+            eprintln!("[{}] shuffle: forced ON stride=4", tag);
+            (4, Some(shuffled))
+        }
+        _ => {
+            use crate::domain::content_detect::ContentType;
+            if content_type == ContentType::FloatArray {
+                // FloatArray: stride=4 for float32 byte-plane grouping
+                let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, 4);
+                eprintln!("[{}] shuffle: auto-applied stride=4 (float-array detected)", tag);
+                (4, Some(shuffled))
+            } else if content_type == ContentType::GenericBinary {
+                // GenericBinary: try record-length detection (R-031)
+                if let Some(r) = crate::domain::record_detect::detect_records(post_e8e9) {
+                    let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, r);
+                    eprintln!("[{}] shuffle: auto-applied stride={} (records detected)", tag, r);
+                    (r as u8, Some(shuffled))
+                } else {
+                    (0, None)
+                }
+            } else {
+                (0, None)
+            }
+        }
+    };
+    let post_shuffle: &[u8] = shuffle_data.as_deref().unwrap_or(post_e8e9);
+
+    // Delta coding (R-030): byte-level differences after shuffle
+    let (delta_applied, delta_data) = match delta_mode {
+        "off" => {
+            eprintln!("[{}] delta: disabled", tag);
+            (0u8, None)
+        }
+        s if s.starts_with("on:") => {
+            let stride: u8 = s[3..].parse().unwrap_or(1);
+            let encoded = crate::domain::delta::delta_encode(post_shuffle, stride as usize);
+            eprintln!("[{}] delta: forced ON stride={}", tag, stride);
+            (stride, Some(encoded))
+        }
+        "on" => {
+            let encoded = crate::domain::delta::delta_encode(post_shuffle, 1);
+            eprintln!("[{}] delta: forced ON stride=1", tag);
+            (1, Some(encoded))
+        }
+        _ => {
+            // auto: apply only for FloatArray pipeline (shuffle stride=4)
+            use crate::domain::content_detect::ContentType;
+            if shuffle_applied > 0 && content_type == ContentType::FloatArray {
+                let encoded = crate::domain::delta::delta_encode(post_shuffle, 1);
+                eprintln!("[{}] delta: auto-applied stride=1 (float-array pipeline)", tag);
+                (1, Some(encoded))
+            } else {
+                (0, None)
+            }
+        }
+    };
+    let data: Cow<'a, [u8]> = match delta_data.or(shuffle_data).or(e8e9_data) {
+        Some(v) => Cow::Owned(v),
+        None => Cow::Borrowed(input),
+    };
+    Prepared { data, content_type, e8e9: e8e9_applied, shuffle: shuffle_applied, delta: delta_applied }
+}
+
 pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let mut input_path = "data/enwik8".to_string();
     let mut output_path = String::new();
     let mut input_dir = String::new();
     let mut output_dir = String::new();
-    let mut jobs: usize = 1;
+    let mut jobs: usize = crate::application::lockstep::DEFAULT_SLOTS;
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut max_bytes: usize = 0;
     let mut bias_lr: f32 = 0.30;
@@ -641,12 +767,16 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
                 context: "--output-dir".into(), value: "(required with --input-dir)".into(),
             });
         }
-        let quant_override = if quant_str.is_empty() { None }
-            else { model_loader::parse_quant_flag(&quant_str) };
-        return batch_compress(
-            &input_dir, &output_dir, jobs, &weights_dir, &emb_surgery,
-            quant_override, max_bytes, bias_lr, ngram_scale, mix_eta,
-        );
+        if adaptive_skip > 0 {
+            return Err(AzError::Format(
+                "--adaptive-skip is not supported in batch mode (single-file compress only)".into(),
+            ));
+        }
+        let opts = crate::application::lockstep::BatchOptions {
+            slots: jobs, weights_dir, quant: quant_str, emb_surgery, max_bytes,
+            bias_lr, ngram_scale, mix_eta, e8e9_mode, shuffle_mode, delta_mode, backbone: backbone_str,
+        };
+        return crate::application::lockstep::compress_dir(&input_dir, &output_dir, &opts, Some(&governor));
     }
 
     if output_path.is_empty() {
@@ -663,109 +793,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
 
-    // Content-type detection (R-028): classify input for preprocessing dispatch
-    let (content_type, content_features) =
-        crate::domain::content_detect::detect_content_type(input_slice);
-    eprintln!("[compress] content: {} ({})", content_type, content_features);
-
-    // E8E9 preprocessing (R-027): detect and transform x86 executables
-    let (e8e9_applied, e8e9_data) = match e8e9_mode.as_str() {
-        "on" => {
-            let (transformed, stats) =
-                crate::domain::preprocess::e8e9_encode_with_stats(input_slice);
-            eprintln!("[compress] E8E9: forced ON — {} E8 + {} E9, {} transformed, {} skipped",
-                      stats.e8_count, stats.e9_count, stats.transformed, stats.skipped);
-            (true, Some(transformed))
-        }
-        "off" => {
-            eprintln!("[compress] E8E9: disabled");
-            (false, None)
-        }
-        _ => {
-            // auto-detect (default)
-            if crate::domain::preprocess::detect_e8e9(input_slice) {
-                let (transformed, stats) =
-                    crate::domain::preprocess::e8e9_encode_with_stats(input_slice);
-                eprintln!("[compress] E8E9: auto-detected — {} E8 + {} E9, {} transformed",
-                          stats.e8_count, stats.e9_count, stats.transformed);
-                (true, Some(transformed))
-            } else {
-                (false, None)
-            }
-        }
-    };
-    let post_e8e9: &[u8] = e8e9_data.as_deref().unwrap_or(input_slice);
-
-    // Byte-plane shuffle (R-029): cluster float exponent bytes
-    let (shuffle_applied, shuffle_data) = match shuffle_mode.as_str() {
-        "off" => {
-            eprintln!("[compress] shuffle: disabled");
-            (0u8, None)
-        }
-        s if s.starts_with("on:") => {
-            let stride: u8 = s[3..].parse().unwrap_or(4);
-            let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, stride as usize);
-            eprintln!("[compress] shuffle: forced ON stride={}", stride);
-            (stride, Some(shuffled))
-        }
-        "on" => {
-            let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, 4);
-            eprintln!("[compress] shuffle: forced ON stride=4");
-            (4, Some(shuffled))
-        }
-        _ => {
-            use crate::domain::content_detect::ContentType;
-            if content_type == ContentType::FloatArray {
-                // FloatArray: stride=4 for float32 byte-plane grouping
-                let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, 4);
-                eprintln!("[compress] shuffle: auto-applied stride=4 (float-array detected)");
-                (4, Some(shuffled))
-            } else if content_type == ContentType::GenericBinary {
-                // GenericBinary: try record-length detection (R-031)
-                if let Some(r) = crate::domain::record_detect::detect_records(post_e8e9) {
-                    let shuffled = crate::domain::byte_shuffle::byte_shuffle(post_e8e9, r);
-                    eprintln!("[compress] shuffle: auto-applied stride={} (records detected)", r);
-                    (r as u8, Some(shuffled))
-                } else {
-                    (0, None)
-                }
-            } else {
-                (0, None)
-            }
-        }
-    };
-    let post_shuffle: &[u8] = shuffle_data.as_deref().unwrap_or(post_e8e9);
-
-    // Delta coding (R-030): byte-level differences after shuffle
-    let (delta_applied, delta_data) = match delta_mode.as_str() {
-        "off" => {
-            eprintln!("[compress] delta: disabled");
-            (0u8, None)
-        }
-        s if s.starts_with("on:") => {
-            let stride: u8 = s[3..].parse().unwrap_or(1);
-            let encoded = crate::domain::delta::delta_encode(post_shuffle, stride as usize);
-            eprintln!("[compress] delta: forced ON stride={}", stride);
-            (stride, Some(encoded))
-        }
-        "on" => {
-            let encoded = crate::domain::delta::delta_encode(post_shuffle, 1);
-            eprintln!("[compress] delta: forced ON stride=1");
-            (1, Some(encoded))
-        }
-        _ => {
-            // auto: apply only for FloatArray pipeline (shuffle stride=4)
-            use crate::domain::content_detect::ContentType;
-            if shuffle_applied > 0 && content_type == ContentType::FloatArray {
-                let encoded = crate::domain::delta::delta_encode(post_shuffle, 1);
-                eprintln!("[compress] delta: auto-applied stride=1 (float-array pipeline)");
-                (1, Some(encoded))
-            } else {
-                (0, None)
-            }
-        }
-    };
-    let compress_slice: &[u8] = delta_data.as_deref().unwrap_or(post_shuffle);
+    // Content detection + E8E9/shuffle/delta preprocessing (R-027..R-031)
+    let prep = preprocess_input(input_slice, &e8e9_mode, &shuffle_mode, &delta_mode, "compress");
+    let content_type = prep.content_type;
+    let (e8e9_applied, shuffle_applied, delta_applied) = (prep.e8e9, prep.shuffle, prep.delta);
+    let compress_slice: &[u8] = &prep.data;
 
     // Backbone routing (R-039)
     let backbone_choice = if let Some(bc) = BackboneChoice::from_str_opt(&backbone_str) {
@@ -1066,250 +1098,12 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     Ok(())
 }
 
-/// Batch-compress all files in `input_dir` → `output_dir` using `jobs` threads.
-/// Model is loaded once and shared via Arc. Each thread gets its own state/scratch.
-fn batch_compress(
-    input_dir: &str, output_dir: &str, jobs: usize,
-    weights_dir: &str, emb_surgery: &str,
-    quant_override: Option<crate::domain::quant::QuantPolicy>,
-    max_bytes: usize, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
-) -> AzResult<()> {
-    use std::sync::{Arc, Mutex};
-
-    // Discover files (non-recursive, skip .azth)
-    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(input_dir)
-        .map_err(|e| AzError::Io { path: input_dir.to_string(), source: e })?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().map_or(true, |ext| ext != "azth"))
-        .collect();
-
-    if entries.is_empty() {
-        return Err(AzError::Format(format!("no files found in {}", input_dir)));
-    }
-
-    // Create output directory
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| AzError::Io { path: output_dir.to_string(), source: e })?;
-
-    eprintln!("[batch] {} files, {} jobs", entries.len(), jobs);
-
-    // Load model once
-    let t_load = std::time::Instant::now();
-    let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(
-        weights_dir, quant_override,
-    );
-    if !emb_surgery.is_empty() {
-        model.embedding_surgery(emb_surgery);
-    }
-    let v = model.vocab_size();
-    eprintln!("[batch] model loaded in {:.1}s (vocab={})", t_load.elapsed().as_secs_f64(), v);
-
-    let model = Arc::new(model);
-    let tokenizer = Arc::new(tokenizer);
-    let work = Arc::new(Mutex::new(entries.clone()));
-
-    // Result per file: (filename, input_bytes, compressed_bytes, bpb, tok_s, ok)
-    type FileResult = (String, usize, usize, f64, f64, bool);
-    let results: Arc<Mutex<Vec<FileResult>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let t_total = std::time::Instant::now();
-    let n_jobs = jobs.max(1).min(entries.len());
-
-    if n_jobs <= 1 {
-        // Single-threaded: no thread spawn overhead
-        compress_batch_worker(
-            &*model, &*tokenizer, &work, &results,
-            input_dir, output_dir, v, max_bytes, bias_lr, ngram_scale, mix_eta,
-            emb_surgery,
-        );
-    } else {
-        let mut handles = Vec::with_capacity(n_jobs);
-        for _ in 0..n_jobs {
-            let m = Arc::clone(&model);
-            let tok = Arc::clone(&tokenizer);
-            let w = Arc::clone(&work);
-            let r = Arc::clone(&results);
-            let in_d = input_dir.to_string();
-            let out_d = output_dir.to_string();
-            let es = emb_surgery.to_string();
-            handles.push(std::thread::spawn(move || {
-                compress_batch_worker(
-                    &*m, &*tok, &w, &r,
-                    &in_d, &out_d, v, max_bytes, bias_lr, ngram_scale, mix_eta,
-                    &es,
-                );
-            }));
-        }
-        for h in handles {
-            let _ = h.join();
-        }
-    }
-
-    let elapsed = t_total.elapsed().as_secs_f64();
-    let res = results.lock().unwrap();
-
-    // Report
-    eprintln!();
-    eprintln!("[batch] results ({} files, {:.1}s total):", res.len(), elapsed);
-    eprintln!("  {:30} {:>10} {:>10} {:>8} {:>8} {}", "file", "input", "output", "BPB", "tok/s", "status");
-    let mut total_in = 0usize;
-    let mut total_out = 0usize;
-    let mut ok_count = 0usize;
-    for (name, ib, cb, bpb, toks, ok) in res.iter() {
-        let status = if *ok { "OK" } else { "FAIL" };
-        eprintln!("  {:30} {:>10} {:>10} {:>8.4} {:>8.1} {}",
-                  name, ib, cb, bpb, toks, status);
-        total_in += ib;
-        total_out += cb;
-        if *ok { ok_count += 1; }
-    }
-    eprintln!("  {:30} {:>10} {:>10}", "TOTAL", total_in, total_out);
-    eprintln!("[batch] {}/{} succeeded, ratio {:.4}, {:.1}s ({:.1} files/min)",
-             ok_count, res.len(),
-             total_out as f64 / total_in.max(1) as f64,
-             elapsed,
-             res.len() as f64 / (elapsed / 60.0));
-
-    if ok_count < res.len() {
-        return Err(AzError::Format(format!("{} files failed", res.len() - ok_count)));
-    }
-    Ok(())
-}
-
-/// Worker loop: pop files from shared queue, compress each one.
-fn compress_batch_worker<M: Backbone, T: BackendTokenizer>(
-    model: &M,
-    tokenizer: &T,
-    work: &std::sync::Mutex<Vec<std::path::PathBuf>>,
-    results: &std::sync::Mutex<Vec<(String, usize, usize, f64, f64, bool)>>,
-    _input_dir: &str, output_dir: &str,
-    v: usize, max_bytes: usize,
-    bias_lr: f32, ngram_scale: f32, mix_eta: f32,
-    emb_surgery: &str,
-) {
-    // Per-thread allocations
-    let mut state = model.create_state();
-    let mut scratch = model.create_scratch();
-    let mut logits = vec![0.0f32; v];
-    let mut ensemble_buf = vec![0.0f32; v];
-    let mut probs_buf = vec![0.0f32; v];
-
-    loop {
-        let path = {
-            let mut q = work.lock().unwrap();
-            q.pop()
-        };
-        let path = match path {
-            Some(p) => p,
-            None => break,
-        };
-
-        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let out_name = format!("{}.azth", fname);
-        let out_path = std::path::Path::new(output_dir).join(&out_name);
-
-        let result = compress_single_file(
-            model, tokenizer, &path, &out_path,
-            &mut state, &mut scratch, &mut logits,
-            &mut ensemble_buf, &mut probs_buf,
-            v, max_bytes, bias_lr, ngram_scale, mix_eta,
-            emb_surgery,
-        );
-
-        let mut res = results.lock().unwrap();
-        match result {
-            Ok((ib, cb, bpb, toks)) => {
-                eprintln!("[batch] {} -> {} ({} -> {} bytes, {:.4} BPB, {:.1} tok/s)",
-                          fname, out_name, ib, cb, bpb, toks);
-                res.push((fname, ib, cb, bpb, toks, true));
-            }
-            Err(e) => {
-                eprintln!("[batch] FAIL {}: {}", fname, e);
-                res.push((fname, 0, 0, 0.0, 0.0, false));
-            }
-        }
-    }
-}
-
-/// Compress a single file. Returns (input_bytes, compressed_bytes, bpb, tok_per_sec).
-fn compress_single_file<M: Backbone, T: BackendTokenizer>(
-    model: &M,
-    tokenizer: &T,
-    input_path: &std::path::Path, output_path: &std::path::Path,
-    state: &mut M::State,
-    scratch: &mut M::Scratch,
-    logits: &mut [f32],
-    ensemble_buf: &mut [f32], probs_buf: &mut [f32],
-    v: usize, max_bytes: usize,
-    bias_lr: f32, ngram_scale: f32, mix_eta: f32,
-    emb_surgery: &str,
-) -> AzResult<(usize, usize, f64, f64)> {
-    let raw_bytes = crate::domain::error::read_file(
-        &input_path.to_string_lossy(),
-    )?;
-    let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
-    let input_slice = &raw_bytes[..total_bytes];
-
-    let tokens = tokenizer.encode(input_slice);
-
-    // Reset per-file state
-    state.reset();
-    scratch.reset_perf();
-    let mut cm = CmEnsemble::new(v, ngram_scale, bias_lr, mix_eta, true);
-    let mut enc = RangeEncoder::new();
-    let t_start = std::time::Instant::now();
-
-    for t in 0..tokens.len() {
-        let tok = tokens[t] as usize;
-
-        if t == 0 {
-            let cdf = Cdf::uniform(v);
-            enc.encode_symbol(tok, &cdf);
-        } else {
-            cm.compute_biases(None);
-            cm.combine_into(ensemble_buf, logits);
-
-            let cdf = cdf_from_logits(ensemble_buf);
-            enc.encode_symbol(tok, &cdf);
-
-            softmax_into(ensemble_buf, probs_buf);
-            cm.update(probs_buf, tok);
-        }
-
-        cm.observe(tok as u32);
-        model.forward_into(tok, state, scratch, logits);
-    }
-
-    let compressed = enc.finish();
-    let elapsed = t_start.elapsed().as_secs_f64();
-
-    let input_crc = crc32::crc32(input_slice);
-    let total_u32 = validate_u32_size(total_bytes, "TOTAL_BYTES")?;
-
-    let hdr = build_v4_header(
-        total_u32, bias_lr, ngram_scale, mix_eta, emb_surgery,
-        false, 0, 0, 0, BackboneChoice::Rwkv, true,
-    );
-    let mut output = Vec::with_capacity(hdr.len() + compressed.len() + CRC_SIZE);
-    output.extend_from_slice(&hdr);
-    output.extend_from_slice(&compressed);
-    output.extend_from_slice(&input_crc.to_le_bytes());
-
-    crate::domain::error::write_file(
-        &output_path.to_string_lossy(),
-        &output,
-    )?;
-
-    let bpb = (output.len() as f64 * 8.0) / total_bytes.max(1) as f64;
-    let tok_s = tokens.len() as f64 / elapsed.max(0.001);
-
-    Ok((total_bytes, output.len(), bpb, tok_s))
-}
-
 pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let mut input_path = String::new();
     let mut output_path = String::new();
+    let mut input_dir = String::new();
+    let mut output_dir = String::new();
+    let mut jobs: usize = crate::application::lockstep::DEFAULT_SLOTS;
     let mut weights_dir = "weights/rwkv7-0.1b".to_string();
     let mut quant_str = String::new();
     let mut emb_surgery = String::new();
@@ -1322,6 +1116,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         match args[i].as_str() {
             "--input" => { input_path = next_arg(args, &mut i, "--input")?.to_string(); }
             "--output" => { output_path = next_arg(args, &mut i, "--output")?.to_string(); }
+            "--input-dir" => { input_dir = next_arg(args, &mut i, "--input-dir")?.to_string(); }
+            "--output-dir" => { output_dir = next_arg(args, &mut i, "--output-dir")?.to_string(); }
+            "--jobs" => { jobs = parse_arg(next_arg(args, &mut i, "--jobs")?, "--jobs")?; }
             "--weights" => { weights_dir = next_arg(args, &mut i, "--weights")?.to_string(); }
             "--quant" => { quant_str = next_arg(args, &mut i, "--quant")?.to_string(); }
             "--emb-surgery" => { emb_surgery = next_arg(args, &mut i, "--emb-surgery")?.to_string(); }
@@ -1333,16 +1130,32 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         i += 1;
     }
 
+    // Hardware governor (R-HW1)
+    let governor = crate::infrastructure::governor::HardwareGovernor::new(!no_governor);
+    governor.preflight().map_err(|e| AzError::Format(format!("governor: {}", e)))?;
+    governor.start_watchdog();
+
+    // Batch mode (R-100 lockstep): --input-dir + --output-dir
+    if !input_dir.is_empty() {
+        if output_dir.is_empty() {
+            return Err(AzError::Parse {
+                context: "--output-dir".into(), value: "(required with --input-dir)".into(),
+            });
+        }
+        let opts = crate::application::lockstep::BatchOptions {
+            slots: jobs, weights_dir, quant: quant_str, emb_surgery, max_bytes: 0,
+            bias_lr: DEFAULT_BIAS_LR, ngram_scale: DEFAULT_NGRAM_SCALE, mix_eta: DEFAULT_MIX_ETA,
+            e8e9_mode: String::new(), shuffle_mode: String::new(), delta_mode: String::new(),
+            backbone: String::new(),
+        };
+        return crate::application::lockstep::decompress_dir(&input_dir, &output_dir, &opts, Some(&governor));
+    }
+
     if input_path.is_empty() || output_path.is_empty() {
         return Err(AzError::Parse {
             context: "--input/--output".to_string(), value: "(missing)".to_string(),
         });
     }
-
-    // Hardware governor (R-HW1)
-    let governor = crate::infrastructure::governor::HardwareGovernor::new(!no_governor);
-    governor.preflight().map_err(|e| AzError::Format(format!("governor: {}", e)))?;
-    governor.start_watchdog();
 
     let mut timer = PhaseTimer::new();
 

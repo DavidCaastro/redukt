@@ -10,7 +10,9 @@ use crate::domain::tensor::{
     Tensor, portable_softplus, rms_norm_into, layer_norm_into,
     silu_inplace, gated_silu_mul, ssm_recurrence_d16,
 };
-use crate::domain::gemv::{f32_rows, gemv_f32_into, gemv_q8w_into, Q8wMatrix};
+use crate::domain::gemv::{
+    f32_rows, gemv_f32_into, gemv_f32_multi, gemv_q8w_into, gemv_q8w_multi, Q8wMatrix,
+};
 use crate::domain::par_pool;
 use crate::domain::backbone::WeightProfile;
 use crate::domain::ram_monitor::check_ram_or_abort;
@@ -73,6 +75,16 @@ impl MambaMatrix {
         match self {
             Self::F32(t) => gemv_f32_into(out, t, v),
             Self::Q8(q) => gemv_q8w_into(out, q, v),
+        }
+    }
+
+    /// outs[s] = W @ xs[s] for N lockstep streams, one weight fetch per row
+    /// block (R-100). Bit-identical to `gemv` per stream.
+    #[inline]
+    fn gemv_multi(&self, outs: &mut [&mut [f32]], xs: &[&[f32]]) {
+        match self {
+            Self::F32(t) => gemv_f32_multi(outs, t, xs),
+            Self::Q8(q) => gemv_q8w_multi(outs, q, xs),
         }
     }
 
@@ -165,6 +177,45 @@ fn scan_block(
         inp.b, inp.c, &lw.d_vec[j0..j1], n,
     );
     gated_silu_mul(gated, y, &inp.z[j0..j1]);
+}
+
+/// Pre-norm of one layer: LayerNorm (with bias) or RMSNorm into `scratch.normed`.
+fn layer_norm_step(lw: &MambaLayerWeights, scratch: &mut MambaScratch) {
+    if let Some(ref bias) = lw.norm_b {
+        layer_norm_into(&mut scratch.normed, &scratch.x, &lw.norm_w, bias, 1e-5);
+    } else {
+        scratch.normed.copy_from_slice(&scratch.x);
+        rms_norm_into(&mut scratch.normed, &lw.norm_w, 1e-5);
+    }
+}
+
+/// R-059: count near-zero gated channels of this layer.
+fn count_gated_sparsity(scratch: &mut MambaScratch, di: usize) {
+    const GATED_EPS: f32 = 1e-4;
+    for j in 0..di {
+        scratch.sparsity_total_channels += 1;
+        if scratch.gated[j].abs() < GATED_EPS {
+            scratch.sparsity_near_zero += 1;
+        }
+    }
+}
+
+/// One pooled unit of the lockstep conv phase: a channel block of one stream.
+struct ConvPart<'a> {
+    j0: usize,
+    cs: &'a mut [f32],
+    x: &'a [f32],
+    out: &'a mut [f32],
+}
+
+/// One pooled unit of the lockstep scan phase: a channel block of one stream.
+struct ScanPart<'a> {
+    stream: usize,
+    j0: usize,
+    dt: &'a mut [f32],
+    ss: &'a mut [f32],
+    y: &'a mut [f32],
+    gated: &'a mut [f32],
 }
 
 // --- Layer weights ---
@@ -563,12 +614,7 @@ impl MambaModel {
             let lw = &self.layers[layer_idx];
 
             // Norm: LayerNorm (with bias) or RMSNorm (without)
-            if let Some(ref bias) = lw.norm_b {
-                layer_norm_into(&mut scratch.normed, &scratch.x, &lw.norm_w, bias, 1e-5);
-            } else {
-                scratch.normed.copy_from_slice(&scratch.x);
-                rms_norm_into(&mut scratch.normed, &lw.norm_w, 1e-5);
-            }
+            layer_norm_step(lw, scratch);
 
             // in_proj: (2*d_inner, d_model) @ normed → xz
             lw.in_proj_w.gemv(&mut scratch.xz, &scratch.normed);
@@ -624,15 +670,7 @@ impl MambaModel {
             }
 
             // R-059: measure gated[] activation sparsity
-            {
-                const GATED_EPS: f32 = 1e-4;
-                for j in 0..di {
-                    scratch.sparsity_total_channels += 1;
-                    if scratch.gated[j].abs() < GATED_EPS {
-                        scratch.sparsity_near_zero += 1;
-                    }
-                }
-            }
+            count_gated_sparsity(scratch, di);
 
             // out_proj: (d_model, d_inner) @ gated → result
             lw.out_proj_w.gemv(&mut scratch.result, &scratch.gated);
@@ -662,14 +700,195 @@ impl MambaModel {
         }
 
         scratch.highway_token_count += 1;
+        self.final_norm(scratch);
+    }
 
-        // Final norm: LayerNorm or RMSNorm
+    /// Final norm (LayerNorm or RMSNorm) of `scratch.x` in place.
+    fn final_norm(&self, scratch: &mut MambaScratch) {
         if let Some(ref bias) = self.norm_f_b {
             let tmp: Vec<f32> = scratch.x.clone();
             layer_norm_into(&mut scratch.x, &tmp, &self.norm_f_w, bias, 1e-5);
         } else {
             rms_norm_into(&mut scratch.x, &self.norm_f_w, 1e-5);
         }
+    }
+
+    // --- Lockstep multi-stream forward (R-100) ---
+
+    /// Bytes of one stream's recurrent state (conv + SSM state, all layers).
+    pub fn state_bytes(&self) -> usize {
+        let c = &self.config;
+        c.n_layer * c.d_inner * (c.d_conv - 1 + c.d_state) * 4
+    }
+
+    /// Bytes of one stream's scratch workspace.
+    pub fn scratch_bytes(&self) -> usize {
+        let c = &self.config;
+        (3 * c.d_model + 6 * c.d_inner + 2 * c.dt_rank + 2 * c.d_state) * 4
+    }
+
+    /// Embedding + all layers + final norm for N independent streams advancing
+    /// one token each (lockstep). Every large matrix is streamed from DRAM once
+    /// per step and applied to all N activations; per-channel phases run on the
+    /// pool over (stream, channel block). Each stream's result is bit-identical
+    /// to `forward_layers_normed` on that stream alone. Results in `scratch.x`.
+    pub fn forward_layers_normed_multi(
+        &self, tokens: &[usize], states: &mut [&mut MambaState], scratches: &mut [&mut MambaScratch],
+    ) {
+        let n = tokens.len();
+        debug_assert!(states.len() == n && scratches.len() == n);
+        if n == 1 || self.highway_start > 0 {
+            for i in 0..n {
+                self.forward_layers_normed(tokens[i], states[i], scratches[i]);
+            }
+            return;
+        }
+        let d = self.config.d_model;
+        let di = self.config.d_inner;
+        let dr = self.config.dt_rank;
+
+        for (sc, &tok) in scratches.iter_mut().zip(tokens) {
+            self.emb_w.row_into(&mut sc.x[..d], tok);
+        }
+
+        for layer_idx in 0..self.config.n_layer {
+            let lw = &self.layers[layer_idx];
+            for sc in scratches.iter_mut() {
+                layer_norm_step(lw, sc);
+            }
+            Self::in_proj_multi(lw, scratches);
+            Self::conv_phase_multi(lw, &self.config, layer_idx, states, scratches);
+            Self::x_proj_multi(lw, scratches, di);
+            for sc in scratches.iter_mut() {
+                sc.dt_raw[..dr].copy_from_slice(&sc.z_proj[..dr]);
+            }
+            Self::scan_phase_multi(lw, &self.config, layer_idx, states, scratches);
+            for sc in scratches.iter_mut() {
+                count_gated_sparsity(sc, di);
+            }
+            Self::out_proj_multi(lw, scratches, di);
+            for sc in scratches.iter_mut() {
+                for j in 0..d {
+                    sc.x[j] += sc.result[j];
+                }
+                sc.highway_layers_run += 1;
+            }
+        }
+
+        for sc in scratches.iter_mut() {
+            sc.highway_token_count += 1;
+            self.final_norm(sc);
+        }
+    }
+
+    /// in_proj as an N-stream GEMM: normed -> xz.
+    fn in_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch]) {
+        let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
+        let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
+        for sc in scratches.iter_mut() {
+            let MambaScratch { normed, xz, .. } = &mut **sc;
+            xs.push(normed.as_slice());
+            outs.push(xz.as_mut_slice());
+        }
+        lw.in_proj_w.gemv_multi(&mut outs, &xs);
+    }
+
+    /// x_proj as an N-stream GEMM: conv_out -> z_proj.
+    fn x_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize) {
+        let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
+        let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
+        for sc in scratches.iter_mut() {
+            let MambaScratch { conv_out, z_proj, .. } = &mut **sc;
+            xs.push(&conv_out[..di]);
+            outs.push(z_proj.as_mut_slice());
+        }
+        gemv_f32_multi(&mut outs, &lw.x_proj_w, &xs);
+    }
+
+    /// out_proj as an N-stream GEMM: gated -> result.
+    fn out_proj_multi(lw: &MambaLayerWeights, scratches: &mut [&mut MambaScratch], di: usize) {
+        let mut xs: Vec<&[f32]> = Vec::with_capacity(scratches.len());
+        let mut outs: Vec<&mut [f32]> = Vec::with_capacity(scratches.len());
+        for sc in scratches.iter_mut() {
+            let MambaScratch { gated, result, .. } = &mut **sc;
+            xs.push(&gated[..di]);
+            outs.push(result.as_mut_slice());
+        }
+        lw.out_proj_w.gemv_multi(&mut outs, &xs);
+    }
+
+    /// Conv1d + SiLU for all streams: pool units = (stream, channel block).
+    fn conv_phase_multi(
+        lw: &MambaLayerWeights, cfg: &MambaConfig, layer_idx: usize,
+        states: &mut [&mut MambaState], scratches: &mut [&mut MambaScratch],
+    ) {
+        let (di, dc) = (cfg.d_inner, cfg.d_conv);
+        let mut parts: Vec<Mutex<ConvPart>> = Vec::new();
+        for (st, sc) in states.iter_mut().zip(scratches.iter_mut()) {
+            let MambaScratch { xz, conv_out, .. } = &mut **sc;
+            let x_branch = &xz[..di];
+            let blocks = st.conv_states[layer_idx].chunks_mut(CONV_BLOCK * (dc - 1))
+                .zip(conv_out[..di].chunks_mut(CONV_BLOCK));
+            for (bi, (cs, out)) in blocks.enumerate() {
+                let j0 = bi * CONV_BLOCK;
+                let x = &x_branch[j0..j0 + out.len()];
+                parts.push(Mutex::new(ConvPart { j0, cs, x, out }));
+            }
+        }
+        par_pool::global().run(parts.len(), &|bi| {
+            let mut g = lock(&parts[bi]);
+            let p = &mut *g;
+            conv_silu_block(lw, dc, p.j0, p.cs, p.x, p.out);
+        });
+    }
+
+    /// dt_proj + softplus + SSM + gate for all streams: units = (stream, channel block).
+    fn scan_phase_multi(
+        lw: &MambaLayerWeights, cfg: &MambaConfig, layer_idx: usize,
+        states: &mut [&mut MambaState], scratches: &mut [&mut MambaScratch],
+    ) {
+        let (di, ds, dr) = (cfg.d_inner, cfg.d_state, cfg.dt_rank);
+        let mut inputs: Vec<ScanInputs> = Vec::with_capacity(scratches.len());
+        let mut parts: Vec<Mutex<ScanPart>> = Vec::new();
+        for (stream, (st, sc)) in states.iter_mut().zip(scratches.iter_mut()).enumerate() {
+            let MambaScratch { xz, conv_out, z_proj, dt, y, gated, dt_raw, .. } = &mut **sc;
+            inputs.push(ScanInputs {
+                dt_raw: &dt_raw[..dr],
+                b: &z_proj[dr..dr + ds],
+                c: &z_proj[dr + ds..dr + 2 * ds],
+                conv_out: &conv_out[..di],
+                z: &xz[di..],
+            });
+            let blocks = dt[..di].chunks_mut(SSM_BLOCK)
+                .zip(st.ssm_states[layer_idx].chunks_mut(SSM_BLOCK * ds))
+                .zip(y[..di].chunks_mut(SSM_BLOCK))
+                .zip(gated[..di].chunks_mut(SSM_BLOCK));
+            for (bi, (((dt, ss), y), gated)) in blocks.enumerate() {
+                parts.push(Mutex::new(ScanPart { stream, j0: bi * SSM_BLOCK, dt, ss, y, gated }));
+            }
+        }
+        par_pool::global().run(parts.len(), &|bi| {
+            let mut g = lock(&parts[bi]);
+            let p = &mut *g;
+            scan_block(lw, dr, ds, p.j0, &inputs[p.stream], p.dt, p.ss, p.y, p.gated);
+        });
+    }
+
+    /// LM head for N streams from their normed hidden vectors (R-100).
+    pub fn compute_head_multi(&self, hiddens: &[&[f32]], out_logits: &mut [&mut [f32]]) {
+        let head = self.lm_head_w.as_ref().unwrap_or(&self.emb_w);
+        head.gemv_multi(out_logits, hiddens);
+    }
+
+    /// Lockstep forward: N tokens in (one per stream), N logit vectors out.
+    /// Bit-identical per stream to `forward_into`.
+    pub fn forward_multi(
+        &self, tokens: &[usize], states: &mut [&mut MambaState],
+        scratches: &mut [&mut MambaScratch], out_logits: &mut [&mut [f32]],
+    ) {
+        self.forward_layers_normed_multi(tokens, states, scratches);
+        let hiddens: Vec<&[f32]> = scratches.iter().map(|sc| sc.x.as_slice()).collect();
+        self.compute_head_multi(&hiddens, out_logits);
     }
 
     /// Compute LM head from a pre-normed hidden vector (R-060).
@@ -727,5 +946,175 @@ impl Backbone for MambaModel {
         scratch: &mut MambaScratch, out_logits: &mut [f32],
     ) {
         self.forward_into(token, state, scratch, out_logits);
+    }
+
+    fn forward_multi(
+        &self, tokens: &[usize], states: &mut [&mut MambaState],
+        scratches: &mut [&mut MambaScratch], out_logits: &mut [&mut [f32]],
+    ) {
+        self.forward_multi(tokens, states, scratches, out_logits);
+    }
+
+    fn stream_bytes(&self) -> usize {
+        self.state_bytes() + self.scratch_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic pseudo-random f32 in [-amp, amp) (xorshift32).
+    fn rand_vec(n: usize, seed: u32, amp: f32) -> Vec<f32> {
+        let mut st = seed.max(1);
+        (0..n).map(|_| {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            ((st as f32 / u32::MAX as f32) * 2.0 - 1.0) * amp
+        }).collect()
+    }
+
+    fn rand_tensor(rows: usize, cols: usize, seed: u32, amp: f32) -> Tensor {
+        Tensor::from_data(rand_vec(rows * cols, seed, amp), vec![rows, cols])
+    }
+
+    /// Small random Mamba with the real layer structure (no weights file).
+    fn synthetic_model(d_model: usize, n_layer: usize, vocab: usize, profile: WeightProfile) -> MambaModel {
+        let config = MambaConfig::from_d_model(d_model, n_layer, vocab);
+        let (di, ds, dr, dc) = (config.d_inner, config.d_state, config.dt_rank, config.d_conv);
+        let mut seed = 1000u32;
+        let mut next = || { seed += 17; seed };
+        let layers = (0..n_layer).map(|_| MambaLayerWeights {
+            norm_w: rand_vec(d_model, next(), 0.5).iter().map(|x| 1.0 + x).collect(),
+            norm_b: None,
+            in_proj_w: MambaMatrix::new(rand_tensor(2 * di, d_model, next(), 0.3), profile),
+            conv1d_w: rand_vec(di * dc, next(), 0.5),
+            conv1d_b: rand_vec(di, next(), 0.1),
+            x_proj_w: rand_tensor(dr + 2 * ds, di, next(), 0.2),
+            dt_proj_w: rand_tensor(di, dr, next(), 0.5),
+            dt_proj_b: rand_vec(di, next(), 1.0).iter().map(|x| x - 2.0).collect(),
+            a_log: rand_vec(di * ds, next(), 1.0).iter().map(|x| x.abs()).collect(),
+            d_vec: rand_vec(di, next(), 1.0),
+            out_proj_w: MambaMatrix::new(rand_tensor(d_model, di, next(), 0.2), profile),
+        }).collect();
+        MambaModel {
+            emb_w: MambaMatrix::new(rand_tensor(vocab, d_model, next(), 1.0), profile),
+            lm_head_w: None,
+            profile,
+            layers,
+            norm_f_w: rand_vec(d_model, next(), 0.5).iter().map(|x| 1.0 + x).collect(),
+            norm_f_b: None,
+            highway_start: 0,
+            highway_thr: 0.01,
+            resync_interval: 32,
+            config,
+        }
+    }
+
+    fn bits(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// R-100: lockstep forward of N streams == N independent single forwards
+    /// (logits and recurrent state), for both weight profiles.
+    #[test]
+    fn forward_multi_bit_identical_to_single_stream() {
+        for profile in [WeightProfile::F32, WeightProfile::Q8] {
+            // vocab*d_model*4 > PAR_MIN_BYTES so the head GEMM takes the pooled path.
+            let model = synthetic_model(64, 2, 1200, profile);
+            let v = model.config.vocab_size;
+            for n in [2usize, 3, 5] {
+                let steps = 6;
+                let toks: Vec<Vec<usize>> = (0..n)
+                    .map(|s| (0..steps).map(|t| (s * 131 + t * 977 + 7) % v).collect())
+                    .collect();
+                // Reference: each stream alone.
+                let mut ref_states: Vec<MambaState> = (0..n).map(|_| model.create_state()).collect();
+                let mut ref_logits = vec![vec![0.0f32; v]; n];
+                for s in 0..n {
+                    let mut sc = model.create_scratch();
+                    for t in 0..steps {
+                        model.forward_into(toks[s][t], &mut ref_states[s], &mut sc, &mut ref_logits[s]);
+                    }
+                }
+                // Lockstep.
+                let mut states: Vec<MambaState> = (0..n).map(|_| model.create_state()).collect();
+                let mut scratches: Vec<MambaScratch> = (0..n).map(|_| model.create_scratch()).collect();
+                let mut logits = vec![vec![f32::NAN; v]; n];
+                for t in 0..steps {
+                    let step: Vec<usize> = (0..n).map(|s| toks[s][t]).collect();
+                    let mut st: Vec<&mut MambaState> = states.iter_mut().collect();
+                    let mut sc: Vec<&mut MambaScratch> = scratches.iter_mut().collect();
+                    let mut lo: Vec<&mut [f32]> = logits.iter_mut().map(|l| l.as_mut_slice()).collect();
+                    model.forward_multi(&step, &mut st, &mut sc, &mut lo);
+                }
+                for s in 0..n {
+                    assert_eq!(bits(&logits[s]), bits(&ref_logits[s]), "{} n={} stream {}", profile, n, s);
+                    for l in 0..model.config.n_layer {
+                        assert_eq!(bits(&states[s].ssm_states[l]), bits(&ref_states[s].ssm_states[l]));
+                        assert_eq!(bits(&states[s].conv_states[l]), bits(&ref_states[s].conv_states[l]));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Real-weights lockstep benchmark: ms/token of N single forwards vs one
+    /// forward_multi(N). cargo test --release bench_forward_multi -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_forward_multi_real_weights() {
+        use std::time::Instant;
+        let dir = Path::new("weights/mamba-130m");
+        if !dir.join("model.safetensors").exists() {
+            eprintln!("SKIP: no mamba weights");
+            return;
+        }
+        for profile in [WeightProfile::Q8, WeightProfile::F32] {
+            let model = MambaModel::load_with_profile(dir, profile);
+            let v = model.config.vocab_size;
+            for n in [1usize, 2, 4, 8, 16, 32] {
+                let mut states: Vec<MambaState> = (0..n).map(|_| model.create_state()).collect();
+                let mut scratches: Vec<MambaScratch> = (0..n).map(|_| model.create_scratch()).collect();
+                let mut logits = vec![vec![0.0f32; v]; n];
+                let steps = (64 / n).max(4);
+                let (mut best_single, mut best_multi) = (f64::MAX, f64::MAX);
+                for _ in 0..3 {
+                    let t0 = Instant::now();
+                    for t in 0..steps {
+                        for s in 0..n {
+                            model.forward_into((t * 31 + s * 7) % v, &mut states[s], &mut scratches[s], &mut logits[s]);
+                        }
+                    }
+                    best_single = best_single.min(t0.elapsed().as_secs_f64() / (steps * n) as f64);
+                    let t0 = Instant::now();
+                    for t in 0..steps {
+                        let toks: Vec<usize> = (0..n).map(|s| (t * 31 + s * 7) % v).collect();
+                        let mut st: Vec<&mut MambaState> = states.iter_mut().collect();
+                        let mut sc: Vec<&mut MambaScratch> = scratches.iter_mut().collect();
+                        let mut lo: Vec<&mut [f32]> = logits.iter_mut().map(|l| l.as_mut_slice()).collect();
+                        model.forward_multi(&toks, &mut st, &mut sc, &mut lo);
+                    }
+                    best_multi = best_multi.min(t0.elapsed().as_secs_f64() / (steps * n) as f64);
+                }
+                eprintln!("{} n={:2}: N x forward_into {:6.2} ms/token ({:6.1} tok/s) | forward_multi {:6.2} ms/token",
+                    profile, n, best_single * 1e3, 1.0 / best_single, best_multi * 1e3);
+                eprintln!("        ({:6.1} tok/s aggregate, {:6.2} ms/step) | {:4.2}x",
+                    1.0 / best_multi, best_multi * 1e3 * n as f64, best_single / best_multi);
+            }
+        }
+    }
+
+    #[test]
+    fn stream_bytes_matches_allocations() {
+        let model = synthetic_model(32, 3, 100, WeightProfile::F32);
+        let st = model.create_state();
+        let state_bytes: usize = st.conv_states.iter().chain(st.ssm_states.iter()).map(|v| v.len() * 4).sum();
+        assert_eq!(model.state_bytes(), state_bytes);
+        let sc = model.create_scratch();
+        let scratch_bytes = (sc.x.len() + sc.xz.len() + sc.conv_out.len() + sc.z_proj.len() + sc.dt.len()
+            + sc.y.len() + sc.gated.len() + sc.result.len() + sc.dt_raw.len() + sc.normed.len()) * 4;
+        assert_eq!(model.scratch_bytes(), scratch_bytes);
     }
 }
