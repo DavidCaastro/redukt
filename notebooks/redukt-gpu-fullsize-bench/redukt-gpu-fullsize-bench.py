@@ -12,9 +12,9 @@ report of 2026-11-10 found missing (docs/internal/research/competitive-position-
      prices, value of the saved bytes (S3 Standard, 7 years) and the speed-up a fast tier would need.
      No fast-tier model exists yet (R-105), so this calibrates the gate; it does not measure a candidate.
 
-The GPU plugin is used through the CLI (`--backbone plugin`), i.e. single-stream v1 forwards: lockstep
-with the plugin falls back to sequential forwards (model_loader.rs), so GPU batch throughput is NOT
-exercised here (that figure, 1,117 tok/s at N=128, is FFI-level: notebooks/redukt-gpu-cuda-test.py).
+Since R-109 the lockstep with `--backbone plugin` runs one FFI v2 `forward_batch` per step over per-stream
+device slots (before R-109 it silently interleaved the single v1 state: 1.949 bpb). Phase C records the
+aggregate throughput and checks batch == single-file sha256 on three slices.
 
 Launch (repo root, after scripts/kaggle-setup.sh):
     cp notebooks/redukt-gpu-fullsize-bench.py notebooks/redukt-gpu-fullsize-bench/
@@ -39,7 +39,7 @@ import sys
 import time
 
 REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt.git")
-REDUKT_REF = os.environ.get("REDUKT_REF", "61a9027")  # origin/master 2026-11-10, R-108 (reset period in header)
+REDUKT_REF = os.environ.get("REDUKT_REF", "b219870")  # origin/master 2026-11-10, R-108 + R-109 (plugin slots)
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("fullsize-out")
 DEADLINE_HOURS = float(os.environ.get("DEADLINE_HOURS", "9"))
 PHASES = os.environ.get("PHASES", "C,A2,B,A").split(",")   # C lockstep, A2 CPU points, B industry, A GPU curve
@@ -391,8 +391,19 @@ def lockstep_cpu(redukt, repo, wdir, slices):
             continue
         dt = time.time() - t0
         osz = sum(os.path.getsize(os.path.join(outd, f)) for f in os.listdir(outd) if f.endswith(".azth"))
+        note = "aggregate incl. model load"
+        if backbone == "plugin":
+            # R-109 gate: lockstep over FFI v2 slots must be byte-identical to single-file plugin output.
+            same = []
+            for f in sorted(os.listdir(slices))[:3]:
+                single = os.path.join(WORK_DIR, f"single_plugin_{f}.azth")
+                one = attempt(f"single plugin {f}", redukt_compress, redukt, repo, wdir, os.path.join(slices, f),
+                              single, "plugin")
+                if one is not None:
+                    same.append(sha(single) == sha(os.path.join(outd, f + ".azth")))
+            note += f"; batch==single {sum(same)}/{len(same)} ({'PASS' if same and all(same) else 'FAIL'})"
         record("C-lockstep", f"slices10k[{nfiles}]", total, system, f"{backbone} {quant or 'f32'} jobs={jobs}", osz, dt,
-               "aggregate incl. model load")
+               note)
 
 
 # ---------------------------------------------------------------- 6. gate
