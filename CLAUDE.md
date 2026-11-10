@@ -295,6 +295,8 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-100 lockstep, F32 aggregate (same N) | 57.7/96.5/154.6/206.5/262.6/322.1 tok/s | done |
 | R-100 re-measured, machine idle (`lockstep-throughput-2026-11-10.csv`) | Q8 N=8/16/32: 270.8/286.9/309.9; F32 N=16: 259.6 tok/s | confirms |
 | R-104 F1 pure-Rust exp/log + numeric contract | 0 ulp on 43 golden values, <=1 ulp vs std over 1e6; Windows<->Linux OK | done |
+| R-103 CUDA plugin on Kaggle T4 (`kaggle-cuda/`) | roundtrip OK, BPB 0.9641 == CPU F32; batch N=1/8/32/128 = 151/951/1,076/1,117 tok/s | validated |
+| R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.
@@ -305,7 +307,7 @@ The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) an
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
 (sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 295 unit + 5 integration.
 Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
-compiled (sm_75/sm_89), NOT yet run on a GPU; R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
+validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~4% of T4 peak -> kernels are the next GPU lever); R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
 F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)
@@ -314,6 +316,9 @@ F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates
 - `taskkill //F //IM redukt.exe` kills all instances
 - Use `--bytes N` not `--limit N` (silently ignored)
 - `cargo build --profile maxperf` for benchmarks
+- `--numeric fma` on batches with N >= 8 (+12-22%); default stays contract 1 until api.rs supports contract 2
+- Agents/sessions that build Docker images MUST clean up: `docker rm -f` test containers, `docker rmi` test tags,
+  `docker builder prune -af` at the end. Keep only base images (rust, nvidia/cuda) if a rebuild is expected.
 - `--jobs N` = N lockstep streams sharing every weight fetch (default 8; N=16-32 for large hosts);
   `decompress --input-dir` is supported. The old independent-thread batch mode was removed.
 - `REDUKT_THREADS=N` overrides the persistent worker pool size (default: available parallelism)

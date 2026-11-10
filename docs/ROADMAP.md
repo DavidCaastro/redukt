@@ -2745,6 +2745,11 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - Coste $/GB raw medido y documentado
 
 - R-103: Despliegue CUDA
+  - **Validación en GPU real (Kaggle T4, 2026-11-10, commit 3a2e8be)**: nvcc 0 warnings; .rbin v2 BPE; roundtrip
+    `--backbone plugin` CRC OK; BPB GPU 0.9641 == CPU F32 v5; dos runs GPU idénticos; FFI v2 abi 2, v1 == batch N=8
+    bit a bit; throughput T4: v1 151 tok/s, batch N=1/8/32/128 = 151/951/1,076/1,117 tok/s (meseta ~1.1k,
+    kernel-bound: ~4% del pico de la T4; siguiente paso kernels a eficiencia cuBLAS/tensor cores). Evidencia:
+    `data/benchmark/results/kaggle-cuda/`.
   - **Estado**: ✅ compilado (2026-11-10); pendiente validación en GPU real
   - **Prioridad**: P1 — habilita el tier GPU
   - **Dependencia**: R-090 (plugin CUDA implementado; validación en T4 pendiente)
@@ -2808,6 +2813,18 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
 
 ### Tier 3: Decisión de producto (investigación)
 
+- R-107: Perfil FMA (contrato numérico 2 = fma-v1) ✅ (2026-11-10)
+  - **Qué**: kernels GEMV/GEMM F32 y Q8 (single y multi-stream) con `_mm256_fmadd_ps`; path escalar con
+    `f32::mul_add` bit-idéntico (1e6 tripletas con subnormales y cancelaciones; K = 5..1536). Solo cubre las
+    proyecciones (in_proj, x_proj, dt_proj, out_proj, head); conv1d/scan/softplus/SiLU/normas siguen en contrato 1.
+  - **Selección**: `compress --numeric fmath|fma` (default fmath = contrato 1); el decoder lee el contrato del header;
+    sin FMA en la CPU usa el escalar `mul_add` y avisa (`REDUKT_NO_FMA=1` lo simula). Rechazado con RWKV/plugin.
+    PROFILE: 0x20 (F32) / 0x21 (Q8). Decodificación batch no mezcla contratos en un directorio.
+  - **Resultados medidos** (maxperf, reposo): single sin cambio (DRAM-bound: Q8 130.3→130.5); lote Q8 N=16
+    279.4→335.1 (+20%), F32 N=16 257.5→288.6 (+12%), Q8 N=32 299.1→**365.9** (+22%), F32 N=32 303.1→351.0 (+16%).
+    BPB idéntico (Q8 0.9688, F32 0.9641). Cross-OS Windows↔Linux idéntico (Q8 sha 436f68f7…, F32 9580c28b…).
+  - **Pendiente**: API solo escribe/carga contrato 1 (paridad CLI↔API exige mantener default 1 hasta actualizar
+    api.rs); FMA en conv/scan/SiLU; añadir contrato a `GroupKey` del lockstep; cambiar default a fma tras eso.
 - R-105: Tier rápido (backbone pequeño + receta CM)
   - **Estado**: PENDIENTE (investigación)
   - **Prioridad**: P1 — única vía CPU-only que cruza el umbral económico
@@ -2876,7 +2893,8 @@ GPU T4 el sistema sigue 30-500x por encima del umbral económico ($0.06-0.33/GB)
 optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
-R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
+R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-107 ✅ (FMA +12-22% en lote);
+R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 
 ---
 
@@ -3191,6 +3209,9 @@ R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1 ✅, F2/F3 pendien
 | 2026-11-10 | 2565cef docs(fase-19): throughput audit by properties, refuted premises, R-098..R-105 |
 | 2026-11-10 | 86331ee feat(deploy): GCP reference deployment (Cloud Run, Cloud Batch, GCE CUDA) — R-102 verificado en local |
 | 2026-11-10 | 822608a feat(R-103): CUDA plugin batch FFI v2, BPE tokenizer in plugin backend — compilado, sin ejecutar en GPU |
+| 2026-11-10 | 3a2e8be test(R-103): plugin CUDA validado en Kaggle T4 (roundtrip, BPB 0.9641 == CPU, batch N=128 1,117 tok/s) |
+| 2026-11-10 | R-107 perf: perfil FMA (contrato numérico 2), lote Q8 N=32 299→366 tok/s (+22%), BPB idéntico, cross-OS OK |
+| 2026-11-10 | 91db0a2 / 1713797 docs: Commercial Target y Portability Principle en CLAUDE.md; corrección coste $/GB |
 | 2026-11-10 | 7ba6373 perf(R-098,R-099): Q8 weight-only Mamba (block-64) + persistent thread pool — 39.0->53.6 tok/s F32; Q8 127 tok/s; BPB +0.57/+1.21/+1.11% |
 | 2026-11-10 | 9dd511d docs(R-104): cross-machine determinism verified Windows<->Linux<->Kaggle — 9/9 roundtrips idénticos; 0.9609 era referencia antigua |
 | 2026-11-10 | 365ef68 feat(R-100): lockstep multi-stream batching (GEMV->GEMM) for compress/decompress — Q8 111->315, F32 57.7->322.1 tok/s (N=32) |
