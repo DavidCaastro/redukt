@@ -35,24 +35,85 @@ from typing import Optional, Tuple, Dict
 
 import subprocess
 
+# --- Environment diagnostics (runs BEFORE any heavy import) ---
+def _diagnose_environment():
+    """Print extensive diagnostics to debug Kaggle TPU provisioning."""
+    print("=" * 70)
+    print("ENVIRONMENT DIAGNOSTICS")
+    print("=" * 70)
+    # Key env vars for TPU detection
+    tpu_vars = ["TPU_NAME", "TPU_WORKER_ID", "TPU_WORKER_HOSTNAMES",
+                 "COLAB_TPU_ADDR", "PJRT_DEVICE", "XRT_TPU_CONFIG",
+                 "KUBE_GOOGLE_CLOUD_TPU_ENDPOINTS", "TPU_CLUSTER_NAME",
+                 "KAGGLE_DATA_PROXY_TOKEN", "KAGGLE_KERNEL_RUN_TYPE"]
+    for v in tpu_vars:
+        val = os.environ.get(v, "<not set>")
+        print(f"  {v} = {val}")
+    # Device files
+    dev_checks = ["/dev/accel0", "/dev/accel1", "/dev/vfio", "/dev/vfio/0"]
+    for d in dev_checks:
+        print(f"  {d} exists: {os.path.exists(d)}")
+    # Check for libtpu
+    try:
+        result = subprocess.run(["pip", "list"], capture_output=True, text=True, timeout=30)
+        tpu_pkgs = [l for l in result.stdout.split("\n")
+                     if any(k in l.lower() for k in ["xla", "tpu", "libtpu", "jax"])]
+        print(f"  TPU-related packages: {tpu_pkgs if tpu_pkgs else 'NONE'}")
+    except Exception as e:
+        print(f"  pip list failed: {e}")
+    # System info
+    try:
+        result = subprocess.run(["cat", "/proc/cpuinfo"], capture_output=True, text=True, timeout=5)
+        cpu_model = [l for l in result.stdout.split("\n") if "model name" in l]
+        if cpu_model:
+            print(f"  CPU: {cpu_model[0].split(':')[1].strip()}")
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(["free", "-h"], capture_output=True, text=True, timeout=5)
+        mem_line = [l for l in result.stdout.split("\n") if "Mem:" in l]
+        if mem_line:
+            print(f"  RAM: {mem_line[0]}")
+    except Exception:
+        pass
+    print("=" * 70)
+
+_diagnose_environment()
+
 # --- TPU/XLA bootstrap (must happen before torch import on Kaggle) ---
 def _bootstrap_tpu():
     """Install torch_xla if on Kaggle TPU and set PJRT_DEVICE."""
-    if os.environ.get("TPU_NAME") or os.path.exists("/dev/accel0"):
+    # On Kaggle TPU VMs, torch_xla should be pre-installed.
+    # Try import first regardless of env vars.
+    try:
+        import torch_xla  # noqa: F401
+        os.environ.setdefault("PJRT_DEVICE", "TPU")
+        print("[BOOTSTRAP] torch_xla already available — TPU VM detected")
+        return
+    except ImportError:
+        pass
+
+    # Fallback: check for TPU indicators and install
+    tpu_detected = (
+        os.environ.get("TPU_NAME")
+        or os.environ.get("TPU_WORKER_ID")
+        or os.environ.get("KUBE_GOOGLE_CLOUD_TPU_ENDPOINTS")
+        or os.path.exists("/dev/accel0")
+    )
+    if tpu_detected:
         os.environ["PJRT_DEVICE"] = "TPU"
+        print("[BOOTSTRAP] TPU indicators found, installing torch_xla...")
         try:
-            import torch_xla  # noqa: F401
-            print("[BOOTSTRAP] torch_xla already installed")
-        except ImportError:
-            print("[BOOTSTRAP] Installing torch_xla for TPU...")
             subprocess.check_call([
                 sys.executable, "-m", "pip", "-q", "install",
                 "torch_xla[tpu]",
                 "-f", "https://storage.googleapis.com/libtpu-releases/index.html",
             ])
-            print("[BOOTSTRAP] torch_xla installed")
-
-_bootstrap_tpu()
+            print("[BOOTSTRAP] torch_xla installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"[BOOTSTRAP] torch_xla install FAILED: {e}")
+    else:
+        print("[BOOTSTRAP] No TPU indicators found — will use GPU or CPU")
 
 import torch
 import torch.nn as nn
@@ -113,7 +174,9 @@ try:
     DEVICE = xm.xla_device()
     WORLD_SIZE = xm.xrt_world_size()
     print(f"[DEVICE] TPU detected: {DEVICE}, world_size={WORLD_SIZE}")
-except ImportError:
+    print(f"[DEVICE] torch_xla version: {torch_xla.__version__}")
+except (ImportError, RuntimeError) as e:
+    print(f"[DEVICE] torch_xla not available: {e}")
     if torch.cuda.is_available():
         USE_GPU = True
         DEVICE = torch.device("cuda:0")
@@ -122,6 +185,14 @@ except ImportError:
     else:
         DEVICE = torch.device("cpu")
         print("[DEVICE] CPU only -- training will be very slow")
+        # Reduce batch to avoid OOM on CPU (Kaggle CPU VMs have ~13GB RAM)
+        BATCH_SIZE = 2
+        SEQ_LEN = 1024
+        TOTAL_STEPS = 200  # Just enough to validate the script runs
+        SAVE_EVERY = 100
+        EVAL_EVERY = 50
+        LOG_EVERY = 10
+        print(f"[DEVICE] CPU fallback: batch={BATCH_SIZE}, seq={SEQ_LEN}, steps={TOTAL_STEPS}")
 
 PER_DEVICE_BATCH = BATCH_SIZE // WORLD_SIZE
 

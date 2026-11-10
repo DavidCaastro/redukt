@@ -1,0 +1,16 @@
+{
+    "id": "jdavidpcastro/mambabyte-50m-validation",
+    "title": "MambaByte 50M Validation",
+    "code_file": "mambabyte-50m-validation.py",
+    "language": "python",
+    "kernel_type": "script",
+    "is_private": "true",
+    "enable_gpu": "false",
+    "enable_tpu": "true",
+    "machine_shape": "TpuV5E8",
+    "docker_image_pinning_type": "latest",
+    "enable_internet": "true",
+    "dataset_sources": [],
+    "competition_sources": [],
+    "kernel_sources": []
+}

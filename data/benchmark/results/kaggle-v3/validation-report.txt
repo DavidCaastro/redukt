@@ -1,0 +1,8 @@
+Redukt GPU Validation Report
+Date: 2026-11-06 16:32:48
+Platform: Kaggle
+
+Determinism (2 runs): PASS
+Roundtrip (compress→decompress): PASS
+
+Benchmark entries: 18

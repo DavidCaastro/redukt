@@ -26,3 +26,7 @@ data/benchmark/results/kaggle/
 plugins/redukt-gpu/target/
 __pycache__/
 data/benchmark/results/kaggle-cuda/redukt/
+# Kaggle output copies of the repo / weights / raw inputs (regenerable, hundreds of MB)
+data/benchmark/results/kaggle-v3/redukt/
+data/benchmark/results/kaggle-v3/benchmark-data/
+weights/mambabyte-353m/
