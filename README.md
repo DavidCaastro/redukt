@@ -169,5 +169,5 @@ Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 ## Acknowledgments
 
 Built on [Mamba](https://github.com/state-spaces/mamba) (Albert Gu, Tri Dao; Apache 2.0 weights
-`state-spaces/mamba-130m`) and [RWKV-7](https://github.com/BlinkDL/RWKV-LM) by Bo Peng (BlinkDL), licensed under Apache 2.0. Context Mixing
-techniques inspired by [PAQ](http://mattmahoney.net/dc/) (Matt Mahoney, public domain).
+`state-spaces/mamba-130m`) and [RWKV-7](https://github.com/BlinkDL/RWKV-LM) by Bo Peng (BlinkDL), licensed under
+Apache 2.0. Context Mixing techniques inspired by [PAQ](http://mattmahoney.net/dc/) (Matt Mahoney, public domain).
