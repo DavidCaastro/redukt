@@ -30,6 +30,24 @@ Admitted paths to close it (every new phase must justify itself against one of t
    egress, compliance), where the threshold is far lower than storage savings.
 The metric is cost per GB (throughput per vCPU or per GPU-hour), NOT throughput per machine.
 
+## Portability Principle (hardware-agnostic by design)
+
+The product must be demonstrable on CPU and on any accelerator (GPU today, TPU/NPU/other tomorrow)
+through the same format and the same CLI/API. The goal is to find the best operating point per
+deployment, never to discard a technology. Rules:
+- CPU is the reference implementation: always functional, always able to decode anything produced
+  anywhere. An accelerator is an addition (plugin, FFI v1/v2), never a replacement or a dependency.
+- Any new architecture plugs in via the `Backbone` trait or the plugin ABI (docs/api/PLUGIN-FFI-V2.md)
+  without touching the core; it must pass the same gates (roundtrip + CRC, BPB vs CPU reference,
+  determinism within its own tier, batch == single).
+- Numeric tiers are declared in the AZTH header (PROFILE: quant + numeric contract) so that
+  encoder/decoder mismatches fail early; bit-identity across tiers is a goal (R-104), not a
+  precondition for shipping a new tier.
+- Optimizations are evaluated per architecture: a lever that is useless on one (e.g. Q6 on a
+  compute-bound CPU) may be the right one on another. Document the operating point, keep the option.
+- Deployment artifacts (deploy/) must stay buildable for every supported target (CPU image, CUDA
+  image, future accelerators) from the same source tree.
+
 ## Product Scope
 
 This repo is COMPRESSION ONLY. No chat, no generation, no QA, no probes.
