@@ -222,7 +222,8 @@ Provenance documented in `weights/MANIFEST.md`.
 1. All quality gates above
 2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8 or F32 — difference <2%)
 2b. Cross-OS gate (R-104): same sha256 and byte-identical roundtrip Windows <-> Linux (x86-64-v3) on
-    enwik8/facturae/apache, F32 and Q8
+    enwik8/facturae/apache, F32 and Q8 (re-verified 2026-11-10 with R-108 archives: enwik8 10 KB and 100 KB Q8
+    sha256 d550671b… / d907ffc0… identical on the i5 and the Kaggle Xeon)
 2c. API == CLI gate (R-102): `redukt api` compress output sha256 == CLI output sha256 (enwik8 10 KB, Q8 and F32)
 3. Full benchmark matches verified results (see below)
 4. NOTICE file up to date

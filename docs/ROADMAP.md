@@ -3279,3 +3279,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | R-109 implementado: lockstep del plugin GPU sobre slots FFI v2 (`prepare_streams`, `SlotPool`, `forward_multi` -> `forward_batch`); stream único sigue por v1; 304 tests; validación T4 pendiente (kernel v3) |
 | 2026-11-10 | R-109 VALIDADO en T4 (run-c-r109): plugin lockstep jobs=12 bpb 0.7481 (antes 1.9492), batch == single 3/3, 1,401 B/s agregados; el plugin pasa a aplicar el periodo de reinicio R-108 de la cabecera |
 | 2026-11-10 | run-c-r109b (T4, 56570a1): plugin lockstep con periodo R-108 de cabecera -> bpb 0.7529 (CPU F32 0.7531), batch == single 3/3, 1,376 B/s agregados; R-108 y R-109 cerrados en ambos tiers |
+| 2026-11-10 | run-a-r108 (Kaggle, 61a9027): CPU enwik8 100 KB 0.9925 F32 / 0.9951 Q8 con reinicio; sha256 Windows == Linux en 10 KB y 100 KB (gate R-104 2b vigente con R-108); curva GPU aún sin reinicio (plugin corregido en 56570a1) -> kernel A v3 |

@@ -74,6 +74,22 @@ Classical compute cost on the same machine, enwik8 100 MB, one core: zstd -19 1.
 Gate: with the 2 MB figure the saving vs brotli is negative, so R* is undefined; with the reset mitigation and the
 10 KB-like ratios, R* stays 18-100 KB/s per vCPU (`scripts/breakeven.py`), i.e. 260-1,450x the measured 69 B/s.
 
+## R-108 re-run (run-a-r108, kernel A v2, commit 61a9027, T4 + 4 vCPU)
+
+CPU points with the header reset period (default 4096), Kaggle Xeon:
+
+| Input | CPU F32 | CPU Q8 | sha256 Q8 (Kaggle Linux) | sha256 Q8 (local Windows) |
+|---|---|---|---|---|
+| enwik8 10 KB | 0.9648 (1,235 B) | 0.9695 (1,241 B) | d550671b4258c908 | d550671b4258c908 |
+| enwik8 100 KB | **0.9925** (12,704 B) | **0.9951** (12,737 B) | d907ffc04c1d179b | d907ffc04c1d179b |
+| enwik8 100 KB, `--reset-every 0` | — | 1.6327 (20,899 B) | 77c7e44692bcdbee (run-b) | 77c7e44692bcdbee |
+
+Cross-OS gate (R-104 2b) holds for R-108 archives: byte-identical Windows <-> Linux. CPU lockstep 12 × 10 KB:
+Q8 0.7551 at 251-269 B/s, F32 0.7531 at 231 B/s (4 vCPU). **The GPU rows of this run repeat the collapsed curve
+and the industry losses** (0.9641 -> 3.9056; apache 0.4937 …) because at 61a9027 the plugin still ignored the
+header period (fixed in 56570a1); the plugin lockstep was rejected by the pre-R-109 guard. Kernel A v3 (56570a1,
+phases A+B only so the 4 MB point fits the budget) re-measures the GPU curve with the reset.
+
 ## R-109 validated (run-c-r109, kernel B v2, commit b219870, T4 + 4 vCPU)
 
 Phase C re-run with the FFI v2 slot lockstep (`run-c-r109/fullsize-results.csv`):

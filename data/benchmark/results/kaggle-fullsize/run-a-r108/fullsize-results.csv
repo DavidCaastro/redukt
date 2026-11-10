@@ -1,0 +1,19 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=4,11599,0.7551,490.4,250.6,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba q8 jobs=12,11599,0.7551,456.7,269.1,aggregate incl. model load
+C-lockstep,slices10k[12],122880,redukt-CPU4,mamba f32 jobs=12,11567,0.7531,532.1,230.9,aggregate incl. model load
+A-scale,enwik8[10240],10240,redukt-CPU4,mamba f32 single,1235,0.9648,84.5,121.1,sha256 fb07e20d4fff04b0
+A-scale,enwik8[10240],10240,redukt-CPU4,mamba q8 single,1241,0.9695,57.4,178.4,sha256 d550671b4258c908
+A-scale,enwik8[102400],102400,redukt-CPU4,mamba f32 single,12704,0.9925,628.0,163.1,sha256 07fa28e84c7e10ca
+A-scale,enwik8[102400],102400,redukt-CPU4,mamba q8 single,12737,0.9951,425.9,240.4,sha256 d907ffc04c1d179b
+B-full,facturae-batch.xml,38371,redukt-T4,plugin F32 single,2138,0.4458,157.7,243.3,sha256 936bb38539bcb33c; roundtrip OK decompress 161s
+B-full,ubl-invoice-batch.xml,81558,redukt-T4,plugin F32 single,4904,0.4810,353.5,230.7,sha256 cfe7de4df017e2dd; roundtrip OK decompress 351s
+B-full,apache-access.log,171239,redukt-T4,plugin F32 single,10568,0.4937,578.1,296.2,sha256 e4d3a47761f64e99
+B-full,linux-syslog.log,216485,redukt-T4,plugin F32 single,30159,1.1145,828.2,261.4,sha256 1f3f70c8b7265d33
+B-full,openssh-auth.log,225216,redukt-T4,plugin F32 single,32965,1.1710,855.1,263.4,sha256 5f64fbc0d641fa67
+A-scale,enwik8[10240],10240,redukt-T4,plugin F32 single,1234,0.9641,34.9,293.6,sha256 302d399d636c3104; roundtrip OK decompress 35s
+A-scale,enwik8[51200],51200,redukt-T4,plugin F32 single,6745,1.0539,131.6,389.1,sha256 5dccc3c3ff01c7a1
+A-scale,enwik8[102400],102400,redukt-T4,plugin F32 single,20858,1.6295,256.9,398.7,sha256 919129c0b034e2b1; roundtrip OK decompress 254s
+A-scale,enwik8[512000],512000,redukt-T4,plugin F32 single,211834,3.3099,1406.6,364.0,sha256 a4e3db0c58c99d1f
+A-scale,enwik8[1048576],1048576,redukt-T4,plugin F32 single,486228,3.7096,2856.2,367.1,sha256 78b2e6ec1dd81949
+A-scale,enwik8[2097152],2097152,redukt-T4,plugin F32 single,1023838,3.9056,5737.9,365.5,sha256 d48a027969a2e4f1
