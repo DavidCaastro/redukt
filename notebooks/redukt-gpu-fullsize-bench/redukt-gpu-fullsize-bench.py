@@ -39,7 +39,7 @@ import sys
 import time
 
 REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt.git")
-REDUKT_REF = os.environ.get("REDUKT_REF", "48dbb06")  # origin/master 2026-11-10 (code == local HEAD)
+REDUKT_REF = os.environ.get("REDUKT_REF", "61a9027")  # origin/master 2026-11-10, R-108 (reset period in header)
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("fullsize-out")
 DEADLINE_HOURS = float(os.environ.get("DEADLINE_HOURS", "9"))
 PHASES = os.environ.get("PHASES", "C,A2,B,A").split(",")   # C lockstep, A2 CPU points, B industry, A GPU curve
