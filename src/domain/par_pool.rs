@@ -236,9 +236,11 @@ fn wait_new_epoch(sh: &Shared, idx: usize, seen: u32) -> u32 {
 #[derive(Clone, Copy)]
 pub struct SyncPtr<T>(*mut T);
 
-// SAFETY: used only for disjoint per-block writes coordinated by Pool::run.
-unsafe impl<T> Send for SyncPtr<T> {}
-unsafe impl<T> Sync for SyncPtr<T> {}
+// SAFETY: used only for disjoint per-block writes coordinated by Pool::run;
+// `T: Send` because each block hands its `&mut [T]` range to another thread.
+unsafe impl<T: Send> Send for SyncPtr<T> {}
+// SAFETY: as above — shared `&SyncPtr` only yields disjoint ranges.
+unsafe impl<T: Send> Sync for SyncPtr<T> {}
 
 impl<T> SyncPtr<T> {
     pub fn new(p: *mut T) -> Self {

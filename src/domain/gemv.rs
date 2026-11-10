@@ -133,6 +133,14 @@ where
     });
 }
 
+/// One input per output and every input at least `cols` long. A mismatch is a
+/// caller bug; panicking here (once per call) beats silently skipping streams
+/// (`zip`) or reading out of bounds in the fused raw-pointer kernel.
+fn check_multi_shapes(n_outs: usize, xs: &[&[f32]], cols: usize) {
+    assert_eq!(n_outs, xs.len(), "gemv multi: {} outputs vs {} inputs", n_outs, xs.len());
+    assert!(xs.iter().all(|x| x.len() >= cols), "gemv multi: input shorter than {} columns", cols);
+}
+
 // ---- F32 (bit-identical to the single-thread kernel) ----
 
 /// Single-thread f32 rows kernel: same dispatch as `mat_vec_mul_into`'s
@@ -173,7 +181,7 @@ fn gemv_f32_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Tensor, xs: &
     let rows = mat.shape[0];
     let cols = mat.shape[1];
     let data = &mat.data;
-    debug_assert_eq!(outs.len(), xs.len());
+    check_multi_shapes(outs.len(), xs, cols);
     par_rows_multi(pool, outs, rows, cols * 4, |r0, blocks| {
         let len = blocks[0].len();
         for sub0 in (0..len).step_by(MULTI_SUB_ROWS) {
@@ -272,7 +280,8 @@ fn gemv_q8w_multi_with(pool: &Pool, outs: &mut [&mut [f32]], mat: &Q8wMatrix, xs
     let (rows, cols, group) = (mat.rows, mat.cols, mat.group);
     let gpr = mat.groups_per_row();
     let (q, sc) = (&mat.q, &mat.scales);
-    debug_assert_eq!(outs.len(), xs.len());
+    // Hard check: the fused AVX2 kernel reads xs[s] through raw pointers.
+    check_multi_shapes(outs.len(), xs, cols);
     par_rows_multi(pool, outs, rows, cols + gpr * 4, |r0, blocks| {
         let r1 = r0 + blocks[0].len();
         let blk = Q8Rows { q: &q[r0 * cols..r1 * cols], scales: &sc[r0 * gpr..r1 * gpr], cols, group };
@@ -304,7 +313,8 @@ fn q8w_rows_multi(outs: &mut [&mut [f32]], m: &Q8Rows, xs: &[&[f32]]) {
             } else {
                 take
             };
-            // SAFETY: AVX2 detected; shapes checked by the fused kernel.
+            // SAFETY: AVX2 detected; caller ran check_multi_shapes (xs[s] >= cols) and
+            // par_rows_multi gives every outs[s] the same row count as `m`.
             unsafe { q8w_rows_fused_avx2(&mut outs[s0..s0 + take], m, &xs[s0..s0 + take]) };
             s0 += take;
         }
@@ -813,6 +823,31 @@ mod tests {
                 eprintln!("{:8} n={:2} | F32: {:7.3} ms ({:5.1} GB/s) vs GEMM {:7.3} ms ({:5.1} GB/s eff) {:4.2}x",
                     name, n, best[2] * 1e3, gbs(fb, best[2]), best[3] * 1e3, gbs(fb, best[3]), best[2] / best[3]);
             }
+        }
+    }
+
+    #[test]
+    fn multi_stream_rejects_short_input_instead_of_reading_out_of_bounds() {
+        let q = Q8wMatrix::quantize(&rand_tensor(64, 256, 81), 64);
+        let t = rand_tensor(64, 256, 83);
+        let full = rand_vec(256, 85);
+        let short = rand_vec(255, 87);
+        for bad in [false, true] {
+            let r = std::panic::catch_unwind(|| {
+                let mut outs: Vec<Vec<f32>> = vec![vec![0.0; 64]; 5];
+                let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+                let mut xs: Vec<&[f32]> = vec![full.as_slice(); 5];
+                if bad { xs[4] = short.as_slice(); }
+                gemv_q8w_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &q, &xs);
+            });
+            assert_eq!(r.is_err(), bad, "q8 short input must panic (bad={})", bad);
+            let r = std::panic::catch_unwind(|| {
+                let mut outs: Vec<Vec<f32>> = vec![vec![0.0; 64]; 3];
+                let mut o: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+                let xs: Vec<&[f32]> = vec![full.as_slice(); if bad { 2 } else { 3 }];
+                gemv_f32_multi_with(&Pool::new(1, Duration::from_micros(0)), &mut o, &t, &xs);
+            });
+            assert_eq!(r.is_err(), bad, "f32 missing input must panic, not skip a stream (bad={})", bad);
         }
     }
 

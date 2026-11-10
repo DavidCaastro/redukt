@@ -224,15 +224,22 @@ fn decompress_rejects_corrupted_crc() {
     let compressed = tmp.join("compressed.azth");
     let restored = tmp.join("restored.txt");
 
-    std::fs::write(&input, b"CRC corruption test data.").unwrap();
+    let mut seed = 0x1234_5678u32; // xorshift32 letters: incompressible enough for a long stream
+    let text: Vec<u8> = (0..600).map(|_| {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        b'a' + (seed % 26) as u8
+    }).collect();
+    std::fs::write(&input, &text).unwrap();
     assert!(compress(&bin, &input, &compressed), "compress failed");
 
-    // Flip a bit in the compressed stream (not the CRC itself)
+    // Flip a byte in the middle of the compressed stream (never the CRC).
+    // The v4/v5 header is variable (13..35 B), so a fixed offset (the old
+    // v3 `28 + 2`) can miss the stream entirely and leave the file intact.
     let mut data = std::fs::read(&compressed).unwrap();
-    let stream_offset = 28 + 2; // header=28, skip a couple bytes into stream
-    if stream_offset < data.len() - 4 {
-        data[stream_offset] ^= 0xFF; // corrupt stream
-    }
+    let max_header = 35;
+    assert!(data.len() > max_header + 8, "archive too small to corrupt: {} B", data.len());
+    let stream_offset = max_header + (data.len() - 4 - max_header) / 2;
+    data[stream_offset] ^= 0xFF; // corrupt stream
     std::fs::write(&compressed, &data).unwrap();
 
     // Decompression should fail due to CRC mismatch

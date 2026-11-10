@@ -337,6 +337,17 @@ fn code_step<T: BackendTokenizer>(w: &mut Work, v: usize, tokenizer: &T) {
                 a.done = true;
                 return;
             }
+            // Every encoded token covers >= 1 input byte, so a valid stream has
+            // at most `total_bytes` tokens. Stops a corrupt stream that keeps
+            // decoding zero-length ids from spinning its slot forever.
+            if a.pos >= hdr.total_bytes {
+                a.error = Some(AzError::Decode {
+                    token_idx: a.pos,
+                    detail: format!("{} tokens decoded but only {} of {} bytes", a.pos, written, hdr.total_bytes),
+                });
+                a.done = true;
+                return;
+            }
             a.cm.observe(tok as u32);
             a.next_token = tok;
         }
@@ -436,6 +447,30 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
 }
 
+/// Prefix an admission error with its file name (the run reports it nameless).
+fn named(p: &Path, e: AzError) -> AzError {
+    AzError::Format(format!("{}: {}", file_name(p), e))
+}
+
+/// Write `dir/name` through `name.part` + rename, so a failed or interrupted
+/// write never leaves a truncated file under the final name.
+fn write_output(dir: &str, name: &str, bytes: &[u8]) -> AzResult<usize> {
+    if name.is_empty() {
+        return Err(AzError::Format("empty output file name".into()));
+    }
+    let final_path = Path::new(dir).join(name);
+    let tmp_path = Path::new(dir).join(format!("{}.part", name));
+    if let Err(e) = crate::domain::error::write_file(&tmp_path.to_string_lossy(), bytes) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        AzError::Io { path: final_path.to_string_lossy().to_string(), source: e }
+    })?;
+    Ok(bytes.len())
+}
+
 fn read_capped(path: &Path, max_bytes: usize) -> AzResult<Vec<u8>> {
     let mut raw = crate::domain::error::read_file(&path.to_string_lossy())?;
     if max_bytes > 0 && raw.len() > max_bytes {
@@ -483,8 +518,10 @@ fn compress_admission(
 ) -> AzResult<Admission> {
     let raw = read_capped(path, opts.max_bytes)?;
     if raw.is_empty() {
-        return Err(AzError::Format(format!("{}: empty input", file_name(path))));
+        return Err(AzError::Format("empty input".into()));
     }
+    // Fail before tokenizing/compressing, not after hours of work in encode_output.
+    validate_u32_size(raw.len(), "TOTAL_BYTES")?;
     let name = file_name(path);
     let prep = preprocess_input(&raw, &opts.e8e9_mode, &opts.shuffle_mode, &opts.delta_mode, &name);
     let tokens = tokenizer.encode(&prep.data);
@@ -610,16 +647,15 @@ pub fn compress_dir(
 
     // Pass 2: one lockstep run per model group.
     for (key, paths) in &groups {
-        let (model, tokenizer) = load_group_model(key, opts, slots)?;
+        // No more streams than files: unused slots would only allocate state.
+        let group_slots = slots.min(paths.len()).max(1);
+        let (model, tokenizer) = load_group_model(key, opts, group_slots)?;
         let mut it = paths.iter();
-        let mut source = || it.next().map(|p| compress_admission(p, opts, key, &tokenizer));
+        let mut source = || it.next().map(|p| compress_admission(p, opts, key, &tokenizer).map_err(|e| named(p, e)));
         let mut on_result = |mut r: StreamResult| {
             let out_name = format!("{}.azth", r.name);
             let output = std::mem::replace(&mut r.output, Ok(Vec::new()));
-            let written = output.and_then(|bytes| {
-                let out_path = Path::new(output_dir).join(&out_name);
-                crate::domain::error::write_file(&out_path.to_string_lossy(), &bytes).map(|_| bytes.len())
-            });
+            let written = output.and_then(|bytes| write_output(output_dir, &out_name, &bytes));
             match written {
                 Ok(n) => {
                     eprintln!("\r[compress] {} -> {} ({} -> {} bytes, {:.4} BPB, {} tokens, {:.1} tok/s)   ",
@@ -633,7 +669,7 @@ pub fn compress_dir(
                 }
             }
         };
-        let st = run_lockstep(&model, &tokenizer, slots, governor, &mut source, &mut on_result)?;
+        let st = run_lockstep(&model, &tokenizer, group_slots, governor, &mut source, &mut on_result)?;
         eng_tokens += st.tokens;
         eng_secs += st.secs;
         code_secs += st.code_secs;
@@ -704,16 +740,17 @@ pub fn decompress_dir(
     let (mut code_secs, mut fwd_secs) = (0.0f64, 0.0f64);
 
     for (key, paths) in &groups {
-        let (model, tokenizer) = load_group_model(key, opts, slots)?;
+        // No more streams than files: unused slots would only allocate state.
+        let group_slots = slots.min(paths.len()).max(1);
+        let (model, tokenizer) = load_group_model(key, opts, group_slots)?;
         let mut it = paths.iter();
-        let mut source = || it.next().map(|p| decompress_admission(p, &opts.quant, &opts.emb_surgery));
+        let mut source = || {
+            it.next().map(|p| decompress_admission(p, &opts.quant, &opts.emb_surgery).map_err(|e| named(p, e)))
+        };
         let mut on_result = |mut r: StreamResult| {
             let out_name = r.name.strip_suffix(".azth").unwrap_or(&r.name).to_string();
             let output = std::mem::replace(&mut r.output, Ok(Vec::new()));
-            let written = output.and_then(|bytes| {
-                let out_path = Path::new(output_dir).join(&out_name);
-                crate::domain::error::write_file(&out_path.to_string_lossy(), &bytes).map(|_| bytes.len())
-            });
+            let written = output.and_then(|bytes| write_output(output_dir, &out_name, &bytes));
             match written {
                 Ok(n) => {
                     eprintln!("\r[decompress] {} -> {} ({} bytes, CRC-32 verified OK, {} tokens, {:.1} tok/s)   ",
@@ -726,7 +763,7 @@ pub fn decompress_dir(
                 }
             }
         };
-        let st = run_lockstep(&model, &tokenizer, slots, governor, &mut source, &mut on_result)?;
+        let st = run_lockstep(&model, &tokenizer, group_slots, governor, &mut source, &mut on_result)?;
         eng_tokens += st.tokens;
         eng_secs += st.secs;
         code_secs += st.code_secs;
@@ -887,6 +924,45 @@ mod tests {
         let st = run_lockstep(&MockBackbone, &tok, 4, None, &mut source, &mut on_result).unwrap();
         assert_eq!(st.files, 1);
         assert_eq!(names, vec![(String::new(), false), ("ok".to_string(), true)]);
+    }
+
+    /// Tokenizer whose ids all decode to zero bytes (models a corrupt stream
+    /// that keeps landing on empty/special ids).
+    struct EmptyTokenizer;
+    impl BackendTokenizer for EmptyTokenizer {
+        fn encode(&self, data: &[u8]) -> Vec<u32> { data.iter().map(|&b| b as u32).collect() }
+        fn decode_token(&self, _: u32) -> &[u8] { &[] }
+    }
+
+    #[test]
+    fn zero_length_tokens_terminate_with_error_instead_of_spinning() {
+        let a = compress_all(1).swap_remove(0);
+        let hdr = parse_header(&a).unwrap();
+        let total = hdr.total_bytes;
+        let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version);
+        let mut adm = Some(Admission::Decode {
+            name: "z.azth".into(), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
+        });
+        let mut source = || adm.take().map(Ok);
+        let mut res: Vec<(usize, bool)> = Vec::new();
+        let mut on_result = |r: StreamResult| res.push((r.tokens, matches!(r.output, Err(AzError::Decode { .. }))));
+        let st = run_lockstep(&MockBackbone, &EmptyTokenizer, 2, None, &mut source, &mut on_result).unwrap();
+        assert_eq!(res, vec![(total, true)], "must stop after total_bytes tokens with a Decode error");
+        assert_eq!(st.steps, total);
+    }
+
+    #[test]
+    fn write_output_is_atomic_and_rejects_empty_name() {
+        let dir = std::env::temp_dir().join(format!("redukt_lockstep_wo_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        assert_eq!(write_output(&d, "a b ñ.azth", b"xyz").unwrap(), 3);
+        assert_eq!(std::fs::read(dir.join("a b ñ.azth")).unwrap(), b"xyz");
+        assert!(!dir.join("a b ñ.azth.part").exists());
+        assert!(write_output(&d, "", b"x").is_err());
+        let missing = dir.join("no").join("such").to_string_lossy().to_string();
+        assert!(write_output(&missing, "f", b"x").is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
