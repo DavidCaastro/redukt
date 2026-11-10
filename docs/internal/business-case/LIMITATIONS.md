@@ -1,5 +1,11 @@
 # Limitations & Mitigation Strategies
 
+> **SUPERSEDED (2026-11-10)** — The pricing (EUR 5-12/TB), throughput targets (>=2 KB/s), "no direct competitor",
+> "best-in-class" and cold/archive claims in this folder are contradicted by measured data (compute ~$50-60/GB on CPU,
+> ~$9-17/GB on T4; R* = 18-100 KB/s per vCPU) and by external evidence (Nacrith, Hutter 2026 lineage, cmix at ~$3/GB,
+> CIDR 2026). Kept for traceability only. Authoritative analysis: `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+
+
 ## Critical: Throughput Constraint
 
 ### The Problem
@@ -95,7 +101,8 @@ SIMD results (R-011): Q8 matmul 6.7x AVX2 / 14.5x VNNI, but end-to-end only 1.3x
 due to memory-bound head matmul (48MB exceeds L3) and non-SIMD overhead (~20% of time).
 F32 FMA disabled for cross-path determinism. See `data/benchmark/results/simd-benchmark.md`.
 
-Current target: **~2-3 KB/s** (R-018 + R-015 + R-012, 0% BPB loss) would make the product
+Current target (superseded 2026-11-10 — the economic gate is 18-100 KB/s per vCPU, see `scripts/breakeven.py`):
+**~2-3 KB/s** (R-018 + R-015 + R-012, 0% BPB loss) would make the product
 viable for mid-tier e-invoicing and small-scale log archival without model degradation.
 
 See `GO-TO-MARKET-STRATEGY.md` for full strategic analysis including throughput economics.

@@ -2258,7 +2258,8 @@ R-082 (Rust byte tokenizer) ─────────────────�
     - [x] Documentar técnicas adoptables: PTX-as-string, fused dequant, M=1 fast path
   - **Hallazgos clave**:
     - MambaByte 353M ya entrenado en HuggingFace (0.396 BPB CE enwik8)
-    - Nacrith: competidor más cercano (0.9389 BPB, GPU-only, solo texto)
+    - Nacrith: competidor más cercano (0.9389 BPB en enwik8 completo; GPU de consumo con fallback CPU; maneja
+      binarios enrutándolos a LZMA — corregido 2026-11-10, antes decía "GPU-only, solo texto")
     - strata-inference: patrón PTX-as-string adoptable para GPU plugin
     - L3TC (Alipay): valida RWKV+AC para compresión (4.35 MB/s)
 
@@ -2577,8 +2578,10 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
 
 - No existe precedente comercial de un compresor <1 MB/s con clientes de pago (PetaGene cobra % del ahorro a
   290 MB/s; AtomBeam monetiza ancho de banda satelital; ts_zip y Nacrith no son productos).
-- Referencia externa: **L3TC** (AAAI 2025) logra ≈1.10 bpb en enwik8 (Redukt 0.96) con un RWKV de 3.2M
-  parámetros a 27 KB/s en CPU móvil. Un modelo ~40× más pequeño pierde ~15% de ratio y gana ~200× throughput.
+- Referencia externa: **L3TC** (AAAI 2025). Corregido 2026-11-10 (la versión anterior mezclaba dos modelos): el RWKV de
+  3.2M logra 1.105 bpb en enwik8 a 2.5 MB/s en una A100; el de 200K logra 1.404 bpb a 11-27 KB/s en la CPU de un
+  iPhone 12 (1.30 MB/s en su ANE). Referencia CPU adicional: la estirpe Hutter 2026 (cmix + transformer de 6M
+  preentrenado) logra 0.78 bpb en enwik9 a 7.5 KB/s en un núcleo.
 
 ### Tier 1: Palancas L1-L4 (sin entrenar, riesgo BPB cero o acotado)
 
@@ -2830,8 +2833,11 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
   - **Prioridad**: P1 — única vía CPU-only que cruza el umbral económico
   - **Dependencia**: ninguna técnica; puede reutilizar la infraestructura de entrenamiento de la Fase 15
   - **Archivos**: `src/infrastructure/` (backbone adicional), `docs/internal/research/` (informe de decisión)
-  - **Contexto**: L3TC (AAAI 2025) logra ≈1.10 bpb en enwik8 con RWKV de 3.2M parámetros y vocab 16K a 27 KB/s en
-    CPU móvil (batch 1) y 633 KB/s batcheado en ANE. La receta de Redukt (CM + mixer adaptativo + preprocesado
+  - **Contexto** (corregido 2026-11-10): L3TC (AAAI 2025) logra 1.105 bpb en enwik8 con RWKV de 3.2M parámetros a
+    2.5 MB/s en A100; la variante de 200K parámetros logra 1.404 bpb a 11-27 KB/s en CPU de iPhone 12 y 1.30 MB/s en
+    su ANE. No existe la combinación "1.10 bpb a 27 KB/s en CPU móvil". La referencia CPU más exigente es la estirpe
+    Hutter 2026 (fx2-cmix-transformer, zmix, cmix-neif): 0.73-0.78 bpb en enwik9 a 4.5-9 KB/s en un núcleo, open source.
+    El gate del tier debe expresarse como KB/s por vCPU frente a R* con el bpb que efectivamente obtenga. La receta de Redukt (CM + mixer adaptativo + preprocesado
     binario + routing) es independiente del tamaño del backbone. `token-reduction-strategies.md` §5.6 marcó la
     destilación como NO-GO por una **proyección** (+5-15% BPB); L3TC es una **medida**.
   - **Subtareas**:
@@ -3171,7 +3177,7 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-09 | Fase 17 definida: Pre-trained MambaByte + Competitive Intelligence (R-087 → R-090) |
 | 2026-11-09 | R-087 COMPLETADO — Strata + competitive landscape research. 8 Strata projects, 15 neural compressors. |
 | 2026-11-09 | Hallazgo: MambaByte 353M pre-entrenado en HuggingFace (JunxiongWang), 0.396 BPB CE enwik8 |
-| 2026-11-09 | Hallazgo: Nacrith = competidor más cercano (0.9389 BPB, GPU-only, solo texto) |
+| 2026-11-09 | Hallazgo: Nacrith = competidor más cercano (0.9389 BPB, GPU-only, solo texto) — corregido 2026-11-10: tiene fallback CPU y maneja binarios vía LZMA |
 | 2026-11-09 | Hallazgo: strata-inference = PTX-as-string patrón adoptable para GPU plugin Redukt |
 | 2026-11-09 | R-088 definido: evaluar pesos pre-entrenados MambaByte 353M — P0, potencialmente elimina R-084/R-085 |
 | 2026-11-09 | docs: strata-competitive-landscape.md — investigación completa, 15 fuentes, 5 secciones |
@@ -3224,3 +3230,6 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | 762a42d test: SAFETY comments on FFI v2, golden v5 F32, tokenizer roundtrip test |
 | 2026-11-10 | df6aca1 feat(deploy): align GCP configs with Mamba-default API, lockstep batch, Q8 |
 | 2026-11-10 | Re-medición en reposo (lockstep-throughput-2026-11-10.csv): Q8 N=8/16/32 270.8/286.9/309.9; F32 N=16 259.6. Tests: 295 unit + 5 integración, 0 warnings |
+| 2026-11-10 | 23cafed docs(research): informe de posición competitiva (`docs/internal/research/competitive-position-2026-11-10/REPORT.md`): categoría comercial vacía por economía; Nacrith 0.9389 enwik8 completo; estirpe Hutter 2026 0.73-0.78 bpb enwik9 a 4.5-9 KB/s/núcleo; cmix 1.170 a ~$3/GB vs Redukt $50-60 |
+| 2026-11-10 | Erratas aplicadas: README (cifras era RWKV, "best-in-class"), CLAUDE.md (techo T4 = tráfico de estado, L3TC, -50.5% etiquetado 10 KB, escala), ROADMAP (Nacrith, L3TC), strata-competitive-landscape, business-case marcado SUPERSEDED; cmix unificado a 1.170 bpb |
+| 2026-11-10 | Lanzado `notebooks/redukt-gpu-fullsize-bench.py` en Kaggle T4: curva de escala enwik8 (10 KB-4 MB) con Mamba, ficheros industry completos vs zstd/xz/brotli, lockstep por vCPU y gate económico (resultados en `data/benchmark/results/kaggle-fullsize/`) |

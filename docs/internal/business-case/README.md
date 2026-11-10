@@ -1,5 +1,11 @@
 # Redukt — Business Case
 
+> **SUPERSEDED (2026-11-10)** — The pricing (EUR 5-12/TB), throughput targets (>=2 KB/s), "no direct competitor",
+> "best-in-class" and cold/archive claims in this folder are contradicted by measured data (compute ~$50-60/GB on CPU,
+> ~$9-17/GB on T4; R* = 18-100 KB/s per vCPU) and by external evidence (Nacrith, Hutter 2026 lineage, cmix at ~$3/GB,
+> CIDR 2026). Kept for traceability only. Authoritative analysis: `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+
+
 Commercial viability analysis for Redukt's compression engine as a standalone product.
 
 ## Contents

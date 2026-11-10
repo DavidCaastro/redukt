@@ -1,5 +1,11 @@
 # Market Analysis — Redukt
 
+> **SUPERSEDED (2026-11-10)** — The pricing (EUR 5-12/TB), throughput targets (>=2 KB/s), "no direct competitor",
+> "best-in-class" and cold/archive claims in this folder are contradicted by measured data (compute ~$50-60/GB on CPU,
+> ~$9-17/GB on T4; R* = 18-100 KB/s per vCPU) and by external evidence (Nacrith, Hutter 2026 lineage, cmix at ~$3/GB,
+> CIDR 2026). Kept for traceability only. Authoritative analysis: `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+
+
 ## Global Compression Market
 
 - Data compression market: **$1.28B** (2026), CAGR 9.2% [UNSOURCED — no market research firm cited]
@@ -48,7 +54,8 @@ Note: this is log MANAGEMENT market, not log ARCHIVAL specifically (narrower).
 ### 4. Cold/Archive Storage (TAM: [UNSOURCED — $49B figure could not be verified])
 
 **Pain**: Long-term retention of compliance data, backups, historical records.
-**Our advantage**: Best-in-class compression means less data to store/replicate/transfer.
+**Our advantage**: ~~Best-in-class compression~~ — withdrawn 2026-11-10: Deep Archive bytes are worth ~$0.003-0.014/GB
+over 7 years, below any neural compute cost; CLAUDE.md excludes cold/deep archive as a target.
 
 ### 5. Bandwidth-Constrained Niches (satellite/maritime/mining)
 
@@ -75,7 +82,7 @@ Starlink maritime ~$6/GB [ESTIMATE: ~$5000/mo for 1TB plan, varies by region].
 | gzip/zstd/brotli | Open source, free | Fast, ubiquitous | Lower compression ratio |
 | PetaGene | Per-TB license | Genomics specialist | Narrow vertical |
 | Cribl | SaaS, per-GB | Log pipeline leader | Reduction, not compression |
-| NNCP/cmix | Academic | High compression | Slower than Redukt on CPU |
+| NNCP/cmix | Academic | High compression | cmix v21 1.170 bpb at 1.6 KB/s per core: ~16x FASTER than Redukt per core (corrected 2026-11-10) |
 
 ## Spain-Specific Market Context
 

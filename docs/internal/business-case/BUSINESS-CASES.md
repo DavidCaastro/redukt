@@ -1,5 +1,11 @@
 # Business Cases — Concrete EUR Figures
 
+> **SUPERSEDED (2026-11-10)** — The pricing (EUR 5-12/TB), throughput targets (>=2 KB/s), "no direct competitor",
+> "best-in-class" and cold/archive claims in this folder are contradicted by measured data (compute ~$50-60/GB on CPU,
+> ~$9-17/GB on T4; R* = 18-100 KB/s per vCPU) and by external evidence (Nacrith, Hutter 2026 lineage, cmix at ~$3/GB,
+> CIDR 2026). Kept for traceability only. Authoritative analysis: `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+
+
 Analysis date: 2026-10-20. **Audited 2026-10-27, corrected 2026-10-28** with actual AZTH compression.
 All figures in EUR unless noted.
 
@@ -156,6 +162,8 @@ All Redukt BPB from actual AZTH compression (mean of 3 log files), measured 2026
 > - 50KB: Redukt 0.185 vs brotli 0.353 = -47.4%
 > - 100KB: Redukt 0.186 vs brotli 0.328 = -43.4%
 > Advantage persists at larger sizes. On dickens, advantage GROWS: -36% (10KB) → -46% (100KB).
+> **Caveat 2026-11-10**: that scale test used the RWKV backbone. With Mamba (current default) enwik8 got WORSE from
+> 10 KB to 50 KB (0.963 → 1.054); whole-file brotli-11 reaches 0.247 on UBL vs Redukt 0.446 at 10 KB.
 > gzip-9 also improves (0.55→0.44 at 100KB) but Redukt maintains strong lead.
 > See `data/benchmark/results/scale-test-complete.csv`.
 
@@ -191,7 +199,8 @@ Processing 1 PB/year (2.74 TB/day) at 132 B/s requires:
 **Direction correct — Redukt strongly beats gzip-9 and brotli-11 on logs (-44% vs gzip, -31% vs brotli, mean of 3 log files, actual compression).**
 But compute cost at current throughput (~80 B/s mean on logs) makes the case **economically negative**.
 
-**Required for viable case**: throughput ≥2 KB/s (R-018 + R-015 + R-012, 0% BPB risk; +R-016 SVD conditional, ≤+3% BPB).
+**Required for viable case**: ~~throughput ≥2 KB/s~~ — corrected 2026-11-10: `scripts/breakeven.py` requires 18-100 KB/s
+**per vCPU** (S3 Standard, 7 years, spot); Fase 19 reaches ~1.2 KB/s per 12-vCPU machine (~0.1 KB/s per vCPU).
 
 ---
 

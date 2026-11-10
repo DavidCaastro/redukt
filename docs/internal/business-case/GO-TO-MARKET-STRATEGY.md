@@ -1,5 +1,11 @@
 # Go-to-Market Strategy — Redukt
 
+> **SUPERSEDED (2026-11-10)** — The pricing (EUR 5-12/TB), throughput targets (>=2 KB/s), "no direct competitor",
+> "best-in-class" and cold/archive claims in this folder are contradicted by measured data (compute ~$50-60/GB on CPU,
+> ~$9-17/GB on T4; R* = 18-100 KB/s per vCPU) and by external evidence (Nacrith, Hutter 2026 lineage, cmix at ~$3/GB,
+> CIDR 2026). Kept for traceability only. Authoritative analysis: `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+
+
 > Analysis date: 2026-10-27. **Audited 2026-10-27** — corrected for data integrity.
 > Based on verified benchmarks (17 files), SIMD results (R-011), and market research.
 > All EUR figures. Throughput numbers from i5-1235U (Alder Lake), Q8 quantization, pre-SIMD CSV.
@@ -309,6 +315,8 @@ Pero el PoC puede ejecutarse antes de resolver throughput completo.
 
 PetaGene charges per TB saved in genomics (55% storage cost reduction).
 Our model: **fixed price per TB of input processed**, regardless of savings achieved.
+**Invalidated 2026-11-10**: measured compute cost is ~$50,000-60,000 per TB on spot CPU and ~$9,000-17,000 per TB on a
+T4; EUR 5-12/TB would cover 0.01-0.1% of it.
 
 | Tier | Volume | Price/TB | Annual |
 |---|---|---|---|
@@ -353,7 +361,9 @@ Alternative: annual license (see BUSINESS-CASES.md for detailed models).
 | PetaGene | Commercial | Genomics (FASTQ/BAM) | Low (different vertical) |
 | Brotli/zstd | Ubiquitous | General purpose | Incumbent (we beat on ratio) |
 
-No direct competitor in **neural compression for text/structured data archival**.
+~~No direct competitor in neural compression for text/structured data archival.~~ Withdrawn 2026-11-10: Nacrith (0.9389
+bpb enwik8, Apache-2.0), fractal-zip (0.984, CPU), the Hutter 2026 lineage (0.73-0.78 bpb enwik9, CPU, 4.5-9 KB/s),
+StateSMix and L3TC are all public. Only the narrow statement "no commercial product" survives.
 Microsoft and NVIDIA validate the approach but target different verticals.
 
 ---

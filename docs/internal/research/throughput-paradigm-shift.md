@@ -697,7 +697,7 @@ overhead per-byte de propagacion de estado.
 | BOA Constrictor | N/A (HEP data) | 3.5-45 MB/s | GPU | Mamba + parallel RC | 2025 |
 | StateSMix | 2.123 | **1,300 tok/s** | CPU AVX2 | Mamba-120K + CM | 2025 |
 | OmniZip | 1.107 | 200 KB/s | CPU | MoE 3-expert | 2026 |
-| cmix v21 | ~1.63 | 0.67 KB/s | CPU | 2077 models + LSTM | 2024 |
+| cmix v21 | 1.170 | 1.6 KB/s | CPU | 2077 models + LSTM | 2024 (LTCB; corregido 2026-11-10, antes ~1.63 / 0.67 KB/s) |
 | NNCP v3 | 1.19 | ~KB/s | CPU multi-core | Transformer-XL | 2023 |
 
 ### 8.2 Productos comerciales de compresion neuronal (2026)

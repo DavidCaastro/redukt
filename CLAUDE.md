@@ -24,11 +24,21 @@ retention horizon (model: `scripts/breakeven.py`). Reference thresholds (7 years
 Measured status (2026-11-10): CPU lockstep ~1,180 B/s on 12 vCPU = $50-60/GB (spot) / ~$19 (dedicated);
 GPU T4 batch N=128 ~4.2 KB/s = $9-17/GB. Gap to threshold: 30x-500x.
 Admitted paths to close it (every new phase must justify itself against one of them):
-1. GPU kernels at cuBLAS/tensor-core efficiency (current CUDA plugin uses ~4% of T4 peak).
-2. Fast tier: 3-30M-param backbone + CM recipe (R-105; L3TC reference ~1.10 bpb at 27 KB/s mobile CPU).
+1. GPU kernels at cuBLAS/tensor-core efficiency. The binding T4 limit at N=128 is recurrent-state traffic (~4.8 MB per
+   token and stream in F32, ~55k tok/s ceiling), not the 65 TFLOPS: the plugin's 1,117 tok/s is ~2% of that ceiling and
+   the realistic headroom with kernels at 30-50% of roofline is 15-25x (not 60x). Reaches the text threshold, not logs.
+2. Fast tier: 3-30M-param backbone + CM recipe (R-105). External references, correctly attributed: L3TC-3.2M 1.105 bpb
+   enwik8 at 2.5 MB/s on an A100; L3TC-200K 1.404 bpb at 11-27 KB/s on an iPhone CPU; Hutter 2026 lineage (cmix + 6M
+   pretrained transformer) 0.78 bpb enwik9 at 7.5 KB/s on one CPU core. Gate = KB/s per vCPU vs R* (`breakeven.py`).
 3. Segments where bytes are expensive to move or retention is regulated (satellite/IoT links,
    egress, compliance), where the threshold is far lower than storage savings.
 The metric is cost per GB (throughput per vCPU or per GPU-hour), NOT throughput per machine.
+Competitive reference (2026-11-10, `docs/internal/research/competitive-position-2026-11-10/REPORT.md`): no
+commercial neural lossless compressor exists for text/XML/logs (the category is empty for cost reasons, CIDR 2026
+"Waiting to Decompress");
+Nacrith 0.9389 bpb on full enwik8 (GPU, CPU fallback, binaries via LZMA); cmix v21 1.170 bpb at ~$3/GB; Hutter 2026
+lineage 0.73-0.78 bpb enwik9 at 4.5-9 KB/s single core (~$0.65-1.07/GB); xz/zstd $0.002-0.007/GB. Redukt is unique only
+in packaging (single zero-dep binary, CPU-decodable 130M backbone) and in the header-declared numeric contract.
 
 ## Portability Principle (hardware-agnostic by design)
 
@@ -263,7 +273,10 @@ Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`
 | x-ray | 4.887 | Mamba | +6% | -17% |
 | sao | 8.666 | Mamba | +45% | +36% |
 
-Wins 8/12 vs brotli-11, 10/12 vs gzip-9. Average win margin: -50.5% vs brotli.
+Wins 8/12 vs brotli-11, 10/12 vs gzip-9. Average win margin: -50.5% vs brotli — **10 KB windows only**. On whole files
+brotli-11 gives UBL 0.247 (Redukt 0.446 at 10 KB), facturae 0.395 (0.389), apache 0.313 (0.216)
+(`competitors-fullsize-2026-11-01.csv`): the XML margin is a window artifact and the log margin shrinks. Never quote
+the -50.5% externally without the 10 KB label.
 Loses: sao +45%, ooffice +37%, x-ray +6%, mr +1% (binary/high-entropy).
 Full evidence: `data/benchmark/results/dual-backbone-benchmark.md`, `.csv`.
 
@@ -277,7 +290,10 @@ Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 | dickens | 1.797 | 1.503 | 1.457 | 2.649 | -45% |
 | samba | 1.298 | 1.356 | 1.206 | 1.944 | -38% |
 
-Advantage grows with file size. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s.
+That scale test is RWKV-only. With the Mamba backbone the only scale datum goes the other way: enwik8 0.963 (10 KB) ->
+1.054 (50 KB), +9.4% (`market-readiness-diagnostic-2026-11-01.md`). "Advantage grows with size" is NOT established for
+the current backbone; whole-file Mamba runs are in progress (Kaggle T4, `notebooks/redukt-gpu-fullsize-bench.py`).
+RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s (2026-10-31 binary).
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 
 ### Fase 19 — CPU Limit & Market Viability (2026-11-10, measured)
@@ -307,7 +323,8 @@ The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) an
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
 (sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 295 unit + 5 integration.
 Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
-validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~4% of T4 peak -> kernels are the next GPU lever); R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
+validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
+ceiling, headroom 15-25x -> kernels are the next GPU lever); R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
 F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)

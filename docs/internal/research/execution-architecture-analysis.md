@@ -364,7 +364,7 @@ Reference:
 | Oct'26 paper (arXiv 2610) | ~1.0 | **181 KB/s** (A100) | GPU | Paper |
 | FineZip | 1.024 | ~250 B/s (A6000) | GPU | Research |
 | StateSMix | 2.123 (1MB) | 700 B/s | CPU | Research |
-| cmix v19 | ~1.1 | ~1 KB/s | CPU | Research |
+| cmix v21 | 1.170 | 1.6 KB/s | CPU | Research (LTCB; corrected 2026-11-10) |
 | NNCP v2 | ~1.2 | ~10 KB/s | GPU | Research |
 | brotli-11 | 2.352 (10KB) | **300 KB/s** | CPU | Standard |
 

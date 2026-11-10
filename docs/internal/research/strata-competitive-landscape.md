@@ -2,6 +2,12 @@
 
 > R-087 — Investigación de proyectos "Strata" y ecosistema de compresión neural.
 > Fecha: 2026-11-09. Método: investigación web recursiva + análisis de código.
+>
+> **ERRATA 2026-11-10**: superado en la parte competitiva por `docs/internal/research/competitive-position-2026-11-10/REPORT.md`.
+> Correcciones: Nacrith tiene fallback CPU y maneja binarios (vía LZMA), no es "solo texto, requiere GPU"; su throughput
+> publicado es inconsistente (paper ~20-30 tok/s por worker vs README ~3.5 KB/s); cmix v21 = 1.170 bpb enwik8 a 1.6 KB/s
+> (no ~1.25); la estirpe Hutter 2026 (fx2-cmix-transformer, zmix, cmix-neif, ex-girlfriend) 0.73-0.78 bpb enwik9 en CPU
+> no estaba cubierta; L3TC 4.35 MB/s corresponde al modelo de 200K (1.404 bpb), el de 3.2M da 1.105 bpb a 2.5 MB/s (A100).
 
 ---
 
@@ -94,15 +100,16 @@ directa para Redukt.
 - **Qué hace**: SmolLM2-135M + context mixing ensemble + arithmetic coder 32-bit.
 - **BPB enwik8**: **0.9389** (Redukt: 0.9609, diferencia: 2.3%)
 - **Throughput**: 21-70 tok/s en GTX 1050 Ti (con llama.cpp).
-- **Limitaciones**: Solo texto, requiere GPU, Python.
+- **Limitaciones**: Python + llama.cpp; GPU recomendada (fallback CPU sin velocidad publicada); binarios delegados a
+  LZMA/gzip (variante NC06), no modelados. (Corregido 2026-11-10; antes: "solo texto, requiere GPU".)
 
 **Redukt vs Nacrith:**
 
 | Aspecto | Redukt | Nacrith |
 |---|---|---|
 | BPB enwik8 | 0.9609 | **0.9389** |
-| GPU requerida | No | **Sí** |
-| Tipos de archivo | Cualquiera | Solo texto |
+| GPU requerida | No | Recomendada (fallback CPU) |
+| Tipos de archivo | Cualquiera (modelados) | Texto modelado; binarios vía LZMA (NC06) |
 | Dependencias | Zero | PyTorch + llama.cpp |
 | Archivos estructurados | **0.216-0.446** | No evaluado |
 | Lenguaje | Rust (single binary) | Python |
@@ -121,7 +128,7 @@ directa para Redukt.
 |---|---|---|---|---|
 | ts_zip (Bellard) | ~1.11 | RWKV-4 169M | Sí | Solo texto, predecesor conceptual |
 | NNCP v2 (Bellard) | 1.19 | Transformer | Sí | Binario cerrado |
-| cmix-neif-2.0 | ~1.25 | CM neural | No | C++, GPL, muy lento |
+| cmix v21 | 1.170 | CM 2000+ modelos + LSTM | No | C++, 1.6 KB/s, 31 GB RAM (LTCB) |
 | FineZip | 1.024 | LLaMA-7B | Sí | 4h por corpus |
 | LLMZip | ~0.709* | LLaMA-7B | Sí | *Bound asintótico, 9.5 días |
 | DZip | >gzip | Dual RNN | Sí | Entrena online |
