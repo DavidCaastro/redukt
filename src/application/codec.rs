@@ -423,8 +423,8 @@ pub fn build_header(
 }
 
 /// Resolve the Mamba weight profile for compression from `--quant` (R-099).
-/// "auto"/unspecified -> F32 (deterministic default; RWKV-style timing-based
-/// auto-selection is unsafe here because the profile changes the bitstream).
+/// "auto"/unspecified -> `model_loader::AUTO_MAMBA_PROFILE` (Q8 since R-098: 3.3x faster,
+/// <+1.3% BPB). Deterministic: no timing-based selection, the profile is in the header.
 /// Non-Mamba backbones always report F32 (their quant is not in the profile).
 pub fn resolve_compress_profile(quant: &str, backbone: BackboneChoice) -> AzResult<WeightProfile> {
     if !matches!(backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
@@ -432,7 +432,7 @@ pub fn resolve_compress_profile(quant: &str, backbone: BackboneChoice) -> AzResu
     }
     let requested = WeightProfile::from_cli(quant)
         .map_err(|e| AzError::Parse { context: "--quant".into(), value: e })?;
-    Ok(requested.unwrap_or(WeightProfile::F32))
+    Ok(requested.unwrap_or(model_loader::AUTO_MAMBA_PROFILE))
 }
 
 /// Resolve the profile for decompression: the header is authoritative.
@@ -2652,8 +2652,8 @@ mod tests {
         let m = BackboneChoice::Mamba;
         assert_eq!(resolve_compress_profile("q8", m).unwrap(), WeightProfile::Q8);
         assert_eq!(resolve_compress_profile("f32", m).unwrap(), WeightProfile::F32);
-        assert_eq!(resolve_compress_profile("", m).unwrap(), WeightProfile::F32);
-        assert_eq!(resolve_compress_profile("auto", m).unwrap(), WeightProfile::F32);
+        assert_eq!(resolve_compress_profile("", m).unwrap(), model_loader::AUTO_MAMBA_PROFILE);
+        assert_eq!(resolve_compress_profile("auto", m).unwrap(), model_loader::AUTO_MAMBA_PROFILE);
         assert_eq!(resolve_compress_profile("q8", BackboneChoice::MambaByte).unwrap(), WeightProfile::Q8);
         assert!(resolve_compress_profile("q4", m).is_err());
         // RWKV keeps its own quantization path; never recorded as a profile.

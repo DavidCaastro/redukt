@@ -370,3 +370,51 @@ pub fn parse_quant_flag(s: &str) -> Option<QuantPolicy> {
         _ => None,
     }
 }
+
+/// Weight profile that `--quant auto` (or no `--quant`) selects for the Mamba family.
+/// Q8 weight-only (block 64) measures ~3.3x faster than F32 at +0.6%..+1.2% BPB,
+/// inside the +5% budget. `--quant f32` gives ~1% better BPB and is the recommended
+/// profile for batches of >=16 streams, where aggregate throughput is equal.
+pub const AUTO_MAMBA_PROFILE: WeightProfile = WeightProfile::Q8;
+
+/// Resolve the weight profile for COMPRESSION from `--quant` and the backbone.
+/// Mamba/MambaByte: explicit f32|q8, "auto"/empty -> `AUTO_MAMBA_PROFILE`.
+/// RWKV/Plugin: always F32 (their quantization is not part of the AZTH profile).
+/// Decompression never uses this: the profile comes from the archive header.
+pub fn resolve_auto_profile(quant: &str, backbone: BackboneChoice) -> Result<WeightProfile, String> {
+    if !matches!(backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte) {
+        return Ok(WeightProfile::F32);
+    }
+    Ok(WeightProfile::from_cli(quant)?.unwrap_or(AUTO_MAMBA_PROFILE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_maps_to_q8_for_mamba_family() {
+        for b in [BackboneChoice::Mamba, BackboneChoice::MambaByte] {
+            assert_eq!(resolve_auto_profile("auto", b), Ok(WeightProfile::Q8));
+            assert_eq!(resolve_auto_profile("", b), Ok(WeightProfile::Q8));
+            assert_eq!(resolve_auto_profile("AUTO", b), Ok(WeightProfile::Q8));
+        }
+    }
+
+    #[test]
+    fn explicit_quant_is_respected_for_mamba() {
+        let b = BackboneChoice::Mamba;
+        assert_eq!(resolve_auto_profile("f32", b), Ok(WeightProfile::F32));
+        assert_eq!(resolve_auto_profile("q8", b), Ok(WeightProfile::Q8));
+        assert!(resolve_auto_profile("q4", b).is_err());
+    }
+
+    #[test]
+    fn rwkv_and_plugin_are_always_f32() {
+        for b in [BackboneChoice::Rwkv, BackboneChoice::Plugin] {
+            for q in ["auto", "", "f32", "q8", "q4"] {
+                assert_eq!(resolve_auto_profile(q, b), Ok(WeightProfile::F32));
+            }
+        }
+    }
+}

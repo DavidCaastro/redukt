@@ -18,7 +18,7 @@ fn main() {
         "cm-eval" => application::codec::cmd_cm_eval(&args[2..]),
         "benchmark" => application::benchmark::cmd_benchmark(&args[2..]),
         "mamba-eval" => application::codec::cmd_mamba_eval(&args[2..]),
-        "api" => { application::api::cmd_api(&args[2..]); Ok(()) }
+        "api" => application::api::cmd_api(&args[2..]),
         "--help" | "-h" | "help" => { print_usage(); Ok(()) }
         other => {
             eprintln!("error: unknown command '{}'", other);
@@ -56,7 +56,7 @@ fn print_usage() {
     eprintln!("  redukt baseline    --input <FILE> [--weights <DIR>] [--bytes <N>] [--log <FILE>]");
     eprintln!("  redukt benchmark   --input <FILE_OR_DIR> --output <JSON> [options]");
     eprintln!("  redukt cm-eval     --output <FILE> [--weights <DIR>]");
-    eprintln!("  redukt api         [--host <ADDR>] [--port <PORT>] [--weights <DIR>]");
+    eprintln!("  redukt api         [--bind <ADDR>] [--port <PORT>] [--weights <DIR>] [--backbone <B>] [--quant <L>]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --input <FILE>       Input file path");
@@ -70,7 +70,15 @@ fn print_usage() {
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
     eprintln!("  --quant <LEVEL>      RWKV: f32, q8, q4, auto (default: auto)");
-    eprintln!("                       Mamba: f32 (default) or q8 (weight-only Q8 profile, AZTH v5)");
+    eprintln!("                       Mamba: auto|q8 (default: weight-only Q8, AZTH v5) or f32 (AZTH v4).");
+    eprintln!("                       f32 gives ~1% better BPB and is the recommended profile for batches of");
+    eprintln!("                       >=16 streams (--input-dir), where aggregate throughput is equal; q8 is ~3.3x");
+    eprintln!("                       faster for single files (+0.6..1.2% BPB). decompress ignores this flag:");
+    eprintln!("                       the profile always comes from the archive header (a conflicting value fails).");
+    eprintln!("  --backbone <B>       rwkv, mamba, mambabyte, auto (default: auto = route by content)");
+    eprintln!("                       api: also a comma list (e.g. mamba,rwkv) to load several models at start-up");
+    eprintln!("  --bind <ADDR>        api: listen address (default: 0.0.0.0; --host is an alias)");
+    eprintln!("  --port <PORT>        api: listen port (default: 8080)");
     eprintln!("  --streaming          Decompress: write output progressively (lower memory)");
     eprintln!("  --e8e9 <MODE>        E8E9 x86 preprocessing: auto (default), on, off");
     eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
