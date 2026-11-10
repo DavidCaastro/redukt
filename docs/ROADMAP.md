@@ -2583,7 +2583,7 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
 ### Tier 1: Palancas L1-L4 (sin entrenar, riesgo BPB cero o acotado)
 
 - R-098: Q8 weight-only para Mamba (L1)
-  - **Estado**: EN CURSO
+  - **Estado**: ✅ COMPLETADO (2026-11-10)
   - **Prioridad**: P0 — ×3-4 en bytes leídos por token, BPB ≈ 0 esperado
   - **Dependencia**: perfil numérico en header AZTH v5 (coordinar con R-104)
   - **Archivos**: `src/domain/tensor.rs`, `src/domain/quant.rs`, `src/infrastructure/mamba/model.rs`,
@@ -2592,14 +2592,25 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     en registro por el GEMV (sin dequantizar a buffer F32). Activaciones F32. Se mantiene F32 en `A_log`,
     `dt_proj`, `x_proj`, `conv1d` y normas.
   - **Subtareas**:
-    - [ ] Forense de R-064: qué se cuantizó en cada configuración (all-Q8 +16.6%, hybrid +16.2%, LM-head-only
+    - [x] Forense de R-064: qué se cuantizó en cada configuración (all-Q8 +16.6%, hybrid +16.2%, LM-head-only
       +14.5%) y si el kernel leía int8 (31-34 tok/s "sin mejora" sugiere que los bytes leídos no bajaron)
-    - [ ] Cuantización int8 por fila para `in_proj`, `out_proj` y LM head
-    - [ ] Mantener F32 en `A_log`, `dt_proj`, `x_proj`, `conv1d` y normas
-    - [ ] Kernel GEMV AVX2 que consume int8 en registro (activaciones F32)
-    - [ ] Perfil numérico en el header AZTH v5; el decoder rechaza perfiles desconocidos
-    - [ ] Medir bytes/token (516 MB → ~130 MB) y tok/s
-    - [ ] Roundtrip byte-identical + compatibilidad de decodificación v2/v3/v4
+    - [x] Cuantización int8 por fila para `in_proj`, `out_proj` y LM head
+    - [x] Mantener F32 en `A_log`, `dt_proj`, `x_proj`, `conv1d` y normas
+    - [x] Kernel GEMV AVX2 que consume int8 en registro (activaciones F32)
+    - [x] Perfil numérico en el header AZTH v5; el decoder rechaza perfiles desconocidos
+    - [x] Medir bytes/token (516 MB → ~130 MB) y tok/s
+    - [x] Roundtrip byte-identical + compatibilidad de decodificación v2/v3/v4
+  - **Resultados medidos** (2026-11-10, i5-1235U, maxperf, 10 KB; commit 7ba6373):
+    - Q8 weight-only **por bloque de 64** (escala f32 por bloque; int8 -> f32 en registro, activaciones F32) en
+      `in_proj`, `out_proj` y embedding/cabeza atada. F32 en `A_log`, `D`, `dt_proj`, `x_proj`, `conv1d` y normas.
+    - Bytes/token 516.5 MB -> 153.6 MB; 127 tok/s single en frío (111 en caliente), 3.3x.
+    - BPB F32 -> Q8: enwik8 0.9633 -> 0.9688 (+0.57%), facturae 0.3883 -> 0.3930 (+1.21%), apache 0.2164 -> 0.2188
+      (+1.11%). Todos < +2.5% (gate) y < +5% (presupuesto). Roundtrip + CRC OK.
+    - La escala **por fila** del diseño original falló (+7%); R-064 falló por W8A8 (activaciones cuantizadas) y escala
+      por fila en la cabeza atada. Por eso el diseño final usa bloque-64 y activaciones F32.
+    - AZTH v5: byte PROFILE tras FLAGS (bits 0-3: 0=F32, 1=Q8, 2=Q6 reservado); el encoder escribe v5 solo si el perfil
+      != F32 (F32 sigue siendo v4 byte-idéntico); el decoder acepta v2..v5 y falla antes de cargar el modelo si el
+      perfil no coincide. Ver `docs/api/FORMAT-SPEC.md`. `--quant auto` sigue eligiendo F32 para Mamba (decisión pendiente).
   - **Justificación**: el +16% de R-064 es anómalo. MambaQuant W8A8 en Mamba-130M pierde 0.8 puntos de accuracy
     media (44.7 → 43.9); Quamba W8A8 pierde 22% de perplejidad **porque cuantiza activaciones**. Weight-only por
     fila con activaciones F32 debe ser casi lossless. Si el delta vuelve a ser ~+15%, el defecto está en qué se
@@ -2610,7 +2621,7 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - Bytes/token ≈ 130 MB y tok/s > 100 en single-stream
 
 - R-099: Multihilo en in_proj/out_proj (L2)
-  - **Estado**: EN CURSO
+  - **Estado**: ✅ COMPLETADO (2026-11-10)
   - **Prioridad**: P0 — ×1.5-2 por stream, BPB 0
   - **Dependencia**: ninguna (se combina con R-098)
   - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
@@ -2618,18 +2629,23 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     Partición por filas: cada fila es un producto punto completo con el mismo orden de acumulación que en
     single-thread, por lo que el resultado es bit-idéntico. Techo ~38-40 GB/s → F32 ~75 tok/s.
   - **Subtareas**:
-    - [ ] Pool de hilos persistente (sin crear hilos por llamada)
-    - [ ] Partición por filas bit-idéntica al single-thread
-    - [ ] Work-stealing con balanceo P:E (≈3:1; Intel arXiv 2411.19542: +19% en GEMV con balanceo dinámico)
-    - [ ] Variable de entorno `REDUKT_THREADS=N` (por defecto, hilos físicos)
-    - [ ] Benchmark controlado A/B: 3+ rounds, multi-file
+    - [x] Pool de hilos persistente (sin crear hilos por llamada)
+    - [x] Partición por filas bit-idéntica al single-thread
+    - [x] Work-stealing con balanceo P:E (≈3:1; Intel arXiv 2411.19542: +19% en GEMV con balanceo dinámico)
+    - [x] Variable de entorno `REDUKT_THREADS=N` (por defecto, hilos físicos)
+    - [x] Benchmark controlado A/B: 3+ rounds, multi-file
+  - **Resultados medidos** (2026-11-10; commit 7ba6373): pool de hilos persistente (`par_pool.rs`, espera activa
+    100 us y luego park), partición por filas con work-stealing atómico por bloques (autobalancea P/E), `REDUKT_THREADS`
+    para fijar el número de hilos. F32 enwik8 10 KB: **39.0 -> 53.6 tok/s** single-stream (1.37x; por debajo del
+    objetivo 1.8x, pero se compone con el ahorro de bytes de R-098). `.azth` **byte-idéntico** al baseline
+    (sha 384c3042). Número de hilos y `target-cpu` no afectan a la salida.
   - **Nota**: huge pages (0-10%) y NTA prefetch (±0, R-065) ya medidos: no invertir tiempo ahí.
   - **Criterios de aceptación**:
     - `.azth` idéntico byte a byte al baseline single-thread en los archivos de referencia
     - tok/s ≥ 1.8× el baseline (34 tok/s → ≥ 61 tok/s)
 
 - R-100: Lockstep multi-stream, GEMV → GEMM (L3)
-  - **Estado**: PENDIENTE
+  - **Estado**: ✅ COMPLETADO (2026-11-10); queda abierto el tratamiento de archivos grandes
   - **Prioridad**: P0 — ×3-6 agregado, BPB 0; mayor palanca no explorada
   - **Dependencia**: R-098, R-099
   - **Archivos**: `src/domain/tensor.rs` (kernels GEMM), `src/infrastructure/mamba/model.rs`,
@@ -2639,14 +2655,31 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     ×N). Aplica a compresión **y** descompresión: cada stream conserva su estado SSM (~48 KB), su CM y su coder.
     Distinto de R-012 (N hilos independientes, cada uno con su GEMV completo).
   - **Subtareas**:
-    - [ ] Kernel GEMM AVX2 con N configurable; conserva por stream el orden de acumulación del GEMV
+    - [x] Kernel GEMM AVX2 con N configurable; conserva por stream el orden de acumulación del GEMV
       (lección de R-055: FP no asociativo rompe el roundtrip)
-    - [ ] Scheduler con continuous batching: un stream que termina se reemplaza por el siguiente archivo
-    - [ ] Compress y decompress en lockstep
-    - [ ] Verificar bit-identidad: batched-compress ↔ single-decompress y single-compress ↔ batched-decompress
-    - [ ] Curva tok/s agregados vs N ∈ {1, 2, 4, 8, 16, 32}
+    - [x] Scheduler con continuous batching: un stream que termina se reemplaza por el siguiente archivo
+    - [x] Compress y decompress en lockstep
+    - [x] Verificar bit-identidad: batched-compress ↔ single-decompress y single-compress ↔ batched-decompress
+    - [x] Curva tok/s agregados vs N ∈ {1, 2, 4, 8, 16, 32}
     - [ ] Archivos grandes: trocear en chunks independientes (~+1-3% BPB) o arranque caliente con el checkpoint
       de estado de R-063
+  - **Resultados medidos** (2026-11-10; 12 archivos x 10 KB, 1 ronda, portátil caliente; commit 365ef68):
+    `lockstep.rs` (continuous batching: hasta `--jobs N` archivos avanzan un token por paso compartiendo cada fetch de
+    pesos; fase A = CM + coder por stream en paralelo, fase B = `forward_multi`), kernels `gemv_f32_multi` /
+    `gemv_q8w_multi` con work-stealing por bloques de filas y orden de acumulación por stream conservado.
+    `--jobs N` = streams lockstep (default 8); `decompress --input-dir` nuevo; el batch antiguo (hilos independientes,
+    solo RWKV, sin preprocesado) se eliminó.
+
+    | N | 1 | 2 | 4 | 8 | 16 | 32 |
+    |---|---|---|---|---|---|---|
+    | Q8 agregado (tok/s) | 111 | 134 | 236 | 266 | 292 | 315 |
+    | F32 agregado (tok/s) | 57.7 | 96.5 | 154.6 | 206.5 | 262.6 | 322.1 |
+
+    - Compute-bound desde N~8 (130-190 GFLOPS, sin FMA): la meseta llega antes que el N=12-24 proyectado.
+    - Q8 sube 2.8x (111 -> 315) y F32 5.6x (57.7 -> 322.1) entre N=1 y N=32; a N=32 F32 iguala a Q8 en throughput, con
+      mejor BPB.
+    - ~4.9 MB de estado por stream. 192/192 `.azth` de lote **idénticos** (sha256) al single-file; roundtrips cruzados OK.
+    - Pendiente: archivos grandes (chunking o arranque caliente) y medida en estado térmico estable (varias rondas).
   - **Evidencia externa**: llama-batched-bench (3.8B Q4, CPU): b=1 25.7 → b=8 86.3 → b=32 147.7 t/s agregados
     (5.8×), meseta en 64. Cruce memory → compute-bound en DDR4 portátil con Q8: N ≈ 12-24.
   - **Criterios de aceptación**:
@@ -2655,7 +2688,7 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - BPB idéntico al baseline (Δ = 0)
 
 - R-101: Q6 weight-only (L4)
-  - **Estado**: PENDIENTE
+  - **Estado**: PENDIENTE (su gate, R-098, se superó: +0.57% a +1.21% BPB con Q8)
   - **Prioridad**: P1 — ×1.3 adicional; solo si R-098 pasa su gate
   - **Dependencia**: R-098 (gate superado)
   - **Archivos**: `src/domain/quant.rs`, `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
@@ -2674,41 +2707,52 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
 ### Tier 2: Bloqueante de producto y despliegue cloud
 
 - R-102: Despliegue GCP CPU
-  - **Estado**: EN CURSO
+  - **Estado**: ✅ verificado en local (2026-11-10); pendiente despliegue y coste en GCP real
   - **Prioridad**: P0 — necesario para ofrecer el producto
   - **Dependencia**: R-104 para clientes externos (determinismo); técnicamente independiente
   - **Archivos**: `Dockerfile`, `deploy/` (Cloud Build, Cloud Run, Cloud Batch), `infra/terraform/` (provider google)
   - **Subtareas**:
-    - [ ] Dockerfile CPU endurecido (multi-stage; pesos no horneados en la imagen)
+    - [x] Dockerfile CPU endurecido (multi-stage; pesos no horneados en la imagen)
     - [ ] Cloud Build → Artifact Registry
     - [ ] Cloud Run para el comando `api`
     - [ ] Cloud Batch para compresión masiva (`--input-dir` / `--output-dir`)
     - [ ] Pesos en GCS, verificados contra `weights/MANIFEST.md`
-    - [ ] Restringir a x86 con AVX2 (determinismo); excluir ARM
+    - [x] Restringir a x86 con AVX2 (determinismo); excluir ARM
     - [ ] Medir $/GB raw real y compararlo con la proyección
+  - **Resultados medidos** (2026-11-10; commit 86331ee; **verificado en local, NO desplegado en GCP real**):
+    imagen CPU `deploy/gcp/Dockerfile` (maxperf, x86-64-v3) de 136 MB; imagen CUDA 3.8 GB (362 MB con base `base`);
+    roundtrip compress/decompress dentro del contenedor idéntico; sharding de batch con reanudación; `/v1/status` OK.
+    Madrid no ofrece c3 ni GPU: c4-highcpu-32 allí y GPU en europe-west4. Detalle en `deploy/gcp/README.md`.
+    El `Dockerfile` raíz (rust:1.82, no compilaba) se eliminó: la fuente canónica es `deploy/gcp/Dockerfile`.
+    Pendiente (requiere proyecto GCP real): $/GB medido en Cloud Run / Cloud Batch.
   - **Criterios de aceptación**:
     - Roundtrip PASS (CRC-32 verified OK) en Cloud Run y en Cloud Batch
     - BPB enwik8 10KB medido en cloud y comparado con la referencia 0.9609 (la igualdad bit a bit se exige en R-104)
     - Coste $/GB raw medido y documentado
 
 - R-103: Despliegue CUDA
-  - **Estado**: EN CURSO
+  - **Estado**: ✅ compilado (2026-11-10); pendiente validación en GPU real
   - **Prioridad**: P1 — habilita el tier GPU
   - **Dependencia**: R-090 (plugin CUDA implementado; validación en T4 pendiente)
   - **Archivos**: `Dockerfile.cuda`, `plugins/redukt-gpu-cuda/`, `deploy/`
   - **Subtareas**:
-    - [ ] `Dockerfile.cuda` con nvcc para compilar `plugins/redukt-gpu-cuda`
-    - [ ] Conversión de pesos a `.rbin` (`scripts/convert-weights-gpu.py`)
+    - [x] `Dockerfile.cuda` con nvcc para compilar `plugins/redukt-gpu-cuda`
+    - [x] Conversión de pesos a `.rbin` (`scripts/convert-weights-gpu.py`)
     - [ ] GCE `g2` (L4) o `n1` + T4
     - [ ] Carga del plugin (dlopen, fallback automático a Mamba CPU)
     - [ ] Verificar si un `.azth` comprimido con GPU descomprime en CPU y viceversa (coordinar con R-104)
     - [ ] Medir tok/s reales vs la proyección de R-090 (~500 tok/s)
+  - **Resultados medidos** (2026-11-10; commit 822608a; **compilado, NO ejecutado en GPU aún**): FFI v2 aditiva
+    (`abi_version`, `batch_init`, `batch_reset`, `forward_batch` por slots; el host la activa solo si existen todos los
+    símbolos, v1 intacto), `.rbin` v2 con tokenizer declarado (vocab 256 = byte; 50280 = BPE GPT-NeoX), kernels batch
+    (pesos leídos una vez por paso, sin atomics), compilado para sm_75/sm_89 sin warnings. Doc:
+    `docs/api/PLUGIN-FFI-V2.md`. Pendiente: roundtrip, BPB y tok/s en T4/L4 reales (Kaggle/GCE).
   - **Criterios de aceptación**:
     - El plugin carga en GCE T4/L4 y el roundtrip pasa (CRC-32 verified OK)
     - tok/s y $/GB medidos en GCE, documentados
 
 - R-104: Determinismo cross-máquina — BLOQUEANTE de producto
-  - **Estado**: PENDIENTE
+  - **Estado**: EN CURSO (F1 — cierre de riesgos restantes)
   - **Prioridad**: P0 — ningún cliente externo antes de cerrarlo
   - **Dependencia**: ninguna; condiciona el diseño de R-098/R-099/R-100 y la entrega de R-102/R-103
   - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`, `src/domain/mixer.rs`,
@@ -2717,11 +2761,20 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     roundtrip comprimir en una máquina y descomprimir en otra **no está probado** (`determinism-audit.md`
     L157-165). Con aritmética en coma flotante, cualquier diferencia de orden de acumulación, ISA o función
     transcendental cambia la CDF y rompe la decodificación.
+  - **Resultados medidos** (2026-11-10; commit 9dd511d; evidencia `data/benchmark/results/determinism-cross-machine-2026-11-10.tsv`):
+    roundtrip Windows (MSVC) <-> Linux (glibc, x86-64-v3, contenedor) **idéntico 9/9** (enwik8/facturae/apache x Mamba F32,
+    Mamba Q8, RWKV, mismo sha256); el `enwik8.cpu.azth` de Kaggle (sha 384c3042) coincide bit a bit con el local.
+    La divergencia 0.9609 vs 0.9633 era una **referencia antigua**, no una diferencia de plataforma: la referencia F32
+    actual con `--bytes 10240` es 0.9633. Hilos y `target-cpu` no alteran la salida.
+    Riesgos restantes (F1, en curso): `f64::exp` de libm en `cdf_from_logits` y `cm_ensemble` (latente, ~1e-8..1e-6 por
+    token), orden SIMD vs escalar, y RWKV declara F32 en la cabecera aunque el loader cuantiza 73 tensores a Q8.
+    Plan: portar exp/log a Rust puro, bits de contrato numérico en PROFILE (ver `docs/api/FORMAT-SPEC.md`), nivel escalar con
+    el orden de lanes AVX2 y matriz CI multiplataforma.
   - **Opciones**: (A) orden de acumulación canónico, independiente de ISA y de hilos; (B) aritmética entera /
     punto fijo en las rutas que alimentan la CDF.
   - **Subtareas**:
-    - [ ] Reproducir: comprimir en la máquina A y descomprimir en la B (y viceversa); registrar el resultado
-    - [ ] Bisectar la divergencia: primer token cuyos logits/probabilidades difieren entre máquinas
+    - [x] Reproducir: comprimir en la máquina A y descomprimir en la B (y viceversa); registrar el resultado
+    - [x] Bisectar la divergencia: primer token cuyos logits/probabilidades difieren entre máquinas
     - [ ] Elegir opción (A o B) con coste medido en tok/s y BPB
     - [ ] Golden `.azth` versionado con SHA-256, verificado en ≥2 CPUs x86 distintas
     - [ ] Documentar el contrato de determinismo (coordinar con `docs/api/FORMAT-SPEC.md`)
@@ -2767,7 +2820,22 @@ R-103 (CUDA) ── depende de R-090
 R-105 (tier rápido) ── independiente (investigación)
 ```
 
-**Proyección de throughput combinado (CPU-only, Mamba-130M BPE, i5-1235U, 10 cores)**:
+**Throughput medido (2026-11-10, CPU-only, Mamba-130M BPE, i5-1235U, maxperf, 10 KB, portátil térmicamente limitado)**:
+
+| Escenario | tok/s single | tok/s agregados | Origen |
+|---|---|---|---|
+| Hoy (F32, in/out_proj en 1 hilo) | 34 | 34 | línea base |
+| + R-099 (F32 multihilo) | 53.6 | 53.6 | medido |
+| + R-098 (Q8 bloque-64) | 127 en frío / 111 en caliente | 111 | medido |
+| + R-100 (Q8, N=32) | 111 | **315** | medido |
+| + R-100 (F32, N=32) | 57.7 | **322.1** | medido |
+
+Aproximadamente **9x agregado** sobre los 34 tok/s de partida (315/34 = 9.3x). El coste estimado baja de ≈$47 a ≈$5 por GB
+raw (spot $0.022/vCPU-h; 315 tok/s ≈ 1.2 KB/s con la conversión de 3.8 B/token de la línea base de 130 B/s;
+cálculo manual con la fórmula de `scripts/breakeven.py`, no una medida de bytes/s). La meseta es compute-bound desde N~8
+(sin FMA). Siguiente palanca: FMA / kernels (nuevo perfil numérico) y GPU batch (R-103).
+
+**Proyección anterior (trazabilidad, 2026-11-09, NO medida)**:
 
 | Escenario | tok/s por stream | tok/s agregados | B/s agregados | Coste ≈ $/GB raw (spot) |
 |---|---|---|---|---|
@@ -2776,12 +2844,12 @@ R-105 (tier rápido) ── independiente (investigación)
 | + R-098 (con R-099) | ~250-300 | ~280 | ~1.1 KB/s | — |
 | + R-100 (N ≈ 16) | ~250 | ~700-1,500 | 3-6 KB/s | ≈$12 |
 
-**Nota**: estas cifras son proyecciones, no medidas; cada fila se reemplaza por la medida al cerrar su
-ítem. El coste solo se estima en los extremos (`scripts/breakeven.py`, ~0.5 KB/s por vCPU en el escenario final).
-Con ≈$12/GB el sistema sigue 30-200× por encima del umbral económico (18-100 KB/s por vCPU): R-105 (tier
-rápido) y/o GPU (R-103) son necesarios, no opcionales.
+Contraste: R-099 quedó en 53.6 (proyectado ~70), R-098 en 111-127 single (proyectado 250-300) y R-100 en 315 agregados
+(proyectado 700-1,500): el compute sin FMA, no el ancho de banda, es el límite. Con ≈$5/GB el sistema sigue por encima del
+umbral económico (18-100 KB/s por vCPU): R-105 (tier rápido) y/o GPU (R-103) siguen siendo necesarios.
 
-**Estado de la fase**: EN CURSO — R-098, R-099, R-102, R-103 en curso; R-100, R-101, R-104, R-105 pendientes.
+**Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
+R-103 ✅ (compilado, pendiente GPU real); R-104 EN CURSO (F1); R-101 y R-105 PENDIENTES.
 
 ---
 
@@ -3092,3 +3160,11 @@ rápido) y/o GPU (R-103) son necesarios, no opcionales.
 | 2026-11-09 | R-105 tier rápido (backbone 3-30M, referencia L3TC) — investigación; decisión con medida, no proyección |
 | 2026-11-09 | Economía: coste hoy ≈$47/GB raw (spot, 130 B/s); equilibrio a 7 años enwik8 en S3 Standard 18 KB/s por vCPU (scripts/breakeven.py) |
 | 2026-11-09 | docs: CLAUDE.md corregido (Q8 solo RWKV; 42.7 GB/s dual channel); speculative.rs y parallel_scan.rs anotados como borrados en 1dc6402 (nunca medidos) |
+| 2026-11-10 | 2565cef docs(fase-19): throughput audit by properties, refuted premises, R-098..R-105 |
+| 2026-11-10 | 86331ee feat(deploy): GCP reference deployment (Cloud Run, Cloud Batch, GCE CUDA) — R-102 verificado en local |
+| 2026-11-10 | 822608a feat(R-103): CUDA plugin batch FFI v2, BPE tokenizer in plugin backend — compilado, sin ejecutar en GPU |
+| 2026-11-10 | 7ba6373 perf(R-098,R-099): Q8 weight-only Mamba (block-64) + persistent thread pool — 39.0->53.6 tok/s F32; Q8 127 tok/s; BPB +0.57/+1.21/+1.11% |
+| 2026-11-10 | 9dd511d docs(R-104): cross-machine determinism verified Windows<->Linux<->Kaggle — 9/9 roundtrips idénticos; 0.9609 era referencia antigua |
+| 2026-11-10 | 365ef68 feat(R-100): lockstep multi-stream batching (GEMV->GEMM) for compress/decompress — Q8 111->315, F32 57.7->322.1 tok/s (N=32) |
+| 2026-11-10 | AZTH v5 (byte PROFILE); `--jobs N` = streams lockstep; `decompress --input-dir`; batch antiguo eliminado; Dockerfile raíz eliminado (canónico: deploy/gcp/Dockerfile) |
+| 2026-11-10 | Tests: 263 unit + 4 integración, 0 warnings. Referencia BPB F32 actual: enwik8 0.9633 (`--bytes 10240`) |

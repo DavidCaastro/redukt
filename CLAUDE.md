@@ -28,7 +28,7 @@ Bytes -> RWKV-7(pretrained) + TokenNgram + BiasHead -> AdaptiveMixer -> RangeEnc
 AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministic)
 ```
 
-### AZTH Format (v4 — current)
+### AZTH Format (v4 — F32 profile; v5 adds PROFILE, see below)
 ```
 MAGIC:       8B  "AZTH\x04\x00\x00\x00"
 TOTAL_BYTES: 4B  LE (original size, validated ≤ u32::MAX)
@@ -48,6 +48,18 @@ TOKEN_COUNT removed in v4 — decoder terminates by byte count.
 Decompression requires IDENTICAL model + weights.
 CRC-32 verified on decompression (v3+). Decoder accepts v2, v3, and v4.
 Max file size: ~4 GB (u32 TOTAL_BYTES). Validated at compression time.
+
+### AZTH Format v5 (weight profile — R-098)
+v4 plus one PROFILE byte right after FLAGS. Authoritative layout: `docs/api/FORMAT-SPEC.md`.
+```
+MAGIC:       8B  "AZTH\x05\x00\x00\x00"
+TOTAL_BYTES: 4B  LE
+FLAGS:       1B  (same bits as v4)
+PROFILE:     1B  (bits 0-3 quant: 0=F32, 1=Q8, 2=Q6 reserved; remaining bits: see FORMAT-SPEC.md)
+[optional blocks as v4]  STREAM  CRC32 (4B)
+```
+Header: 14B up to 35B. The encoder writes v5 only when the profile is not F32 (F32 still writes v4,
+byte-identical to before). The decoder accepts v2..v5 and rejects a conflicting `--quant`.
 
 ## Constraints
 
@@ -148,11 +160,14 @@ Provenance documented in `weights/MANIFEST.md`.
 1. `cargo build --release` — zero warnings
 2. `cargo test` — all pass (especially coder roundtrip tests)
 3. Roundtrip: compress -> decompress -> diff (byte-identical)
+3b. If lockstep/GEMM/threading code changed: batch `.azth` sha256 == single-file `.azth` sha256 on all reference files
 4. No new `unwrap()`/`panic!()` in codec or coder paths (see ROADMAP R-006)
 
 ### Before Any Release
 1. All quality gates above
 2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8 or F32 — difference <2%)
+2b. Cross-OS gate (R-104): same sha256 and byte-identical roundtrip Windows <-> Linux (x86-64-v3) on
+    enwik8/facturae/apache, F32 and Q8
 3. Full benchmark matches verified results (see below)
 4. NOTICE file up to date
 5. README badges current
@@ -173,7 +188,10 @@ Mamba runs F32 in the hot path (verified 2026-11-09); weight-only Q8 for Mamba i
 Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
 ### Reference BPB (enwik8 10KB)
-- **compress (Mamba+CM, AZTH v4)**: 0.9609 BPB [MEASURED: 2026-10-31]
+- **compress (Mamba+CM F32, AZTH v4, `--bytes 10240`)**: 0.9633 BPB [MEASURED: 2026-11-10] (current reference)
+- **compress (Mamba+CM Q8, AZTH v5)**: 0.9688 BPB (+0.57% vs F32) [MEASURED: 2026-11-10]
+- compress (Mamba+CM, older binary): 0.9609 BPB [MEASURED: 2026-10-31] — outdated reference, not a platform
+  divergence (R-104); the figures in the tables below were measured with that older binary
 - **compress (RWKV+CM, AZTH v4)**: 1.3312 BPB [MEASURED: 2026-10-30]
 - **cross-entropy (hybrid-eval, RWKV)**: 1.2813 BPB (Q8)
 - **coder efficiency**: 94.5% on enwik8 Mamba, 96.0% RWKV
@@ -188,7 +206,7 @@ Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`
 | dickens | **0.652** | 2.778 | **-77%** | Mamba |
 | enwik8 | **0.961** | 2.352 | **-59%** | Mamba |
 
-### Full Benchmark (12 files, dual-backbone, 10KB Q8) [MEASURED: 2026-10-31]
+### Full Benchmark (12 files, 10KB, Mamba F32 / RWKV Q8) [MEASURED: 2026-10-31]
 | File | BPB | Backbone | vs brotli | vs gzip |
 |---|---|---|---|---|
 | apache-access.log | 0.216 | Mamba | -54% | -60% |
@@ -221,14 +239,27 @@ Raw CSV: `data/benchmark/results/actual-compression-benchmark.csv`.
 Advantage grows with file size. RWKV throughput: 60-69 tok/s. Mamba: ~15-34 tok/s.
 Scale CSV: `data/benchmark/results/scale-test-complete.csv`.
 
-### Fase 19 — CPU Limit & Market Viability (2026-11-09)
+### Fase 19 — CPU Limit & Market Viability (2026-11-10, measured)
 Audit (`docs/internal/research/throughput-properties-audit.md`) refuted three premises behind "34 tok/s = DRAM ceiling":
-1. Mamba runs F32 in the hot path, not Q8 (R-064 PTQ was reverted; weight-only Q8 in progress, R-098).
-2. Dev laptop is 2×16 GB DDR4-2667 dual channel = 42.7 GB/s (~44 GB/s measured on identical laptops), not 21.3 GB/s;
-   34 tok/s × 516 MB/token = 17.5 GB/s = 41% of the bus.
-3. in_proj/out_proj (70% of bytes/token) run single-threaded (R-099 fixes this); the limit is per-core bandwidth.
-Economics: ~$47/GB raw today (spot, 130 B/s); 7-year break-even is 18-100 KB/s per vCPU (enwik8 to apache, S3 Standard).
-Open blocker: cross-machine determinism (R-104). Plan and gates: ROADMAP Fase 19 (R-098 → R-105).
+Mamba ran F32 in the hot path; the dev laptop is dual channel (42.7 GB/s, 41% used); in_proj/out_proj ran single-threaded.
+Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
+
+| Step | Result | Status |
+|---|---|---|
+| Baseline (F32, 1 thread) | 34 tok/s | — |
+| R-099 multithread F32 | 39.0 -> 53.6 tok/s single, `.azth` byte-identical (sha 384c3042) | done |
+| R-098 Q8 weight-only (block-64) | 127 tok/s cold (111 warm); bytes/token 516.5 -> 153.6 MB | done |
+| R-098 BPB F32 -> Q8 | enwik8 +0.57%, facturae +1.21%, apache +1.11% | within +5% budget |
+| R-100 lockstep, Q8 aggregate N=1/2/4/8/16/32 | 111/134/236/266/292/315 tok/s | done |
+| R-100 lockstep, F32 aggregate (same N) | 57.7/96.5/154.6/206.5/262.6/322.1 tok/s | done |
+
+R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
+to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.
+Aggregate gain ~9x over the 34 tok/s start; cost per raw GB estimated ~$47 -> ~$5 (spot). Next lever: FMA/kernels
+(new numeric profile) and GPU batch.
+Status: R-098/R-099/R-100 done; R-102 GCP verified locally (not deployed on real GCP); R-103 CUDA FFI v2 compiled
+(sm_75/sm_89), NOT yet run on a GPU; R-104 in progress (Windows<->Linux<->Kaggle roundtrips identical, libm `exp`
+and SIMD-vs-scalar risks remain); R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)
 
@@ -236,3 +267,6 @@ Open blocker: cross-machine determinism (R-104). Plan and gates: ROADMAP Fase 19
 - `taskkill //F //IM redukt.exe` kills all instances
 - Use `--bytes N` not `--limit N` (silently ignored)
 - `cargo build --profile maxperf` for benchmarks
+- `--jobs N` = N lockstep streams sharing every weight fetch (default 8; N=16-32 for large hosts);
+  `decompress --input-dir` is supported. The old independent-thread batch mode was removed.
+- `REDUKT_THREADS=N` overrides the persistent worker pool size (default: available parallelism)

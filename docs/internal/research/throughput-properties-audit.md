@@ -187,3 +187,33 @@ Plan de ejecución: Fase 19 del ROADMAP (`docs/ROADMAP.md`, sección
 - Snakes & Ladders (PMLR v262) · STree https://arxiv.org/abs/2505.14969 · Mamba Drafters https://arxiv.org/abs/2506.01206 · Spec-Bench
 - Precios: instances.vantage.sh, prices.azure.com, developers.cloudflare.com/r2/pricing · PetaGene (TechCrunch, NetApp) · AEAT calendario factura electrónica · SERES estudio 2024
 - Script de breakeven: `scripts/breakeven.py`
+
+## 7. Resultados (2026-11-10)
+
+Medido en i5-1235U (portátil térmicamente limitado), `maxperf`, 10 KB. Commits 7ba6373 (R-098/R-099) y 365ef68 (R-100).
+
+| Escenario | Proyectado (2026-11-09) | Medido | Nota |
+|---|---|---|---|
+| Línea base F32 (1 hilo en in/out_proj) | 34 tok/s | 34 tok/s | 516.5 MB/token |
+| + R-099 multihilo F32 | ~70 tok/s | 53.6 tok/s (partiendo de 39.0 en la medida A/B) | `.azth` byte-idéntico (sha 384c3042) |
+| + R-098 Q8 weight-only bloque-64 | ~250-300 tok/s | 127 tok/s en frío, 111 en caliente | 153.6 MB/token; BPB +0.57% / +1.21% / +1.11% |
+| + R-100 lockstep Q8, N=32 | ~700-1,500 tok/s agregados | 315 tok/s agregados | N=1/2/4/8/16/32 = 111/134/236/266/292/315 |
+| + R-100 lockstep F32, N=32 | — | 322.1 tok/s agregados | 57.7/96.5/154.6/206.5/262.6/322.1 |
+
+Conclusiones:
+- **~9x agregado** respecto a los 34 tok/s de partida (315/34 = 9.3x) en un portátil térmicamente limitado; muy por debajo
+  de la proyección de 20-40x del §6(a).
+- La premisa refutada se confirma en lo cualitativo (los 34 tok/s no eran un techo de DRAM), pero el nuevo límite es el
+  **cómputo**: compute-bound desde N~8 con 130-190 GFLOPS sin FMA, antes del cruce N=12-24 previsto. A N>=16 F32 iguala a Q8
+  en throughput, así que el ancho de banda ya no es la palanca.
+- Escala por fila falló (+7% BPB); el diseño final es bloque-64 con activaciones F32. R-064 falló por W8A8 y escala por fila
+  en la cabeza atada.
+- **Siguiente palanca**: FMA/kernels de cómputo (nuevo perfil numérico, coordinado con R-104) y GPU batch (R-103,
+  compilado pero sin ejecutar en GPU real). R-101 (Q6) aporta poco mientras el límite sea cómputo.
+- **Coste**: de ≈$47 a ≈$5 por GB raw (spot $0.022/vCPU-h). Cálculo manual con la fórmula de `scripts/breakeven.py`
+  (C = P_cpu * 1e9 / (3600 * R)) escalando los 130 B/s de la línea base por 315/34: R ≈ 1.2 KB/s -> $5.07; con F32 N=32
+  (322.1 tok/s) $4.96. Es una **estimación**: no se midió bytes/s ni se ejecutó el script sobre esta medida, y la
+  conversión tok/s -> B/s usa los 3.8 B/token de la línea base.
+- El umbral económico (18-100 KB/s por vCPU) sigue ~15-80x por encima del throughput actual (1.2 KB/s por máquina): R-105
+  (tier rápido) sigue siendo necesario.
+- Determinismo (R-104): roundtrip Windows<->Linux<->Kaggle idéntico 9/9; pendiente `f64::exp` de libm y SIMD vs escalar.

@@ -53,12 +53,37 @@ All BPB = `compressed_size × 8 / original_size` (actual file output, not cross-
 | dickens | Text/literature | **1.83** | 2.78 | **-34%** |
 
 Wins 12/18 files. Loses on high-entropy data (medical imaging, astronomy, databases, executables).
-Throughput: ~47 tok/s Q8 SIMD (~60 B/s mean). Batch/archival workloads.
+Throughput (Mamba backbone, i5-1235U laptop, measured 2026-11-10): 53.6 tok/s single-stream F32, 111-127 tok/s Q8
+weight-only, and 315-322 tok/s aggregate with lockstep batching (N=32 streams) -- about 9x the 34 tok/s of the
+previous release. Batch/archival workloads.
 Full results: `data/benchmark/results/actual-compression-benchmark.csv`.
+
+## Batch (lockstep)
+
+`--jobs N` runs N files as lockstep streams: every step advances one token in each stream and shares a single fetch of
+the model weights (GEMV becomes GEMM), so aggregate throughput grows with N until the CPU is compute-bound (N~8-32).
+Each `.azth` is byte-identical to the single-file output regardless of N.
+
+```bash
+./target/release/redukt compress --input-dir logs/ --output-dir out/ --jobs 16
+./target/release/redukt decompress --input-dir out/ --output-dir restored/ --jobs 16
+```
+
+Measured aggregate throughput (12 files x 10 KB, Q8, laptop): N=1 111, N=8 266, N=32 315 tok/s (F32: 58 -> 322 tok/s).
+`--quant q8` selects the weight-only Q8 profile (+0.6% to +1.2% BPB, written as AZTH v5). `REDUKT_THREADS=N` sets the
+worker pool size.
+
+## Deploy (GCP)
+
+Reference deployment for Cloud Run (API), Cloud Batch (bulk compression) and GCE with GPU:
+[`deploy/gcp/README.md`](deploy/gcp/README.md). Build the CPU image from the repo root with
+`docker build -f deploy/gcp/Dockerfile -t redukt:cpu .` (the former root `Dockerfile` was removed; the canonical one is
+`deploy/gcp/Dockerfile`). Verified locally (not yet on a live GCP project). The CUDA plugin batch interface (not yet run
+on a real GPU) is documented in [`docs/api/PLUGIN-FFI-V2.md`](docs/api/PLUGIN-FFI-V2.md).
 
 ## Requirements
 
-- Rust 1.70+
+- Rust 1.89+
 - RWKV-7 0.1B weights (~400 MB) — run `bash scripts/download-weights.sh`
 - 4+ GB RAM
 
@@ -96,7 +121,8 @@ cargo test --release --test roundtrip -- --ignored
 
 ## Format
 
-Output format: AZTH v4 (`.azth`). See `docs/api/FORMAT-SPEC.md` for full specification.
+Output format: AZTH v4 (F32 profile) or v5 (adds a weight-profile byte, written for Q8). The decoder accepts v2-v5.
+See `docs/api/FORMAT-SPEC.md` for full specification.
 Includes CRC-32 integrity verification, hyperparameter validation, and u32 overflow protection.
 
 ## License

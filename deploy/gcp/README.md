@@ -37,6 +37,14 @@ depender de ellos y se actualizará cuando se cierren.
 | El gobernador de hardware (RAM/batería) es no-op en Linux. | `ram_monitor.rs`, `governor.rs` | No hace falta `--no-governor` en contenedores. |
 | `maxperf` usa `panic = "abort"`; el batch hace `h.join()` esperando poder sobrevivir a un panic de hilo. | `Cargo.toml`, `codec.rs` | Un panic en un fichero aborta toda la tarea; los reintentos de Batch + "saltar existentes" lo cubren. |
 
+> **Actualización 2026-11-10.** `--jobs N` ahora significa **N streams lockstep** (cada paso avanza un token en cada
+> archivo compartiendo la lectura de pesos), ya no hilos independientes; el batch antiguo (solo RWKV, sin preprocesado)
+> se eliminó y existe `decompress --input-dir`. En `c4-highcpu-32` usar **N = 16-32**; con N >= 16 conviene **F32**
+> (mismo throughput agregado que Q8, 322 vs 315 tok/s en el portátil de desarrollo, y mejor BPB). `REDUKT_THREADS`
+> fija el tamaño del pool de hilos. Las filas de la tabla anterior sobre "batch solo RWKV", el `Dockerfile` raíz y el
+> `PluginTokenizer` byte-level describen el estado del 2026-11-09: el `Dockerfile` raíz se eliminó y el plugin ya
+> admite `.rbin` v2 con tokenizer BPE (ver más abajo).
+
 ## 1. Archivos
 
 ```
@@ -177,6 +185,19 @@ Disponibilidad comprobada con `gcloud compute machine-types|accelerator-types li
   `--cudart` por defecto es `static`, así que la imagen puede usar la variante `--build-arg RUNTIME_FLAVOR=base` (362 MB frente a 3.79 GB con `runtime`; construye y arranca, sin GPU no se pudo probar la inferencia).
 - Coste de oportunidad: con la proyección del README del plugin (~500 tok/s byte-level en T4, **no medida** en GPU real) 1 GB tardaría ~556 h de GPU
   (L4 spot a $0.17-0.42/h: ~$94-233) frente a ~$47 por 1 GB en un stream de CPU spot a 130 B/s. El GPU solo gana con batching multi-stream o un modelo mejor.
+
+### Pesos para el plugin CUDA (.rbin v2)
+python scripts/convert-weights-gpu.py --input weights/mamba-130m/model.safetensors \
+    --output weights/mamba-130m/model.rbin        # v2, tokenizer=bpe (auto por vocab 50280)
+- La cabecera v2 declara el tokenizer: vocab 256 -> byte-level; 50280 -> BPE GPT-NeoX.
+  El conversor copia tokenizer.json junto al .rbin (fallback: weights/mamba-130m).
+- Montar ese directorio y usar: compress --backbone plugin --weights /weights/mamba-130m
+  (decompress detecta el backbone por la cabecera AZTH, pero también necesita --weights).
+- libredukt_gpu.so debe estar junto al binario redukt (/usr/local/bin en la imagen).
+- Batch multi-stream (FFI v2, docs/api/PLUGIN-FFI-V2.md): el plugin expone
+  redukt_backend_forward_batch; el host lo detecta solo si existe (v1 sin cambios).
+- Determinismo: descomprimir con el mismo build del plugin y la misma arquitectura de GPU
+  (T4 = sm_75 o L4 = sm_89); GPU y CPU no son intercambiables bit a bit. Sin validar aún en GPU.
 
 ## 6. Costes orientativos (us-east, 2026-11; cifras facilitadas, el usuario debe verificarlas en su región)
 
