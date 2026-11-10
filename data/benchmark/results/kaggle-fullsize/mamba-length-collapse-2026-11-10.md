@@ -47,6 +47,10 @@ Consequences:
 |---|---|---|---|---|
 | enwik8 100 KB | 1.6327 bpb (20,899 B) | 0.9968 (12,759 B) | **0.9950** (12,736 B) | 10 KB window: 0.9688; brotli-11 whole 100 KB: 2.351 |
 
+Period sweep (same file, Q8, R-108 header build): 1024 -> 1.0259, 2048 -> 1.0070, **4096 -> 0.9951**, 8192 -> 0.9969.
+Too frequent resets throw away useful context; 8192 is close but its second reset lands at 16,384 tokens, just before
+the observed collapse zone (~17.5K), so 4096 is the default.
+
 Default output with the variable unset is byte-identical to before (enwik8 10 KB Q8 sha256 3779ba13…, as on
 Kaggle). Roundtrip with `REDUKT_MAMBA_RESET_EVERY=4096` on both sides: CRC-32 verified, byte-identical.
 The reset keeps the whole-file figure within +2.7% of the 10 KB figure instead of +68%; the cost is nothing

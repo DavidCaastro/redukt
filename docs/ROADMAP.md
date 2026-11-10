@@ -2871,7 +2871,8 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - [x] Flag experimental por variable de entorno (sustituido por el campo de cabecera)
     - [x] Periodo de reinicio en la cabecera AZTH (PROFILE bit 6 + RESET_LOG2; pre-R-108 rechaza por bit reservado)
     - [x] Verificado: enwik8 100 KB 0.9951 con decompress guiado por cabecera; `--reset-every 0` = salida anterior
-    - [ ] Barrido del periodo (1024-8192) y re-warm opcional (re-alimentar K tokens tras el reinicio)
+    - [x] Barrido del periodo en enwik8 100 KB Q8: 1024 1.0259, 2048 1.0070, **4096 0.9951**, 8192 0.9969 -> 4096 se
+          confirma como default; re-warm opcional (re-alimentar K tokens tras el reinicio) queda como idea
     - [ ] Repetir la curva de escala (Kaggle) y los 12 archivos con el periodo por defecto; actualizar tablas
   - **Criterio de aceptación**: bpb en ficheros completos <= bpb a 10 KB + 3 % en los 12 archivos; batch == single
 - R-109: Lockstep con plugin GPU vía slots FFI v2
