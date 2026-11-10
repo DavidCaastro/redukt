@@ -3278,3 +3278,4 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | R-108 COMPLETADO: periodo de reinicio del estado Mamba en AZTH v5 (PROFILE bit 6 + RESET_LOG2, default 4096); `--reset-every`; enwik8 100 KB 0.9951; referencias 10 KB +1 B (F32 0.9648, Q8 0.9695); golden 33 B |
 | 2026-11-10 | R-109 implementado: lockstep del plugin GPU sobre slots FFI v2 (`prepare_streams`, `SlotPool`, `forward_multi` -> `forward_batch`); stream único sigue por v1; 304 tests; validación T4 pendiente (kernel v3) |
 | 2026-11-10 | R-109 VALIDADO en T4 (run-c-r109): plugin lockstep jobs=12 bpb 0.7481 (antes 1.9492), batch == single 3/3, 1,401 B/s agregados; el plugin pasa a aplicar el periodo de reinicio R-108 de la cabecera |
+| 2026-11-10 | run-c-r109b (T4, 56570a1): plugin lockstep con periodo R-108 de cabecera -> bpb 0.7529 (CPU F32 0.7531), batch == single 3/3, 1,376 B/s agregados; R-108 y R-109 cerrados en ambos tiers |

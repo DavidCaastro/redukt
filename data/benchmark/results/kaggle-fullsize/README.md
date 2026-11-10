@@ -82,13 +82,15 @@ Phase C re-run with the FFI v2 slot lockstep (`run-c-r109/fullsize-results.csv`)
 |---|---|---|---|---|
 | T4 plugin, before R-109 (run-a) | jobs=12, sequential v1 fallback | 1.9492 | 336.6 | streams interleaved one state |
 | **T4 plugin, R-109** | jobs=12, FFI v2 slots | **0.7481** | **1,401.5** (87.7 s) | **batch == single sha256 3/3 PASS** |
+| **T4 plugin, R-109 + header reset (run-c-r109b, 56570a1)** | jobs=12, FFI v2 slots, RESET_LOG2 12 | **0.7529** | **1,375.7** (89.3 s) | **batch == single 3/3 PASS** |
 | CPU 4 vCPU, F32 | jobs=12 | 0.7531 | 245.6 | — |
 | CPU 4 vCPU, Q8 | jobs=12 | 0.7551 | 283.1 | — |
 
 The plugin lockstep is now ~5x the 4-vCPU CPU aggregate on the same machine and ~4.2x its own single-stream
 CLI rate (336 B/s). CPU bpb moved 0.7503 -> 0.7551 (Q8) because the R-108 default reset (4096 tokens) fires inside
-the 10 KB log slices (~2 B/token -> ~5K tokens); enwik8 10 KB (2.7K tokens) is unaffected. In this run the plugin
-ignored the period (archives written with reset 0); the follow-up commit makes the plugin follow the header too.
+the 10 KB log slices (~2 B/token -> ~5K tokens); enwik8 10 KB (2.7K tokens) is unaffected. In run-c-r109 the plugin
+ignored the period (archives written with reset 0, bpb 0.7481); with 56570a1 it follows the header and lands at
+0.7529, i.e. the CPU F32 figure (0.7531) within 3 bytes of GPU numerics (run-c-r109b).
 
 ## Defect found (run-a): `--jobs N --backbone plugin` corrupted predictions
 

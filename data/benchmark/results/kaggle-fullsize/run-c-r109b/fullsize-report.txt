@@ -1,0 +1,104 @@
+deadline 9.0 h; ref 56570a1; phases ['C']
+
+========================================================================
+  1. Build redukt (maxperf) + CUDA plugin   [t+0.0 min]
+========================================================================
+  cargo build maxperf: 25 s
+
+========================================================================
+  2. mamba-130m weights -> model.rbin (plugin)   [t+0.8 min]
+========================================================================
+
+========================================================================
+  3. Data: enwik8 prefixes + industry files (regenerated, sha256-checked)   [t+0.9 min]
+========================================================================
+  facturae-batch.xml           38,371 B  sha256 == local copy: NO
+  ubl-invoice-batch.xml        81,558 B  sha256 == local copy: NO
+  apache-access.log           171,239 B  sha256 == local copy: YES
+  linux-syslog.log            216,485 B  sha256 == local copy: YES
+  openssh-auth.log            225,216 B  sha256 == local copy: YES
+  slices10k: 12 files
+  classical tools: {'gzip': True, 'zstd': True, 'xz': True, 'brotli': True} (apt rc=0)
+
+========================================================================
+  4. Classical codecs on whole files + enwik8 prefixes   [t+1.2 min]
+========================================================================
+  [classical] enwik8[10240]                gzip-9         bpb=2.9883  comp    3.77 MB/s  decomp      4.3 MB/s  roundtrip OK
+  [classical] enwik8[10240]                zstd-19        bpb=2.9406  comp    1.29 MB/s  decomp      3.3 MB/s  roundtrip OK
+  [classical] enwik8[10240]                zstd-22-ultra-long bpb=2.9406  comp    1.24 MB/s  decomp      3.2 MB/s  roundtrip OK
+  [classical] enwik8[10240]                xz-9e          bpb=2.9312  comp    0.42 MB/s  decomp      3.2 MB/s  roundtrip OK
+  [classical] enwik8[10240]                brotli-11-w24  bpb=2.3625  comp    0.37 MB/s  decomp      3.5 MB/s  roundtrip OK
+  [classical] enwik8[51200]                gzip-9         bpb=2.9900  comp    8.42 MB/s  decomp     18.1 MB/s  roundtrip OK
+  [classical] enwik8[51200]                zstd-19        bpb=2.8866  comp    1.86 MB/s  decomp     14.0 MB/s  roundtrip OK
+  [classical] enwik8[51200]                zstd-22-ultra-long bpb=2.8866  comp    1.83 MB/s  decomp     14.9 MB/s  roundtrip OK
+  [classical] enwik8[51200]                xz-9e          bpb=2.8338  comp    0.89 MB/s  decomp     11.4 MB/s  roundtrip OK
+  [classical] enwik8[51200]                brotli-11-w24  bpb=2.4528  comp    0.45 MB/s  decomp     14.5 MB/s  roundtrip OK
+  [classical] enwik8[102400]               gzip-9         bpb=2.8854  comp    9.81 MB/s  decomp     29.2 MB/s  roundtrip OK
+  [classical] enwik8[102400]               zstd-19        bpb=2.6963  comp    1.70 MB/s  decomp     25.6 MB/s  roundtrip OK
+  [classical] enwik8[102400]               zstd-22-ultra-long bpb=2.6963  comp    1.70 MB/s  decomp     27.5 MB/s  roundtrip OK
+  [classical] enwik8[102400]               xz-9e          bpb=2.6387  comp    1.22 MB/s  decomp     18.7 MB/s  roundtrip OK
+  [classical] enwik8[102400]               brotli-11-w24  bpb=2.3511  comp    0.44 MB/s  decomp     27.7 MB/s  roundtrip OK
+  [classical] enwik8[512000]               gzip-9         bpb=2.8136  comp   12.32 MB/s  decomp     71.5 MB/s  roundtrip OK
+  [classical] enwik8[512000]               zstd-19        bpb=2.4536  comp    2.17 MB/s  decomp     95.9 MB/s  roundtrip OK
+  [classical] enwik8[512000]               zstd-22-ultra-long bpb=2.4537  comp    2.17 MB/s  decomp     96.2 MB/s  roundtrip OK
+  [classical] enwik8[512000]               xz-9e          bpb=2.3741  comp    1.81 MB/s  decomp     35.7 MB/s  roundtrip OK
+  [classical] enwik8[512000]               brotli-11-w24  bpb=2.2532  comp    0.38 MB/s  decomp     84.5 MB/s  roundtrip OK
+  [classical] enwik8[1048576]              gzip-9         bpb=2.8274  comp   12.75 MB/s  decomp     92.3 MB/s  roundtrip OK
+  [classical] enwik8[1048576]              zstd-19        bpb=2.3853  comp    2.34 MB/s  decomp    139.4 MB/s  roundtrip OK
+  [classical] enwik8[1048576]              zstd-22-ultra-long bpb=2.3852  comp    2.29 MB/s  decomp    139.0 MB/s  roundtrip OK
+  [classical] enwik8[1048576]              xz-9e          bpb=2.3101  comp    1.99 MB/s  decomp     40.5 MB/s  roundtrip OK
+  [classical] enwik8[1048576]              brotli-11-w24  bpb=2.2358  comp    0.36 MB/s  decomp    122.6 MB/s  roundtrip OK
+  [classical] enwik8[2097152]              gzip-9         bpb=2.8928  comp   12.51 MB/s  decomp     96.8 MB/s  roundtrip OK
+  [classical] enwik8[2097152]              zstd-19        bpb=2.3578  comp    2.06 MB/s  decomp    191.1 MB/s  roundtrip OK
+  [classical] enwik8[2097152]              zstd-22-ultra-long bpb=2.3577  comp    2.08 MB/s  decomp    193.3 MB/s  roundtrip OK
+  [classical] enwik8[2097152]              xz-9e          bpb=2.2885  comp    1.89 MB/s  decomp     42.8 MB/s  roundtrip OK
+  [classical] enwik8[2097152]              brotli-11-w24  bpb=2.2420  comp    0.36 MB/s  decomp    139.6 MB/s  roundtrip OK
+  [classical] enwik8[4194304]              gzip-9         bpb=2.9144  comp   11.44 MB/s  decomp     97.7 MB/s  roundtrip OK
+  [classical] enwik8[4194304]              zstd-19        bpb=2.3149  comp    1.84 MB/s  decomp    241.2 MB/s  roundtrip OK
+  [classical] enwik8[4194304]              zstd-22-ultra-long bpb=2.3149  comp    1.84 MB/s  decomp    226.5 MB/s  roundtrip OK
+  [classical] enwik8[4194304]              xz-9e          bpb=2.2527  comp    1.79 MB/s  decomp     46.4 MB/s  roundtrip OK
+  [classical] enwik8[4194304]              brotli-11-w24  bpb=2.2252  comp    0.35 MB/s  decomp    158.6 MB/s  roundtrip OK
+  [classical] enwik8[100000000]            gzip-9         bpb=2.9156  comp   12.31 MB/s  decomp    112.4 MB/s  roundtrip OK
+  [classical] enwik8[100000000]            zstd-19        bpb=2.1564  comp    1.29 MB/s  decomp    357.8 MB/s  roundtrip OK
+  [classical] enwik8[100000000]            zstd-22-ultra-long bpb=2.0267  comp    0.97 MB/s  decomp    271.6 MB/s  roundtrip OK
+  [classical] enwik8[100000000]            xz-9e          bpb=1.9865  comp    0.97 MB/s  decomp     56.5 MB/s  roundtrip OK
+  [classical] enwik8[100000000]            brotli-11-w24  bpb=2.0594  comp    0.32 MB/s  decomp    245.6 MB/s  roundtrip OK
+  [classical] facturae-batch.xml           gzip-9         bpb=0.5696  comp   10.59 MB/s  decomp     16.7 MB/s  roundtrip OK
+  [classical] facturae-batch.xml           zstd-19        bpb=0.4739  comp    0.80 MB/s  decomp     11.1 MB/s  roundtrip OK
+  [classical] facturae-batch.xml           zstd-22-ultra-long bpb=0.4679  comp    0.61 MB/s  decomp     13.0 MB/s  roundtrip OK
+  [classical] facturae-batch.xml           xz-9e          bpb=0.4428  comp    1.63 MB/s  decomp     15.5 MB/s  roundtrip OK
+  [classical] facturae-batch.xml           brotli-11-w24  bpb=0.4078  comp    0.30 MB/s  decomp     14.4 MB/s  roundtrip OK
+  [classical] ubl-invoice-batch.xml        gzip-9         bpb=0.3883  comp   20.60 MB/s  decomp     32.4 MB/s  roundtrip OK
+  [classical] ubl-invoice-batch.xml        zstd-19        bpb=0.2938  comp    0.91 MB/s  decomp     25.9 MB/s  roundtrip OK
+  [classical] ubl-invoice-batch.xml        zstd-22-ultra-long bpb=0.2827  comp    0.46 MB/s  decomp     26.9 MB/s  roundtrip OK
+  [classical] ubl-invoice-batch.xml        xz-9e          bpb=0.2809  comp    2.08 MB/s  decomp     30.6 MB/s  roundtrip OK
+  [classical] ubl-invoice-batch.xml        brotli-11-w24  bpb=0.2519  comp    0.38 MB/s  decomp     25.8 MB/s  roundtrip OK
+  [classical] apache-access.log            gzip-9         bpb=0.4298  comp   19.55 MB/s  decomp     58.4 MB/s  roundtrip OK
+  [classical] apache-access.log            zstd-19        bpb=0.3370  comp    0.81 MB/s  decomp     53.1 MB/s  roundtrip OK
+  [classical] apache-access.log            zstd-22-ultra-long bpb=0.3375  comp    0.67 MB/s  decomp     43.2 MB/s  roundtrip OK
+  [classical] apache-access.log            xz-9e          bpb=0.3151  comp    1.38 MB/s  decomp     51.5 MB/s  roundtrip OK
+  [classical] apache-access.log            brotli-11-w24  bpb=0.3132  comp    0.41 MB/s  decomp     51.1 MB/s  roundtrip OK
+  [classical] linux-syslog.log             gzip-9         bpb=0.5421  comp   21.51 MB/s  decomp     68.5 MB/s  roundtrip OK
+  [classical] linux-syslog.log             zstd-19        bpb=0.4204  comp    1.08 MB/s  decomp     60.0 MB/s  roundtrip OK
+  [classical] linux-syslog.log             zstd-22-ultra-long bpb=0.4204  comp    1.09 MB/s  decomp     62.0 MB/s  roundtrip OK
+  [classical] linux-syslog.log             xz-9e          bpb=0.3697  comp    2.18 MB/s  decomp     51.6 MB/s  roundtrip OK
+  [classical] linux-syslog.log             brotli-11-w24  bpb=0.3789  comp    0.35 MB/s  decomp     57.1 MB/s  roundtrip OK
+  [classical] openssh-auth.log             gzip-9         bpb=0.5532  comp   19.78 MB/s  decomp     67.1 MB/s  roundtrip OK
+  [classical] openssh-auth.log             zstd-19        bpb=0.3857  comp    1.08 MB/s  decomp     59.7 MB/s  roundtrip OK
+  [classical] openssh-auth.log             zstd-22-ultra-long bpb=0.3857  comp    1.05 MB/s  decomp     58.6 MB/s  roundtrip OK
+  [classical] openssh-auth.log             xz-9e          bpb=0.3460  comp    2.04 MB/s  decomp     62.5 MB/s  roundtrip OK
+  [classical] openssh-auth.log             brotli-11-w24  bpb=0.3592  comp    0.39 MB/s  decomp     62.4 MB/s  roundtrip OK
+
+========================================================================
+  C. Lockstep 12 x 10 KB — CPU Q8 (per-vCPU throughput) and plugin (sequential fallback)   [t+12.1 min]
+========================================================================
+  [C-lockstep] slices10k[12]                   122,880 B  redukt-CPU4    mamba q8 jobs=4        bpb=0.7551     523.3 s       234.8 B/s  aggregate incl. model load
+  [C-lockstep] slices10k[12]                   122,880 B  redukt-CPU4    mamba q8 jobs=12       bpb=0.7551     477.6 s       257.3 B/s  aggregate incl. model load
+  [C-lockstep] slices10k[12]                   122,880 B  redukt-CPU4    mamba f32 jobs=12      bpb=0.7531     519.6 s       236.5 B/s  aggregate incl. model load
+  [C-lockstep] slices10k[12]                   122,880 B  redukt-T4      plugin f32 jobs=12     bpb=0.7529      89.3 s      1375.7 B/s  aggregate incl. model load; batch==single 3/3 (PASS)
+
+========================================================================
+  D. Economic gate (Nov-2026 prices; formula: $/GB = price_h * 1e9 / (B/s * 3600))   [t+40.5 min]
+========================================================================
+  CPU lockstep best aggregate 257 B/s on 4 vCPU = 64 B/s per vCPU -> $60.5/GB (c7i spot)
+  T4 single-stream best 0 B/s -> $inf/GB (g4dn spot); FFI batch N=128 would be ~7.4x faster (1,117 vs 151 tok/s, 2026-11-10)
