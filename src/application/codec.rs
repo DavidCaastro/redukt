@@ -10,20 +10,25 @@ use crate::domain::crc32;
 use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
 use crate::domain::backbone::{Backbone, BackendTokenizer, BackboneChoice, WeightProfile};
+use crate::domain::fmath::NumericContract;
 
 /// v3 magic — kept for backward-compat parsing and tests.
 #[cfg(test)]
 const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
 pub const MAGIC_V4: &[u8; 8] = b"AZTH\x04\x00\x00\x00";
-/// v5 (R-099): v4 + 1-byte PROFILE after FLAGS. Written only when profile != F32.
+/// v5 (R-099): v4 + 1-byte PROFILE after FLAGS. Always written since R-104 F1
+/// (PROFILE carries the numeric contract); v4 is read-only (legacy contract).
 pub const MAGIC_V5: &[u8; 8] = b"AZTH\x05\x00\x00\x00";
 pub const HEADER_SIZE: usize = 28; // v2/v3: 8 magic + 4 total_bytes + 4 token_count + 12 hp
 pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
 pub const V5_HEADER_BASE: usize = 14; // v5: v4 base + 1 profile
 /// v5 PROFILE byte: bits 0-3 = weight quant code (0=F32, 1=Q8, 2=Q6 reserved),
-/// bits 4-7 reserved (must be 0).
+/// bits 4-5 = NUMERIC_CONTRACT (0=legacy libm, 1=fmath-v1, 2-3 reserved; R-104),
+/// bits 6-7 reserved (must be 0).
 pub const V5_PROFILE_QUANT_MASK: u8 = 0x0F;
 pub const V5_PROFILE_QUANT_Q6_RESERVED: u8 = 2;
+pub const V5_PROFILE_CONTRACT_SHIFT: u8 = 4;
+pub const V5_PROFILE_CONTRACT_MASK: u8 = 0x30;
 pub const CRC_SIZE: usize = 4; // CRC-32 appended after STREAM (v3+ only)
 pub const V4_FLAG_CUSTOM_HP: u8 = 0x01;
 pub const V4_FLAG_EMB_SURGERY: u8 = 0x02;
@@ -95,6 +100,7 @@ pub struct HeaderInfo {
     pub backbone: BackboneChoice, // R-039: which backbone was used
     pub enhanced_cm: bool,       // R-043/R-044: entropy-adaptive mixer + SegmentModel
     pub profile: WeightProfile,  // R-099: Mamba weight profile (v5 PROFILE; F32 for v2-v4)
+    pub numeric_contract: NumericContract, // R-104: v5 PROFILE bits 4-5; legacy for v2-v4
     pub header_size: usize,
 }
 
@@ -134,20 +140,35 @@ pub fn uses_default_hp(bias_lr: f32, ngram_scale: f32, mix_eta: f32) -> bool {
         && mix_eta.to_bits() == DEFAULT_MIX_ETA.to_bits()
 }
 
-/// Decode the v5 PROFILE byte (R-099). Rejects reserved bits and unknown codes.
-pub fn parse_profile_byte(b: u8) -> AzResult<WeightProfile> {
-    if b & !V5_PROFILE_QUANT_MASK != 0 {
+/// Decode the v5 PROFILE byte (R-099 quant, R-104 numeric contract).
+/// Rejects reserved bits, unknown quant codes and unknown numeric contracts,
+/// so an unsupported archive fails while parsing, before any model load.
+pub fn parse_profile_byte(b: u8) -> AzResult<(WeightProfile, NumericContract)> {
+    if b & !(V5_PROFILE_QUANT_MASK | V5_PROFILE_CONTRACT_MASK) != 0 {
         return Err(AzError::Format(format!(
             "AZTH v5 PROFILE has reserved bits set: 0x{:02X}", b
         )));
     }
+    let contract_code = (b & V5_PROFILE_CONTRACT_MASK) >> V5_PROFILE_CONTRACT_SHIFT;
+    let contract = NumericContract::from_header_code(contract_code).ok_or_else(|| {
+        AzError::Format(format!(
+            "AZTH v5 numeric contract {} not supported by this build (known: 0 = legacy libm, \
+             1 = fmath-v1); a newer Redukt is required to decode this archive", contract_code
+        ))
+    })?;
     let code = b & V5_PROFILE_QUANT_MASK;
-    WeightProfile::from_header_code(code).ok_or_else(|| {
+    let profile = WeightProfile::from_header_code(code).ok_or_else(|| {
         let what = if code == V5_PROFILE_QUANT_Q6_RESERVED { "Q6 (reserved)" } else { "unknown" };
         AzError::Format(format!(
             "AZTH v5 weight profile code {} = {} — not supported by this build", code, what
         ))
-    })
+    })?;
+    Ok((profile, contract))
+}
+
+/// Encode the v5 PROFILE byte: quant code | numeric contract << 4 (R-104).
+pub fn profile_byte(profile: WeightProfile, contract: NumericContract) -> u8 {
+    profile.header_code() | (contract.header_code() << V5_PROFILE_CONTRACT_SHIFT)
 }
 
 /// Parse header for any AZTH version (v2-v5). Assumes validate_magic passed.
@@ -172,6 +193,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 backbone: BackboneChoice::Rwkv,
                 enhanced_cm: false,
                 profile: WeightProfile::F32,
+                numeric_contract: NumericContract::LegacyLibm,
                 header_size: HEADER_SIZE,
             })
         }
@@ -189,11 +211,13 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                     "AZTH v{} unknown flags: 0x{:02X}", version, reserved
                 )));
             }
-            // v5: PROFILE byte right after FLAGS (R-099); v4 implies F32.
-            let (profile, mut offset) = if version == 5 {
-                (parse_profile_byte(data[13])?, V5_HEADER_BASE)
+            // v5: PROFILE byte right after FLAGS (R-099/R-104).
+            // v4 has no PROFILE: F32 weights and the legacy (libm) numeric contract.
+            let (profile, numeric_contract, mut offset) = if version == 5 {
+                let (p, c) = parse_profile_byte(data[13])?;
+                (p, c, V5_HEADER_BASE)
             } else {
-                (WeightProfile::F32, V4_HEADER_BASE)
+                (WeightProfile::F32, NumericContract::LegacyLibm, V4_HEADER_BASE)
             };
 
             // Parse custom hyperparameters (flag 0x01)
@@ -314,7 +338,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
                 version, total_bytes, token_count: None,
                 bias_lr, ngram_scale, mix_eta,
                 emb_surgery, e8e9, shuffle_stride, delta_stride,
-                skip_threshold, backbone, enhanced_cm, profile,
+                skip_threshold, backbone, enhanced_cm, profile, numeric_contract,
                 header_size: offset,
             })
         }
@@ -327,19 +351,42 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
 /// Extract stream and CRC from AZTH payload given header size and version.
 pub fn extract_stream_and_crc_v(
     data: &[u8], header_size: usize, version: u8,
-) -> (&[u8], Option<u32>) {
-    let payload = &data[header_size..];
-    if version >= 3 && payload.len() >= CRC_SIZE {
-        let split = payload.len() - CRC_SIZE;
-        let stream = &payload[..split];
-        let crc_bytes = &payload[split..];
-        let stored_crc = u32::from_le_bytes(
-            [crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]
-        );
-        (stream, Some(stored_crc))
-    } else {
-        (payload, None)
+) -> AzResult<(&[u8], Option<u32>)> {
+    let payload = data.get(header_size..).ok_or_else(|| {
+        AzError::Format(format!("truncated AZTH file: {} bytes, header needs {}", data.len(), header_size))
+    })?;
+    if version < 3 {
+        return Ok((payload, None));
     }
+    if payload.len() < CRC_SIZE {
+        return Err(AzError::Format(format!(
+            "truncated AZTH file: payload is {} bytes, CRC-32 needs {}", payload.len(), CRC_SIZE
+        )));
+    }
+    let split = payload.len() - CRC_SIZE;
+    let crc_bytes = &payload[split..];
+    let stored_crc = u32::from_le_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+    Ok((&payload[..split], Some(stored_crc)))
+}
+
+/// Every encoded token covers >= 1 input byte, so a valid v4 stream has at most `total_bytes`
+/// tokens. Stops a corrupt stream that keeps decoding zero-length ids from looping forever.
+fn check_token_budget(tokens: usize, written: usize, total_bytes: usize) -> AzResult<()> {
+    if tokens >= total_bytes {
+        return Err(AzError::Decode {
+            token_idx: tokens,
+            detail: format!("{} tokens decoded but only {} of {} bytes", tokens, written, total_bytes),
+        });
+    }
+    Ok(())
+}
+
+/// Compression needs at least one token; an empty input has nothing to encode.
+pub fn reject_empty_input(raw: &[u8]) -> AzResult<()> {
+    if raw.is_empty() {
+        return Err(AzError::Format("empty input".into()));
+    }
+    Ok(())
 }
 
 /// Build AZTH v4 header bytes.
@@ -403,8 +450,10 @@ pub fn build_v4_header(
 }
 
 /// Build the AZTH header for a given weight profile (R-099).
-/// F32 -> byte-identical v4 header (old decoders keep working).
-/// Any other profile -> v5: v4 layout with version 5 and PROFILE inserted after FLAGS.
+/// Always v5 since R-104 F1: v4 layout with version 5 and PROFILE inserted after
+/// FLAGS, carrying the quant code and `NumericContract::CURRENT` (fmath-v1), which
+/// is what `cdf_from_logits` uses. Pre-R-104 decoders reject it up front
+/// (reserved PROFILE bit 4), never with a CRC mismatch.
 pub fn build_header(
     total_bytes: u32, bias_lr: f32, ngram_scale: f32, mix_eta: f32,
     emb_surgery: &str, e8e9: bool, shuffle_stride: u8, delta_stride: u8,
@@ -415,10 +464,8 @@ pub fn build_header(
         total_bytes, bias_lr, ngram_scale, mix_eta, emb_surgery, e8e9,
         shuffle_stride, delta_stride, skip_threshold, backbone, enhanced_cm,
     );
-    if profile != WeightProfile::F32 {
-        hdr[..8].copy_from_slice(MAGIC_V5);
-        hdr.insert(V4_HEADER_BASE, profile.header_code());
-    }
+    hdr[..8].copy_from_slice(MAGIC_V5);
+    hdr.insert(V4_HEADER_BASE, profile_byte(profile, NumericContract::CURRENT));
     hdr
 }
 
@@ -491,15 +538,23 @@ fn extract_stream_and_crc(data: &[u8], version: u8) -> (&[u8], Option<u32>) {
     }
 }
 
-/// Build CDF from logits for current prediction step.
-/// Uses f64 softmax to preserve tail precision for 65K vocab.
+/// Build CDF from logits for current prediction step, under the numeric
+/// contract this build writes (`NumericContract::CURRENT`, see `build_header`).
 pub fn cdf_from_logits(logits: &[f32]) -> Cdf {
+    cdf_from_logits_with(logits, NumericContract::CURRENT)
+}
+
+/// Build CDF from logits under an explicit numeric contract (R-104).
+/// Uses f64 softmax to preserve tail precision for 65K vocab. The `exp` is the
+/// only transcendental here: fmath-v1 (portable) or, for legacy archives, std
+/// libm. A decoder must pass the contract taken from the archive header.
+pub fn cdf_from_logits_with(logits: &[f32], contract: NumericContract) -> Cdf {
     let n = logits.len();
     let max_l = logits.iter().copied().fold(f64::NEG_INFINITY, |a, b| a.max(b as f64));
     let mut probs = Vec::with_capacity(n);
     let mut sum = 0.0f64;
     for &l in logits {
-        let e = ((l as f64) - max_l).exp();
+        let e = contract.exp((l as f64) - max_l);
         probs.push(e);
         sum += e;
     }
@@ -789,6 +844,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
 
     timer.start("read");
     let raw_bytes = crate::domain::error::read_file(&input_path)?;
+    reject_empty_input(&raw_bytes)?;
     let total_bytes = if max_bytes > 0 { max_bytes.min(raw_bytes.len()) } else { raw_bytes.len() };
     let input_slice = &raw_bytes[..total_bytes];
     eprintln!("[compress] input: {} ({} bytes)", input_path, total_bytes);
@@ -1164,7 +1220,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
 
     validate_magic(&data)?;
     let hdr = parse_header(&data)?;
-    let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version);
+    let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version)?;
 
     eprintln!("[decompress] format: AZTH v{}", hdr.version);
     if let Some(tc) = hdr.token_count {
@@ -1295,7 +1351,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
             } else {
                 cm.compute_biases(None);
                 cm.combine_into(&mut ensemble_buf, &logits);
-                let cdf = cdf_from_logits(&ensemble_buf);
+                let cdf = cdf_from_logits_with(&ensemble_buf, hdr.numeric_contract);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
                 cm.update(&probs_buf, sym as usize);
@@ -1334,7 +1390,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 cm.compute_biases(None);
 
                 // R-077: entropy gate — identical to compress path.
-                let cm_h = cm.cm_only_entropy(&mut ensemble_buf);
+                let cm_h = cm.cm_only_entropy_with(&mut ensemble_buf, hdr.numeric_contract);
                 let do_gate = skip_threshold > 0
                     && consec_skips < MAX_CONSEC_SKIP
                     && cm_h < entropy_thr_f;
@@ -1344,7 +1400,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 } else {
                     cm.combine_into(&mut ensemble_buf, &logits);
                 }
-                let cdf = cdf_from_logits(&ensemble_buf);
+                let cdf = cdf_from_logits_with(&ensemble_buf, hdr.numeric_contract);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
                 cm.update(&probs_buf, sym as usize);
@@ -1381,6 +1437,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
                 consec_skips = 0;
             }
             t += 1;
+            check_token_budget(t, bytes_written, total_bytes)?;
 
             if t % 100 == 0 {
                 governor.apply()
@@ -2129,7 +2186,7 @@ mod tests {
         let stream_data = vec![0xAA, 0xBB, 0xCC];
         let crc: u32 = 0xCAFEBABE;
         let file = make_azth_v4_default(100, &stream_data, crc);
-        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE, 4);
+        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE, 4).unwrap();
         assert_eq!(stream, &stream_data[..]);
         assert_eq!(stored_crc, Some(0xCAFEBABE));
     }
@@ -2139,9 +2196,30 @@ mod tests {
         let stream_data = vec![0x11, 0x22];
         let crc: u32 = 0x12345678;
         let file = make_azth_v4_custom(50, 0.5, 0.5, 0.5, &stream_data, crc);
-        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE + 12, 4);
+        let (stream, stored_crc) = extract_stream_and_crc_v(&file, V4_HEADER_BASE + 12, 4).unwrap();
         assert_eq!(stream, &stream_data[..]);
         assert_eq!(stored_crc, Some(0x12345678));
+    }
+
+    #[test]
+    fn extract_v4_payload_shorter_than_crc_is_error() {
+        let mut file = vec![0u8; V4_HEADER_BASE];
+        file.extend_from_slice(&[1, 2, 3]);
+        assert!(extract_stream_and_crc_v(&file, V4_HEADER_BASE, 4).is_err());
+        assert!(extract_stream_and_crc_v(&file[..5], V4_HEADER_BASE, 4).is_err());
+        assert!(extract_stream_and_crc_v(&file, V4_HEADER_BASE, 2).is_ok());
+    }
+
+    #[test]
+    fn empty_input_is_rejected_without_panic() {
+        assert!(matches!(reject_empty_input(&[]), Err(AzError::Format(_))));
+        assert!(reject_empty_input(&[0]).is_ok());
+    }
+
+    #[test]
+    fn token_budget_stops_zero_length_token_loop() {
+        assert!(check_token_budget(3, 3, 10).is_ok());
+        assert!(matches!(check_token_budget(10, 0, 10), Err(AzError::Decode { .. })));
     }
 
     // --- parse_hyperparams (v2/v3 legacy) ---
@@ -2533,24 +2611,63 @@ mod tests {
         file
     }
 
-    #[test]
-    fn build_header_f32_is_byte_identical_v4() {
-        let v4 = build_v4_header(
-            4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50, BackboneChoice::Mamba, true,
-        );
-        assert_eq!(all_fields_header(WeightProfile::F32), v4);
-        assert_eq!(&v4[..8], MAGIC_V4);
+    fn all_fields_v4_header() -> Vec<u8> {
+        build_v4_header(4321, 0.25, 0.6, 0.02, "center0.3", true, 4, 1, 50, BackboneChoice::Mamba, true)
     }
 
     #[test]
-    fn build_header_q8_is_v4_plus_profile_byte() {
-        let v4 = all_fields_header(WeightProfile::F32);
-        let v5 = all_fields_header(WeightProfile::Q8);
-        assert_eq!(&v5[..8], MAGIC_V5);
-        assert_eq!(v5.len(), v4.len() + 1);
-        assert_eq!(v5[8..13], v4[8..13]); // TOTAL_BYTES + FLAGS unchanged
-        assert_eq!(v5[13], 1); // PROFILE: quant code 1 = Q8
-        assert_eq!(v5[14..], v4[13..]); // optional fields shifted by one byte
+    fn build_header_is_v4_plus_profile_byte_for_every_profile() {
+        // R-104: the encoder always writes v5 (PROFILE carries the numeric contract).
+        let v4 = all_fields_v4_header();
+        assert_eq!(&v4[..8], MAGIC_V4);
+        for (profile, byte) in [(WeightProfile::F32, 0x10u8), (WeightProfile::Q8, 0x11)] {
+            let v5 = all_fields_header(profile);
+            assert_eq!(&v5[..8], MAGIC_V5);
+            assert_eq!(v5.len(), v4.len() + 1);
+            assert_eq!(v5[8..13], v4[8..13]); // TOTAL_BYTES + FLAGS unchanged
+            assert_eq!(v5[13], byte); // PROFILE: quant | contract 1 (fmath-v1) << 4
+            assert_eq!(v5[14..], v4[13..]); // optional fields shifted by one byte
+        }
+    }
+
+    #[test]
+    fn numeric_contract_from_header() {
+        // v5 written now -> fmath-v1; v4 and v5 with contract bits 0 -> legacy libm.
+        let cur = parse_header(&with_payload(&all_fields_header(WeightProfile::F32))).unwrap();
+        assert_eq!(cur.numeric_contract, NumericContract::FmathV1);
+        assert_eq!(cur.numeric_contract, NumericContract::CURRENT);
+        let v4 = parse_header(&with_payload(&all_fields_v4_header())).unwrap();
+        assert_eq!((v4.version, v4.numeric_contract), (4, NumericContract::LegacyLibm));
+        let mut r099 = all_fields_header(WeightProfile::Q8);
+        r099[13] = 0x01; // pre-R-104 v5 (R-099): Q8, contract 0
+        let old = parse_header(&with_payload(&r099)).unwrap();
+        assert_eq!((old.profile, old.numeric_contract), (WeightProfile::Q8, NumericContract::LegacyLibm));
+    }
+
+    #[test]
+    fn unknown_numeric_contract_fails_while_parsing() {
+        for byte in [0x21u8, 0x30, 0x20] {
+            let mut hdr = all_fields_header(WeightProfile::Q8);
+            hdr[13] = byte;
+            let err = parse_header(&with_payload(&hdr)).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.contains("numeric contract"), "0x{:02X}: {}", byte, err);
+        }
+    }
+
+    #[test]
+    fn cdf_contracts_default_and_agreement() {
+        let logits: Vec<f32> = (0..4096).map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.37).collect();
+        let cur = cdf_from_logits(&logits);
+        let fm = cdf_from_logits_with(&logits, NumericContract::FmathV1);
+        let leg = cdf_from_logits_with(&logits, NumericContract::LegacyLibm);
+        assert_eq!(cur.total, leg.total);
+        for sym in 0..logits.len() {
+            assert_eq!(cur.range(sym), fm.range(sym)); // default = CURRENT = fmath-v1
+            // libm vs fmath differ by <= 1 ulp f64 per exp: frequencies agree to +-2.
+            let (fl, fh) = fm.range(sym);
+            let (ll, lh) = leg.range(sym);
+            assert!((fh - fl).abs_diff(lh - ll) <= 2, "sym {}", sym);
+        }
     }
 
     #[test]
@@ -2559,7 +2676,7 @@ mod tests {
         let file = with_payload(&hdr);
         assert_eq!(validate_magic(&file).unwrap(), 5);
         let info = parse_header(&file).unwrap();
-        let v4 = parse_header(&with_payload(&all_fields_header(WeightProfile::F32))).unwrap();
+        let v4 = parse_header(&with_payload(&all_fields_v4_header())).unwrap();
         assert_eq!(info.version, 5);
         assert_eq!(info.profile, WeightProfile::Q8);
         assert_eq!(v4.profile, WeightProfile::F32);
@@ -2571,7 +2688,7 @@ mod tests {
         assert!(info.e8e9 && info.enhanced_cm);
         assert_eq!((info.shuffle_stride, info.delta_stride, info.skip_threshold), (4, 1, 50));
         assert_eq!(info.backbone, BackboneChoice::Mamba);
-        let (stream, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version);
+        let (stream, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version).unwrap();
         assert_eq!(stream, &[0xAB; 16]);
         assert_eq!(crc, Some(0xDEADBEEF));
     }
@@ -2596,13 +2713,19 @@ mod tests {
 
     #[test]
     fn parse_profile_byte_rejects_reserved() {
-        assert_eq!(parse_profile_byte(0).unwrap(), WeightProfile::F32);
-        assert_eq!(parse_profile_byte(1).unwrap(), WeightProfile::Q8);
+        let (leg, fm) = (NumericContract::LegacyLibm, NumericContract::FmathV1);
+        assert_eq!(parse_profile_byte(0).unwrap(), (WeightProfile::F32, leg));
+        assert_eq!(parse_profile_byte(1).unwrap(), (WeightProfile::Q8, leg));
+        assert_eq!(parse_profile_byte(0x10).unwrap(), (WeightProfile::F32, fm));
+        assert_eq!(parse_profile_byte(0x11).unwrap(), (WeightProfile::Q8, fm));
+        assert_eq!(profile_byte(WeightProfile::Q8, fm), 0x11);
         let q6 = parse_profile_byte(V5_PROFILE_QUANT_Q6_RESERVED).unwrap_err().to_string();
         assert!(q6.contains("Q6"), "{}", q6);
         assert!(parse_profile_byte(7).is_err());
-        assert!(parse_profile_byte(0x10).is_err()); // reserved bit 4
-        assert!(parse_profile_byte(0x81).is_err());
+        assert!(parse_profile_byte(0x20).is_err()); // contract 2 (reserved)
+        assert!(parse_profile_byte(0x30).is_err()); // contract 3 (reserved)
+        assert!(parse_profile_byte(0x40).is_err()); // reserved bit 6
+        assert!(parse_profile_byte(0x81).is_err()); // reserved bit 7
     }
 
     #[test]
@@ -2619,8 +2742,7 @@ mod tests {
         let mut file = with_payload(&hdr);
         // RWKV+Q8 can't be produced by build_header users; craft it by hand.
         if backbone == BackboneChoice::Rwkv && profile != WeightProfile::F32 {
-            file[..8].copy_from_slice(MAGIC_V5);
-            file.insert(V4_HEADER_BASE, profile.header_code());
+            file[V4_HEADER_BASE] = profile_byte(profile, NumericContract::CURRENT);
         }
         parse_header(&file).unwrap()
     }
@@ -2701,11 +2823,11 @@ mod tests {
         assert_eq!(validate_magic(&file).unwrap(), 5);
         let info = parse_header(&file).unwrap();
         assert_eq!(resolve_decompress_profile("", &info).unwrap(), WeightProfile::Q8);
-        let (s, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version);
+        let (s, crc) = extract_stream_and_crc_v(&file, info.header_size, info.version).unwrap();
         let mut dec = RangeDecoder::new(s);
         let mut out = vec![decode_checked(&mut dec, &Cdf::uniform(vocab), vocab, 0).unwrap() as usize];
         for t in 1..tokens.len() {
-            let cdf = cdf_from_logits(&logits_after(out[t - 1]));
+            let cdf = cdf_from_logits_with(&logits_after(out[t - 1]), info.numeric_contract);
             out.push(decode_checked(&mut dec, &cdf, vocab, t).unwrap() as usize);
         }
         assert_eq!(out, tokens);

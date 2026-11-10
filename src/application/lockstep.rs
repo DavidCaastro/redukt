@@ -26,7 +26,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::application::codec::{
-    build_header, cdf_from_logits, extract_stream_and_crc_v, parse_header, preprocess_input,
+    build_header, cdf_from_logits, cdf_from_logits_with, extract_stream_and_crc_v, parse_header, preprocess_input,
     resolve_compress_profile, resolve_decompress_profile, validate_magic, HeaderInfo, CRC_SIZE,
 };
 use crate::application::model_loader::{self, DynModel, DynTokenizer};
@@ -312,7 +312,7 @@ fn code_step<T: BackendTokenizer>(w: &mut Work, v: usize, tokenizer: &T) {
             } else {
                 a.cm.compute_biases(None);
                 a.cm.combine_into(ensemble, logits);
-                let cdf = cdf_from_logits(ensemble);
+                let cdf = cdf_from_logits_with(ensemble, hdr.numeric_contract);
                 let r = dec.decode_symbol_checked(&cdf, v);
                 if let Ok(sym) = r {
                     softmax_into(ensemble, probs);
@@ -704,7 +704,7 @@ fn decompress_key(data: &[u8], quant: &str, emb_surgery_cli: &str) -> AzResult<(
 fn decompress_admission(path: &Path, quant: &str, emb_surgery_cli: &str) -> AzResult<Admission> {
     let data = crate::domain::error::read_file(&path.to_string_lossy())?;
     let (_, hdr) = decompress_key(&data, quant, emb_surgery_cli)?;
-    let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version);
+    let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version)?;
     let expected_crc = stored_crc
         .ok_or_else(|| AzError::Format("archive without CRC-32 (v2) is not supported in batch mode".into()))?;
     Ok(Admission::Decode { name: file_name(path), stream: stream.to_vec(), expected_crc, hdr })
@@ -869,7 +869,7 @@ mod tests {
                 idx += 1;
                 validate_magic(a).unwrap();
                 let hdr = parse_header(a).unwrap();
-                let (stream, crc) = extract_stream_and_crc_v(a, hdr.header_size, hdr.version);
+                let (stream, crc) = extract_stream_and_crc_v(a, hdr.header_size, hdr.version).unwrap();
                 Some(Ok(Admission::Decode {
                     name: format!("f{}.azth", idx), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
                 }))
@@ -895,7 +895,7 @@ mod tests {
             if given { return None; }
             given = true;
             let hdr = parse_header(&a).unwrap();
-            let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version);
+            let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version).unwrap();
             Some(Ok(Admission::Decode { name: "x".into(), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr }))
         };
         let mut failed = false;
@@ -939,7 +939,7 @@ mod tests {
         let a = compress_all(1).swap_remove(0);
         let hdr = parse_header(&a).unwrap();
         let total = hdr.total_bytes;
-        let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version);
+        let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version).unwrap();
         let mut adm = Some(Admission::Decode {
             name: "z.azth".into(), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
         });

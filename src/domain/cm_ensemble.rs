@@ -5,6 +5,7 @@
 //! Used identically in compress and decompress loops.
 
 use crate::domain::bias_head::BiasHead;
+use crate::domain::fmath::NumericContract;
 use crate::domain::match_model::MatchModel;
 use crate::domain::mixer::AdaptiveMixer;
 use crate::domain::ngram::TokenNgram;
@@ -118,10 +119,18 @@ impl CmEnsemble {
         }
     }
 
-    /// Compute Shannon entropy (bits) of CM-only distribution.
+    /// Compute Shannon entropy (bits) of CM-only distribution under the
+    /// numeric contract this build writes (`NumericContract::CURRENT`).
     /// Must be called AFTER compute_biases().
     /// Writes CM-only logits into `scratch` as a side effect.
     pub fn cm_only_entropy(&self, scratch: &mut [f32]) -> f32 {
+        self.cm_only_entropy_with(scratch, NumericContract::CURRENT)
+    }
+
+    /// `cm_only_entropy` under an explicit numeric contract (R-104). The value
+    /// drives the `--adaptive-skip` gate, so it is part of the bitstream: a
+    /// decoder must pass the contract from the archive header.
+    pub fn cm_only_entropy_with(&self, scratch: &mut [f32], contract: NumericContract) -> f32 {
         self.cm_only_logits_into(scratch);
         let n = scratch.len();
         let mut max_val = f32::NEG_INFINITY;
@@ -130,13 +139,13 @@ impl CmEnsemble {
         }
         let mut sum_exp = 0.0f64;
         for i in 0..n {
-            sum_exp += ((scratch[i] - max_val) as f64).exp();
+            sum_exp += contract.exp((scratch[i] - max_val) as f64);
         }
-        let log_sum = sum_exp.ln();
+        let log_sum = contract.ln(sum_exp);
         let mut entropy = 0.0f64;
         for i in 0..n {
             let log_p = (scratch[i] - max_val) as f64 - log_sum;
-            let p = log_p.exp();
+            let p = contract.exp(log_p);
             if p > 1e-30 {
                 entropy -= p * log_p;
             }
@@ -180,6 +189,21 @@ mod tests {
         // With biases, at least one element should be non-zero
         let sum: f32 = out.iter().map(|x| x.abs()).sum();
         assert!(sum >= 0.0);
+    }
+
+    #[test]
+    fn cm_only_entropy_contracts_agree_and_default_is_current() {
+        let mut cm = CmEnsemble::new(256, 0.5, 0.001, 0.01, false);
+        for t in [72u32, 101, 108, 108, 111, 32, 72, 101, 108, 108] {
+            cm.observe(t);
+        }
+        cm.compute_biases(None);
+        let mut scratch = vec![0.0f32; 256];
+        let h_def = cm.cm_only_entropy(&mut scratch);
+        let h_cur = cm.cm_only_entropy_with(&mut scratch, NumericContract::CURRENT);
+        let h_leg = cm.cm_only_entropy_with(&mut scratch, NumericContract::LegacyLibm);
+        assert_eq!(h_def.to_bits(), h_cur.to_bits());
+        assert!((h_cur - h_leg).abs() <= 1e-5, "{} vs {}", h_cur, h_leg);
     }
 
     #[test]

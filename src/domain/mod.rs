@@ -6,6 +6,7 @@ pub mod match_model;
 pub mod run_model;
 pub mod word_model;
 pub mod tensor;
+pub mod fmath;
 pub mod par_pool;
 pub mod gemv;
 pub mod ngram;

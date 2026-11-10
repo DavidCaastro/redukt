@@ -6,11 +6,12 @@ AZTH is a lossless compression format that encodes data using neural network
 probability predictions combined with arithmetic coding. Decompression requires
 the identical model and weights; hyperparameters are stored in the header.
 
-## Format Layout (v4 — current default)
+## Format Layout (v4 — read-only since R-104 F1)
 
-v4 is still what the encoder writes for the default **F32** weight profile.
-Archives using another weight profile (R-099, Mamba Q8) are written as **v5**
-(see below): identical layout plus one PROFILE byte after FLAGS.
+Since R-104 F1 the encoder writes **v5** for every archive (see below): identical
+layout plus one PROFILE byte after FLAGS, which carries the weight profile and the
+numeric contract. v4 is still fully decoded; a v4 archive implies the F32 weight
+profile and **numeric contract 0 (legacy libm)**.
 
 ```
 Offset  Size  Field          Description
@@ -158,11 +159,16 @@ applying the inverse transform.
 ## Format Layout (v5 — weight profile, R-099)
 
 v5 is v4 plus a 1-byte **PROFILE** immediately after FLAGS. It records the
-numeric weight profile of the Mamba-family backbone, which changes the logits
-and therefore the coded stream. The encoder writes v5 **only** when the profile
-is not F32, so default (F32) archives stay byte-identical v4 and remain
-readable by v4-only decoders; a v4-only decoder fed a v5 file fails up front
-with `unsupported AZTH version 5` (never with a CRC mismatch).
+numeric weight profile of the Mamba-family backbone and the **numeric contract**
+(R-104) — both change the probabilities and therefore the coded stream.
+
+- R-099 encoders wrote v5 only for non-F32 profiles (contract bits = 0).
+- Since R-104 F1 the encoder writes v5 for **every** archive (F32 included) with
+  `NUMERIC_CONTRACT = 1`. F32 archives are therefore one byte larger than the
+  former v4 output.
+- A v4-only decoder fed a v5 file fails up front with `unsupported AZTH version 5`;
+  an R-099 decoder fed a contract-1 file fails with `PROFILE has reserved bits set`
+  (never with a CRC mismatch).
 
 ```
 Offset  Size  Field          Description
@@ -181,14 +187,36 @@ Header size: **14 bytes** minimum (15 for a Mamba archive: +1 BACKBONE), 35 byte
 
 ### PROFILE byte
 
-| Bits | Field  | Values |
-|------|--------|--------|
-| 0–3  | QUANT  | `0` = F32, `1` = Q8 (recipe below), `2` = Q6 (reserved, rejected), `3`–`15` reserved (rejected) |
-| 4–7  | —      | Reserved, must be 0 (decoder rejects) |
+| Bits | Field             | Values |
+|------|-------------------|--------|
+| 0–3  | QUANT             | `0` = F32, `1` = Q8 (recipe below), `2` = Q6 (reserved, rejected), `3`–`15` reserved (rejected) |
+| 4–5  | NUMERIC_CONTRACT  | `0` = legacy libm, `1` = fmath-v1 (written since R-104 F1), `2`–`3` reserved (rejected) |
+| 6–7  | —                 | Reserved, must be 0 (decoder rejects) |
 
-`QUANT = 0` in a v5 header is valid (equivalent to v4) but the encoder never
-writes it. A non-F32 profile is only valid for the Mamba / MambaByte backbones;
+Values written by the current encoder: `0x10` (F32) and `0x11` (Q8).
+A non-F32 profile is only valid for the Mamba / MambaByte backbones;
 the decoder rejects it for RWKV (RWKV's own `--quant` is not part of the format).
+
+### Numeric contract (R-104)
+
+The contract names the implementation of the transcendental functions whose
+results enter the coded probabilities. All other arithmetic on that path is
+IEEE `+ − × ÷ sqrt` (correctly rounded, identical everywhere) or the portable
+f32 kernels of R-013b.
+
+| Code | Name        | `exp`/`ln` in `cdf_from_logits` and the CM entropy gate | Portability |
+|------|-------------|------------------------------------------|-------------|
+| 0    | legacy libm | `f64::exp` / `f64::ln` of the platform libm (MSVC UCRT, glibc, …) | bit-exact only where the decoder's libm equals the encoder's (UCRT and glibc differ in 0.5% of `exp` values by 1 ulp; masked in practice, latent risk ~1e-8–1e-6 per token) |
+| 1    | fmath-v1    | `src/domain/fmath.rs`: port of musl `exp.c`/`log.c` (ARM optimized-routines, MIT), non-FMA path, pure IEEE f64 arithmetic, < 0.52 ulp | identical on every IEEE-754 platform; golden values and a golden sweep hash in the unit tests |
+
+Interpretation by version: v2, v3, v4 and v5 with bits 4–5 = 0 → contract 0.
+A decoder selects the implementation from the header, so legacy archives keep
+being decoded with the platform libm (the only bit-exact choice on the platform
+that wrote them). An unknown contract (2–3) is rejected while parsing the
+header, before the model is loaded.
+
+The contract does **not** cover the SIMD tier: F32 GEMV / SSM accumulation
+order still differs between the AVX2 and scalar kernels (R-104 F2).
 
 ### Q8 profile recipe (QUANT = 1)
 
@@ -217,7 +245,8 @@ apache log +1.1% BPB; weight traffic 516.5 → 153.6 MB/token.
 ### Decoder rules (v5)
 
 1. `validate_magic` accepts v2–v5 (v5 minimum 14 bytes).
-2. PROFILE is validated (reserved bits, reserved/unknown codes) while parsing.
+2. PROFILE is validated (reserved bits, reserved/unknown quant codes, unknown
+   numeric contracts) while parsing.
 3. The header profile is authoritative. `decompress --quant` is optional; if
    given and different from the header (e.g. `--quant f32` on a Q8 archive) the
    decoder stops with `weight profile mismatch ...` **before** loading the model
@@ -238,17 +267,17 @@ means byte count implies token count).
 | v2      | `\x02`      | 28          | Added BIAS_LR, NGRAM_SCALE, MIX_ETA to header |
 | v3      | `\x03`      | 28          | Added CRC-32 trailer, hyperparameter validation |
 | v4      | `\x04`      | 13–34       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, skip, backbone, CM) |
-| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099) |
+| v5      | `\x05`      | 14–35       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104) |
 
 The decoder accepts v2, v3, v4 and v5 files:
 - **v2**: no CRC check (backward compatible)
 - **v3**: CRC-32 verified after decompression
 - **v4**: CRC-32 verified, compact header, byte-count termination
-- **v5**: as v4, plus the weight profile is taken from PROFILE
+- **v5**: as v4, plus the weight profile and the numeric contract are taken from PROFILE
 
-The encoder writes **v4** for the F32 profile (default) and **v5** otherwise
-(`compress --backbone mamba --quant q8`). `--quant auto` / unspecified selects
-F32 for Mamba: a timing-based auto-selection would make the bitstream
+The encoder writes **v5** for every archive since R-104 F1 (PROFILE `0x10` for
+F32, `0x11` for Q8). Before that, F32 archives were written as v4. A timing-based
+auto-selection of the weight profile is never used: it would make the bitstream
 machine-dependent.
 
 ## Format Layout (v3 — legacy)
@@ -390,7 +419,10 @@ Decompression produces byte-identical output if and only if:
 4. Same forward pass implementation (floating-point order matters)
 5. Same embedding surgery method (stored in v4 header since R-010)
 6. Same weight profile (stored in the v5 PROFILE byte since R-099; v2–v4 imply F32)
-7. Same SIMD tier (`REDUKT_NO_SIMD=1` must match on both sides), for every
+7. Same numeric contract (v5 PROFILE bits 4–5 since R-104). Contract 1 (fmath-v1)
+   is OS/libm-independent; contract 0 (v2–v4 and R-099 v5) relies on the
+   platform libm `exp`
+8. Same SIMD tier (`REDUKT_NO_SIMD=1` must match on both sides), for every
    profile: the AVX2 (no-FMA) and scalar f32 kernels (GEMV accumulation order,
    SSM `exp`, SiLU) are NOT bit-compatible. In the Q8 profile the int8 GEMV
    itself is tier-invariant, but x_proj/dt_proj/SSM remain f32 and tier-bound.
@@ -417,7 +449,8 @@ This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 - TOTAL_BYTES capped at u32 prevents memory exhaustion
 - Hyperparameter validation rejects NaN/Inf (prevents numeric corruption)
 - FLAGS validation rejects unknown bits (forward compatibility)
-- PROFILE validation rejects reserved bits and unknown/reserved quant codes (v5)
+- PROFILE validation rejects reserved bits, unknown/reserved quant codes and
+  unknown numeric contracts (v5)
 - RAM monitor aborts if available memory is insufficient for model
 
 ## MIME Type (Proposed)

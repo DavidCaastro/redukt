@@ -19,7 +19,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use crate::application::codec::{
-    extract_stream_and_crc_v, parse_header, preprocess_input, validate_magic, cdf_from_logits,
+    extract_stream_and_crc_v, parse_header, preprocess_input, validate_magic, cdf_from_logits_with,
     HeaderInfo, DEFAULT_BIAS_LR, DEFAULT_MIX_ETA, DEFAULT_NGRAM_SCALE,
 };
 use crate::application::lockstep::{run_lockstep, Admission, EncodeMeta, StreamResult};
@@ -481,7 +481,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
     let hdr = parse_header(data).map_err(|e| e.to_string())?;
     let (stream, stored_crc) = extract_stream_and_crc_v(
         data, hdr.header_size, hdr.version,
-    );
+    ).map_err(|e| e.to_string())?;
 
     let v = model.vocab_size();
     let total_bytes = hdr.total_bytes;
@@ -511,7 +511,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             } else {
                 cm.compute_biases(None);
                 cm.combine_into(&mut ensemble_buf, &logits);
-                let cdf = cdf_from_logits(&ensemble_buf);
+                let cdf = cdf_from_logits_with(&ensemble_buf, hdr.numeric_contract);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
                 cm.update(&probs_buf, sym as usize);
@@ -547,7 +547,7 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 } else {
                     cm.combine_into(&mut ensemble_buf, &logits);
                 }
-                let cdf = cdf_from_logits(&ensemble_buf);
+                let cdf = cdf_from_logits_with(&ensemble_buf, hdr.numeric_contract);
                 let sym = decode_checked(&mut dec, &cdf, v, t)?;
                 softmax_into(&ensemble_buf, &mut probs_buf);
                 cm.update(&probs_buf, sym as usize);
