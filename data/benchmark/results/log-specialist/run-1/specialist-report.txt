@@ -1,0 +1,190 @@
+device cuda; torch 2.11.0+cu130; smoke=False; deadline 7.0 h
+
+========================================================================
+  1. Loghub corpus — split by system   [t+0.1 min]
+========================================================================
+  train BGL           48,000,000 B   seen-eval 300,000 B
+  train HDFS_1        48,000,000 B   seen-eval 300,000 B
+  train Hadoop        48,095,595 B   seen-eval 300,000 B
+  train Spark         48,000,000 B   seen-eval 300,000 B
+  train HPC           33,053,503 B   seen-eval 300,000 B
+  train Mac           16,379,552 B   seen-eval 300,000 B
+  train Android       48,000,000 B   seen-eval 300,000 B
+  train Windows       48,000,000 B   seen-eval 300,000 B
+  train Thunderbird   48,000,000 B   seen-eval 300,000 B
+  train OpenStack     48,000,000 B   seen-eval 300,000 B
+  train HealthApp     23,029,930 B   seen-eval 300,000 B
+  held-out apache       171,239 B (benchmark file)
+  held-out linux        216,485 B (benchmark file)
+  held-out openssh      225,216 B (benchmark file)
+  held-out zookeeper    300,000 B
+  held-out proxifier    300,000 B
+  training bytes: 456,558,580 in 11 systems; eval sets: 16
+
+========================================================================
+  2. Classical codecs on the evaluation sets   [t+1.1 min]
+========================================================================
+  BGL          seen       300,000 B  best xz-9e          bpb=0.1789
+  HDFS_1       seen       300,000 B  best brotli-11-w24  bpb=0.5422
+  Hadoop       seen       300,000 B  best brotli-11-w24  bpb=0.4543
+  Spark        seen       300,000 B  best xz-9e          bpb=0.3103
+  HPC          seen       300,000 B  best xz-9e          bpb=0.2742
+  Mac          seen       300,000 B  best brotli-11-w24  bpb=0.5825
+  Android      seen       300,000 B  best brotli-11-w24  bpb=0.7357
+  Windows      seen       300,000 B  best brotli-11-w24  bpb=0.2099
+  Thunderbird  seen       300,000 B  best xz-9e          bpb=0.3871
+  OpenStack    seen       300,000 B  best brotli-11-w24  bpb=0.5395
+  HealthApp    seen       300,000 B  best xz-9e          bpb=0.4798
+  apache       heldout    171,239 B  best brotli-11-w24  bpb=0.3132
+  linux        heldout    216,485 B  best xz-9e          bpb=0.3697
+  openssh      heldout    225,216 B  best xz-9e          bpb=0.3460
+  zookeeper    heldout    300,000 B  best xz-9e          bpb=0.2043
+  proxifier    heldout    300,000 B  best bz2-9          bpb=0.2416
+
+========================================================================
+  Train lstm-xs (lstm {'emb': 64, 'hidden': 128, 'layers': 2}) — budget 22 min   [t+1.4 min]
+========================================================================
+  params 280,832; touched per byte 264,448; 0.529 MFLOP/byte = 0.0074x Mamba-130M
+  step      1    0.1 min  lr 1.00e-05  train 7.9970 bpb  held-out(static 4096) 7.9942 bpb
+  step    990    2.2 min  lr 1.95e-03  train 3.1713 bpb  held-out(static 4096) 4.8560 bpb
+  step   1932    4.4 min  lr 1.82e-03  train 1.2131 bpb  held-out(static 4096) 5.0111 bpb
+  step   2872    6.6 min  lr 1.61e-03  train 0.9659 bpb  held-out(static 4096) 5.1913 bpb
+  step   3812    8.8 min  lr 1.34e-03  train 0.8632 bpb  held-out(static 4096) 5.4145 bpb
+  step   4754   11.0 min  lr 1.05e-03  train 0.8145 bpb  held-out(static 4096) 5.4205 bpb
+  step   5691   13.2 min  lr 7.56e-04  train 0.7787 bpb  held-out(static 4096) 5.4980 bpb
+  step   6627   15.4 min  lr 4.91e-04  train 0.7587 bpb  held-out(static 4096) 5.5268 bpb
+  step   7562   17.6 min  lr 2.81e-04  train 0.7461 bpb  held-out(static 4096) 5.5611 bpb
+  step   8500   19.8 min  lr 1.46e-04  train 0.7356 bpb  held-out(static 4096) 5.5997 bpb
+
+========================================================================
+  Evaluate lstm-xs   [t+23.5 min]
+========================================================================
+  FAILED lstm-xs: cuDNN error: CUDNN_STATUS_NOT_SUPPORTED. This error may appear if you passed in a non-contiguous input.
+
+========================================================================
+  Train lstm-s (lstm {'emb': 64, 'hidden': 256, 'layers': 2}) — budget 30 min   [t+23.5 min]
+========================================================================
+  params 938,240; touched per byte 921,856; 1.844 MFLOP/byte = 0.0258x Mamba-130M
+  step      1    0.0 min  lr 1.00e-05  train 7.9957 bpb  held-out(static 4096) 7.9932 bpb
+  step    467    3.0 min  lr 1.95e-03  train 3.8526 bpb  held-out(static 4096) 4.6699 bpb
+  step    927    6.0 min  lr 1.82e-03  train 1.3579 bpb  held-out(static 4096) 4.8389 bpb
+  step   1386    9.0 min  lr 1.61e-03  train 0.9813 bpb  held-out(static 4096) 4.8077 bpb
+  step   1844   12.0 min  lr 1.34e-03  train 0.8525 bpb  held-out(static 4096) 4.8878 bpb
+  step   2302   15.0 min  lr 1.05e-03  train 0.7756 bpb  held-out(static 4096) 4.9235 bpb
+  step   2759   18.0 min  lr 7.56e-04  train 0.7305 bpb  held-out(static 4096) 4.9477 bpb
+  step   3217   21.0 min  lr 4.91e-04  train 0.7008 bpb  held-out(static 4096) 4.9050 bpb
+  step   3674   24.0 min  lr 2.81e-04  train 0.6829 bpb  held-out(static 4096) 4.9318 bpb
+  step   4131   27.0 min  lr 1.46e-04  train 0.6703 bpb  held-out(static 4096) 4.9648 bpb
+
+========================================================================
+  Evaluate lstm-s   [t+53.5 min]
+========================================================================
+  FAILED lstm-s: cuDNN error: CUDNN_STATUS_NOT_SUPPORTED. This error may appear if you passed in a non-contiguous input.
+
+========================================================================
+  Train lstm-m (lstm {'emb': 128, 'hidden': 512, 'layers': 2}) — budget 45 min   [t+53.5 min]
+========================================================================
+  params 3,580,160; touched per byte 3,547,392; 7.095 MFLOP/byte = 0.0994x Mamba-130M
+  step      1    0.1 min  lr 1.00e-05  train 7.9903 bpb  held-out(static 4096) 7.9922 bpb
+  step    225    4.6 min  lr 1.95e-03  train 4.6449 bpb  held-out(static 4096) 4.4438 bpb
+  step    446    9.1 min  lr 1.82e-03  train 1.7660 bpb  held-out(static 4096) 4.5298 bpb
+  step    665   13.6 min  lr 1.61e-03  train 1.0468 bpb  held-out(static 4096) 4.6447 bpb
+  step    884   18.1 min  lr 1.34e-03  train 0.8594 bpb  held-out(static 4096) 4.7796 bpb
+  step   1105   22.6 min  lr 1.05e-03  train 0.7649 bpb  held-out(static 4096) 4.7460 bpb
+  step   1324   27.1 min  lr 7.55e-04  train 0.7151 bpb  held-out(static 4096) 4.8525 bpb
+  step   1544   31.6 min  lr 4.91e-04  train 0.6796 bpb  held-out(static 4096) 4.7676 bpb
+  step   1764   36.1 min  lr 2.81e-04  train 0.6589 bpb  held-out(static 4096) 4.8057 bpb
+  step   1982   40.6 min  lr 1.46e-04  train 0.6446 bpb  held-out(static 4096) 4.8220 bpb
+
+========================================================================
+  Evaluate lstm-m   [t+98.6 min]
+========================================================================
+  FAILED lstm-m: cuDNN error: CUDNN_STATUS_NOT_SUPPORTED. This error may appear if you passed in a non-contiguous input.
+
+========================================================================
+  Train tf-s (tf {'dim': 128, 'layers': 4, 'heads': 4}) — budget 30 min   [t+98.6 min]
+========================================================================
+  params 990,208; touched per byte 826,368; 1.653 MFLOP/byte = 0.0232x Mamba-130M
+  step      1    0.0 min  lr 5.00e-06  train 8.2990 bpb  held-out(static 4096) 8.3009 bpb
+  step   1443    3.0 min  lr 9.77e-04  train 2.8436 bpb  held-out(static 4096) 5.4736 bpb
+  step   2891    6.0 min  lr 9.09e-04  train 1.1568 bpb  held-out(static 4096) 5.8259 bpb
+  step   4339    9.0 min  lr 8.04e-04  train 0.8278 bpb  held-out(static 4096) 5.9184 bpb
+  step   5788   12.0 min  lr 6.72e-04  train 0.6303 bpb  held-out(static 4096) 6.2418 bpb
+  step   7238   15.0 min  lr 5.25e-04  train 0.5649 bpb  held-out(static 4096) 6.4349 bpb
+  step   8686   18.0 min  lr 3.78e-04  train 0.5211 bpb  held-out(static 4096) 6.6202 bpb
+  step  10137   21.0 min  lr 2.46e-04  train 0.4931 bpb  held-out(static 4096) 7.0577 bpb
+  step  11588   24.0 min  lr 1.41e-04  train 0.4726 bpb  held-out(static 4096) 7.0836 bpb
+  step  13041   27.0 min  lr 7.32e-05  train 0.4579 bpb  held-out(static 4096) 7.2193 bpb
+
+========================================================================
+  Evaluate tf-s   [t+128.7 min]
+========================================================================
+  BGL          seen     sliding-1024 0.1414
+  HDFS_1       seen     sliding-1024 0.4965
+  Hadoop       seen     sliding-1024 0.3909
+  Spark        seen     sliding-1024 0.2530
+  HPC          seen     sliding-1024 0.5303
+  Mac          seen     sliding-1024 0.6840
+  Android      seen     sliding-1024 0.9415
+  Windows      seen     sliding-1024 0.3109
+  Thunderbird  seen     sliding-1024 0.8450
+  OpenStack    seen     sliding-1024 0.5187
+  HealthApp    seen     sliding-1024 0.5671
+  apache       heldout  sliding-1024 7.3906
+  linux        heldout  sliding-1024 6.9908
+  openssh      heldout  sliding-1024 7.1057
+  zookeeper    heldout  sliding-1024 6.2641
+  proxifier    heldout  sliding-1024 9.2328
+
+========================================================================
+  Reference: Mamba-130M (HF, backbone only, independent chunks of 4096 tokens)   [t+129.0 min]
+========================================================================
+  BGL          seen     bpb=0.2234 (155,607 tokens)
+  HDFS_1       seen     bpb=0.6161 (110,457 tokens)
+  Hadoop       seen     bpb=0.4436 (106,095 tokens)
+  Spark        seen     bpb=0.2434 (102,449 tokens)
+  HPC          seen     bpb=0.2053 (93,224 tokens)
+  Mac          seen     bpb=0.7850 (110,599 tokens)
+  Android      seen     bpb=1.0118 (115,674 tokens)
+  Windows      seen     bpb=0.4549 (113,007 tokens)
+  Thunderbird  seen     bpb=0.5784 (117,602 tokens)
+  OpenStack    seen     bpb=0.8623 (154,917 tokens)
+  HealthApp    seen     bpb=0.5230 (129,774 tokens)
+  apache       heldout  bpb=0.1746 (61,101 tokens)
+  linux        heldout  bpb=0.2461 (85,232 tokens)
+  openssh      heldout  bpb=0.2140 (85,384 tokens)
+  zookeeper    heldout  bpb=0.1702 (111,521 tokens)
+  proxifier    heldout  bpb=0.2049 (130,828 tokens)
+
+========================================================================
+  Summary — bpb per evaluation set   [t+188.4 min]
+========================================================================
+  set         kind      classical   lstm-xs:static-1   lstm-xs:static-4   lstm-xs:static-1    lstm-s:static-1    lstm-s:static-4    lstm-s:static-1    lstm-m:static-1    lstm-m:static-4    lstm-m:static-1      tf-s:sliding- mamba-130:chunks-4
+  BGL         seen         0.1789             0.4314             0.4141             0.4098             0.4260             0.4107             0.4068             0.4320             0.4179             0.4143             0.1414             0.2234
+  HDFS_1      seen         0.5422                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.4965             0.6161
+  Hadoop      seen         0.4543                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.3909             0.4436
+  Spark       seen         0.3103                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.2530             0.2434
+  HPC         seen         0.2742                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.5303             0.2053
+  Mac         seen         0.5825                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.6840             0.7850
+  Android     seen         0.7357                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.9415             1.0118
+  Windows     seen         0.2099                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.3109             0.4549
+  Thunderbird seen         0.3871                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.8450             0.5784
+  OpenStack   seen         0.5395                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.5187             0.8623
+  HealthApp   seen         0.4798                  -                  -                  -                  -                  -                  -                  -                  -                  -             0.5671             0.5230
+  apache      heldout      0.3132                  -                  -                  -                  -                  -                  -                  -                  -                  -             7.3906             0.1746
+  linux       heldout      0.3697                  -                  -                  -                  -                  -                  -                  -                  -                  -             6.9908             0.2461
+  openssh     heldout      0.3460                  -                  -                  -                  -                  -                  -                  -                  -                  -             7.1057             0.2140
+  zookeeper   heldout      0.2043                  -                  -                  -                  -                  -                  -                  -                  -                  -             6.2641             0.1702
+  proxifier   heldout      0.2416                  -                  -                  -                  -                  -                  -                  -                  -                  -             9.2328             0.2049
+
+  mean bpb over heldout sets:
+    best classical                     0.2950
+    tf-s sliding-1024                  7.3968
+    mamba-130m chunks-4096-tokens      0.2020
+
+  mean bpb over seen sets:
+    best classical                     0.4268
+    tf-s sliding-1024                  0.5163
+    mamba-130m chunks-4096-tokens      0.5407
+
+DONE in 3.14 h

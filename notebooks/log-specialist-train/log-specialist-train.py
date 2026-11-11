@@ -340,7 +340,7 @@ def static_bits(model, kind, blob, chunk, device):
                 rest = [g for g in group if len(g) != size and len(g) > 1]
                 bits += 8.0 * len(group)
                 for part in ([torch.stack(full)] if full else []) + [r[None] for r in rest]:
-                    logits, _ = model(part[:, :-1])
+                    logits, _ = model(part[:, :-1].contiguous())
                     bits += float(F.cross_entropy(logits.reshape(-1, 256).float(), part[:, 1:].reshape(-1),
                                                   reduction="sum").item()) / LN2
         else:
