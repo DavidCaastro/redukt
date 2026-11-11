@@ -1,0 +1,124 @@
+ref e932f38; periods [4096, 8192, 16384, 2048, 32768]; overlaps [(4096, 0), (4096, 512), (4096, 1024), (4096, 2048), (8192, 0), (8192, 1024), (16384, 0)]; deadline 8.0 h
+
+========================================================================
+  1. Source, build, weights, data   [t+0.0 min]
+========================================================================
+  apache-access.log            171,239 B
+  dickens.500k                 512,000 B
+  enwik8.500k                  512,000 B
+  facturae-batch.xml            38,371 B
+  linux-syslog.log             216,485 B
+  openssh-auth.log             225,216 B
+  ubl-invoice-batch.xml         81,558 B
+
+========================================================================
+  A. Real .azth per reset period — plugin lockstep, one batch per period   [t+1.0 min]
+========================================================================
+  reset-every 4096: 1676 s  [compress] 7/7 succeeded; 576010 tokens in 1674.8s of lockstep = 343.9 tok/s aggregate (239.4 s/file wall)
+    apache-access.log            171,239 ->    3,958 B  bpb=0.1849
+    dickens.500k                 512,000 ->   67,971 B  bpb=1.0620
+    enwik8.500k                  512,000 ->   62,060 B  bpb=0.9697
+    facturae-batch.xml            38,371 ->    1,155 B  bpb=0.2408
+    linux-syslog.log             216,485 ->    6,628 B  bpb=0.2449
+    openssh-auth.log             225,216 ->    5,670 B  bpb=0.2014
+    ubl-invoice-batch.xml         81,558 ->    2,439 B  bpb=0.2392
+  reset-every 8192: 1677 s  [compress] 7/7 succeeded; 576010 tokens in 1676.6s of lockstep = 343.6 tok/s aggregate (239.6 s/file wall)
+    apache-access.log            171,239 ->    3,917 B  bpb=0.1830
+    dickens.500k                 512,000 ->   67,811 B  bpb=1.0595
+    enwik8.500k                  512,000 ->   62,215 B  bpb=0.9721
+    facturae-batch.xml            38,371 ->    1,206 B  bpb=0.2514
+    linux-syslog.log             216,485 ->    6,624 B  bpb=0.2448
+    openssh-auth.log             225,216 ->    5,902 B  bpb=0.2096
+    ubl-invoice-batch.xml         81,558 ->    2,401 B  bpb=0.2355
+  reset-every 16384: 1682 s  [compress] 7/7 succeeded; 576010 tokens in 1681.5s of lockstep = 342.6 tok/s aggregate (240.3 s/file wall)
+    apache-access.log            171,239 ->    5,515 B  bpb=0.2577
+    dickens.500k                 512,000 ->   68,847 B  bpb=1.0757
+    enwik8.500k                  512,000 ->   65,639 B  bpb=1.0256
+    facturae-batch.xml            38,371 ->    2,029 B  bpb=0.4230
+    linux-syslog.log             216,485 ->    9,610 B  bpb=0.3551
+    openssh-auth.log             225,216 ->   10,520 B  bpb=0.3737
+    ubl-invoice-batch.xml         81,558 ->    2,963 B  bpb=0.2906
+  reset-every 2048: 1681 s  [compress] 7/7 succeeded; 576010 tokens in 1679.9s of lockstep = 342.9 tok/s aggregate (240.1 s/file wall)
+    apache-access.log            171,239 ->    4,382 B  bpb=0.2047
+    dickens.500k                 512,000 ->   68,975 B  bpb=1.0777
+    enwik8.500k                  512,000 ->   62,750 B  bpb=0.9805
+    facturae-batch.xml            38,371 ->    1,309 B  bpb=0.2729
+    linux-syslog.log             216,485 ->    7,172 B  bpb=0.2650
+    openssh-auth.log             225,216 ->    6,527 B  bpb=0.2318
+    ubl-invoice-batch.xml         81,558 ->    2,505 B  bpb=0.2457
+  reset-every 32768: 1684 s  [compress] 7/7 succeeded; 576010 tokens in 1683.6s of lockstep = 342.1 tok/s aggregate (240.6 s/file wall)
+    apache-access.log            171,239 ->    7,970 B  bpb=0.3723
+    dickens.500k                 512,000 ->   78,745 B  bpb=1.2304
+    enwik8.500k                  512,000 ->  106,387 B  bpb=1.6623
+    facturae-batch.xml            38,371 ->    2,139 B  bpb=0.4460
+    linux-syslog.log             216,485 ->   16,703 B  bpb=0.6172
+    openssh-auth.log             225,216 ->   15,420 B  bpb=0.5477
+    ubl-invoice-batch.xml         81,558 ->    4,515 B  bpb=0.4429
+  roundtrip reset-every 8192: 7/7 byte-identical (PASS) in 1620 s
+
+  [A] bpb by file (rows) and setting (columns)
+  file                              2048        4096        8192       16384       32768
+  apache-access.log               0.2047      0.1849      0.1830      0.2577      0.3723
+  dickens.500k                    1.0777      1.0620      1.0595      1.0757      1.2304
+  enwik8.500k                     0.9805      0.9697      0.9721      1.0256      1.6623
+  facturae-batch.xml              0.2729      0.2408      0.2514      0.4230      0.4460
+  linux-syslog.log                0.2650      0.2449      0.2448      0.3551      0.6172
+  openssh-auth.log                0.2318      0.2014      0.2096      0.3737      0.5477
+  ubl-invoice-batch.xml           0.2457      0.2392      0.2355      0.2906      0.4429
+
+========================================================================
+  B. Overlapped reset — backbone-only estimate (HF Mamba-130M, no CM)   [t+168.1 min]
+========================================================================
+  P=4096   K=0     apache-access.log          bpb=0.1745  forwards/token=1.000
+  P=4096   K=0     enwik8.500k                bpb=0.9381  forwards/token=1.000
+  P=4096   K=0     facturae-batch.xml         bpb=0.2329  forwards/token=1.000
+  P=4096   K=0     linux-syslog.log           bpb=0.2459  forwards/token=1.000
+  P=4096   K=0     openssh-auth.log           bpb=0.2136  forwards/token=1.000
+  P=4096   K=0     ubl-invoice-batch.xml      bpb=0.4128  forwards/token=1.000
+  P=4096   K=512   apache-access.log          bpb=0.1365  forwards/token=1.117
+  P=4096   K=512   enwik8.500k                bpb=0.9255  forwards/token=1.124
+  P=4096   K=512   facturae-batch.xml         bpb=0.1769  forwards/token=1.122
+  P=4096   K=512   linux-syslog.log           bpb=0.2074  forwards/token=1.120
+  P=4096   K=512   openssh-auth.log           bpb=0.1550  forwards/token=1.120
+  P=4096   K=512   ubl-invoice-batch.xml      bpb=0.3535  forwards/token=1.124
+  P=4096   K=1024  apache-access.log          bpb=0.1381  forwards/token=1.235
+  P=4096   K=1024  enwik8.500k                bpb=0.9250  forwards/token=1.247
+  P=4096   K=1024  facturae-batch.xml         bpb=0.1680  forwards/token=1.243
+  P=4096   K=1024  linux-syslog.log           bpb=0.2077  forwards/token=1.240
+  P=4096   K=1024  openssh-auth.log           bpb=0.1583  forwards/token=1.240
+  P=4096   K=1024  ubl-invoice-batch.xml      bpb=0.3049  forwards/token=1.248
+  P=4096   K=2048  apache-access.log          bpb=0.1490  forwards/token=1.469
+  P=4096   K=2048  enwik8.500k                bpb=0.9269  forwards/token=1.494
+  P=4096   K=2048  facturae-batch.xml         bpb=0.1804  forwards/token=1.486
+  P=4096   K=2048  linux-syslog.log           bpb=0.2166  forwards/token=1.481
+  P=4096   K=2048  openssh-auth.log           bpb=0.1822  forwards/token=1.480
+  P=4096   K=2048  ubl-invoice-batch.xml      bpb=0.2780  forwards/token=1.497
+  P=8192   K=0     apache-access.log          bpb=0.2057  forwards/token=1.000
+  P=8192   K=0     enwik8.500k                bpb=0.9389  forwards/token=1.000
+  P=8192   K=0     facturae-batch.xml         bpb=0.2579  forwards/token=1.000
+  P=8192   K=0     linux-syslog.log           bpb=0.2686  forwards/token=1.000
+  P=8192   K=0     openssh-auth.log           bpb=0.3141  forwards/token=1.000
+  P=8192   K=0     ubl-invoice-batch.xml      bpb=0.4114  forwards/token=1.000
+  P=8192   K=1024  apache-access.log          bpb=0.2452  forwards/token=1.117
+  P=8192   K=1024  enwik8.500k                bpb=0.9380  forwards/token=1.124
+  P=8192   K=1024  facturae-batch.xml         bpb=0.2344  forwards/token=1.081
+  P=8192   K=1024  linux-syslog.log           bpb=0.2841  forwards/token=1.120
+  P=8192   K=1024  openssh-auth.log           bpb=0.4309  forwards/token=1.120
+  P=8192   K=1024  ubl-invoice-batch.xml      bpb=0.4436  forwards/token=1.124
+  P=16384  K=0     apache-access.log          bpb=0.9965  forwards/token=1.000
+  P=16384  K=0     enwik8.500k                bpb=1.0139  forwards/token=1.000
+  P=16384  K=0     facturae-batch.xml         bpb=0.5585  forwards/token=1.000
+  P=16384  K=0     linux-syslog.log           bpb=1.1806  forwards/token=1.000
+  P=16384  K=0     openssh-auth.log           bpb=1.7710  forwards/token=1.000
+  P=16384  K=0     ubl-invoice-batch.xml      bpb=1.1036  forwards/token=1.000
+
+  [B] bpb by file (rows) and setting (columns)
+  file                          P4096+K0  P4096+K512 P4096+K1024 P4096+K2048    P8192+K0 P8192+K1024   P16384+K0
+  apache-access.log               0.1745      0.1365      0.1381      0.1490      0.2057      0.2452      0.9965
+  enwik8.500k                     0.9381      0.9255      0.9250      0.9269      0.9389      0.9380      1.0139
+  facturae-batch.xml              0.2329      0.1769      0.1680      0.1804      0.2579      0.2344      0.5585
+  linux-syslog.log                0.2459      0.2074      0.2077      0.2166      0.2686      0.2841      1.1806
+  openssh-auth.log                0.2136      0.1550      0.1583      0.1822      0.3141      0.4309      1.7710
+  ubl-invoice-batch.xml           0.4128      0.3535      0.3049      0.2780      0.4114      0.4436      1.1036
+
+DONE in 4.80 h

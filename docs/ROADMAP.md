@@ -14,9 +14,10 @@ ningún backbone preentrenado más pequeño que conserve el ratio (R-105 paso 1)
 
 | Orden | Tarea | Qué decide | Estado |
 |---|---|---|---|
-| 1 | R-111 — periodo de reinicio en ficheros de industria (8192/16384, solapamiento) | ratio a coste cero | ACTIVA |
-| 2 | R-112 — especialista por dominio entrenado por nosotros (logs, Loghub, sistemas retenidos) | si un modelo 10-100x más barato generaliza dentro de un dominio | ACTIVA |
-| 3 | R-113 — cuantificar la vía 3 (segmentos donde el byte vale más que $33-60/GB) | si existe cliente para el producto actual | ACTIVA |
+| 1 | R-111 — periodo de reinicio en ficheros de industria (8192/16384, solapamiento) | ratio a coste cero | ✅ HECHA: 4096 se mantiene; solapamiento -16..-33% (backbone solo), no priorizado |
+| 2 | R-112 — especialista por dominio entrenado por nosotros (logs, Loghub, sistemas retenidos) | si un modelo 10-100x más barato generaliza dentro de un dominio | ✅ HECHA: **NO-GO** (4-9 bpb en sistemas no vistos) |
+| 3 | R-113 — cuantificar la vía 3 (segmentos donde el byte vale más que $33-60/GB) | si existe cliente para el producto actual | ✅ HECHA: **viable con condiciones** solo en satélite de banda estrecha |
+| 4 | R-114 / R-115 / R-116 — modo mensaje, ARM64 + determinismo, validación de mercado | si la vía 3 es un producto | PROPUESTAS (pendientes de decisión) |
 | — | R-104 F2 + goldens en CI, despliegue real de R-102 | higiene de producto | CONDICIONADAS a que R-112 o R-113 den un caso viable |
 
 **Deprecado en esta repriorización** (no cierran la brecha; el detalle queda en cada tarea como registro):
@@ -25,6 +26,13 @@ R-084/R-085/R-086 (MambaByte general), R-089 (benchmark vs Nacrith), Fase 18 com
 
 **Regla de parada**: si R-112 y R-113 salen negativas, el proyecto no es viable como producto de ahorro de
 almacenamiento y se documenta como tal antes de invertir más ingeniería.
+
+**Resultado (2026-11-11)**: R-112 negativa, R-113 positiva con condiciones. **Como producto de ahorro de
+almacenamiento (texto, XML, logs en disco u objeto) Redukt NO es viable**: el coste es 100-170x el valor y las
+dos vías técnicas para bajarlo (GPU, tier rápido) están cerradas con medidas. Queda un único segmento
+candidato, la mensajería por satélite de banda estrecha (Iridium SBD/IMT/Certus, Inmarsat BGAN), donde el
+producto actual vale 1-3 órdenes de magnitud más de lo que cuesta, con cinco condiciones abiertas
+(`docs/internal/research/path3-expensive-bytes-2026-11-11.md` §5).
 
 ---
 
@@ -3028,8 +3036,8 @@ optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
 R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-107 ✅ (FMA +12-22% en lote);
 R-104 EN CURSO (F1 ✅, F3 lint ✅, F2 y goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
-R-110 (pipeline de host del plugin) PENDIENTE; R-105 EN CURSO (paso 1 ✅: ningún backbone preentrenado más
-pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por nosotros); R-101 PENDIENTE.
+R-105 CERRADA sin tier rápido (paso 1 ✅: ningún backbone preentrenado más pequeño conserva el ratio; paso 2 ✅
+= R-112, NO-GO al especialista por dominio). R-110 y R-101 DEPRECADAS. La continuación es la Fase 20.
 
 ---
 
@@ -3042,22 +3050,34 @@ pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por noso
 > **Regla de parada**: R-112 y R-113 negativas -> no viable como producto de ahorro de almacenamiento.
 
 - R-111: Periodo de reinicio del estado en ficheros de industria
-  - **Estado**: ACTIVA
+  - **Estado**: COMPLETADA (2026-11-11) — informe `docs/internal/research/reset-period-sweep-2026-11-11.md`
+  - **Resultado**: `.azth` reales en T4 (7 ficheros, 5 periodos, roundtrip 7/7): 4096 es el óptimo práctico —
+    8192 suma +1.0% de bytes en los 5 de industria (±1.5% en cinco ficheros, +4% en facturae y openssh), 2048
+    +10.3%, 16384 +54% (el modelo se degrada). **El valor por defecto no cambia.** Reinicio con solapamiento
+    (estimación con el backbone solo, sin implementar): recalentar con K=512-1024 tokens da -20..-22% de bits en
+    industria (-16..-33% por fichero) por +12..+24% de forwards; -1.4% en texto. No priorizado: solo actúa en
+    ficheros de más de 4096 tokens, que es el segmento no viable; en mensajes cortos el reinicio no se dispara
   - **Prioridad**: P0 — ratio a coste de cómputo cero
   - **Contexto**: R-108 fijó 4096 tokens con enwik8 100 KB. La sonda midió (backbone solo) que bajar de 4096 a
     2048 cuesta 18-75% de bpb en XML y logs y solo 1.5-3% en texto: el contexto es de primer orden en datos
     repetitivos. Mamba-130M degenera hacia los 16-18K tokens, así que hay margen hasta 8192-16384.
   - **Subtareas**:
-    - [ ] `.azth` reales (con CM) de los 5 ficheros de industria y de texto (enwik8 1 MB, dickens 500 KB) con
-      `--reset-every` 2048/4096/8192/16384 en T4
-    - [ ] Reinicio con solapamiento (recalentar el estado con los últimos K tokens): estimación con el backbone
+    - [x] `.azth` reales (con CM) de los 5 ficheros de industria y de texto (enwik8 500 KB, dickens 500 KB) con
+      `--reset-every` 2048/4096/8192/16384/32768 en T4
+    - [x] Reinicio con solapamiento (recalentar el estado con los últimos K tokens): estimación con el backbone
       solo antes de tocar el formato
-    - [ ] Decidir el valor por defecto (global o por tipo de contenido) con roundtrip y gates de referencia
+    - [x] Decidir el valor por defecto: se mantiene 4096
   - **Criterios de aceptación**:
     - Tabla bpb por fichero y periodo con el `.azth` real, roundtrip verificado
     - Cambio de valor por defecto solo si mejora en industria sin empeorar texto más de un 1%
 - R-112: Especialista por dominio entrenado por nosotros (R-105 paso 2)
-  - **Estado**: ACTIVA
+  - **Estado**: COMPLETADA (2026-11-11) — **NO-GO**; informe `docs/internal/research/log-specialist-2026-11-11.md`
+  - **Resultado**: 4 modelos a nivel de byte (LSTM 0.28M/0.94M/3.6M y transformer 1.0M) entrenados con 456.6 MB de
+    11 sistemas de Loghub. En 5 sistemas NO vistos (incluidos Apache, Linux y OpenSSH del benchmark): estático
+    4.0-9.2 bpb (11-38x peor que xz), empeorando con el entrenamiento; con adaptación en línea 0.23-1.06 bpb
+    (media 0.452 el de 3.6M) frente a 0.295 del mejor clásico y 0.202 de Mamba-130M. En sistemas vistos el
+    transformer de 1M iguala al backbone de Mamba-130M (0.516 vs 0.541) y pierde contra el clásico (0.427).
+    Techo económico de los logs: ahorro máximo ~$0.07/GB a 7 años. **La vía 2 (tier rápido) queda cerrada**
   - **Prioridad**: P0 — única apuesta técnica que puede cambiar el orden de magnitud del coste
   - **Pregunta**: ¿un modelo de 1-10M entrenado con logs de unos sistemas comprime los de sistemas que no ha
     visto? (L3TC demostró que dentro del dominio 3-12M igualan a 130M y que fuera no sirven.)
@@ -3066,27 +3086,52 @@ pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por noso
     modelo a nivel de byte (vocab 256: sin el suelo de coste de la cabeza de 50K) cargable por el runtime
     (infraestructura de la Fase 15: conversión de pesos + cargador byte-level).
   - **Subtareas**:
-    - [ ] Entrenar 2-3 tamaños en T4 con división por sistemas
-    - [ ] Medir bpb (backbone solo) en sistemas retenidos frente a xz/brotli y frente a Mamba-130M
-    - [ ] Si pasa: cargarlo en el runtime y medir `.azth` real con CM y B/s por vCPU
-    - [ ] Decisión GO/NO-GO con `scripts/breakeven.py`
+    - [x] Entrenar 4 tamaños en T4 con división por sistemas
+    - [x] Medir bpb (backbone solo) en sistemas retenidos frente a xz/brotli y frente a Mamba-130M
+    - [ ] ~~Si pasa: cargarlo en el runtime~~ — no pasa
+    - [x] Decisión: NO-GO
   - **Criterios de aceptación**:
     - GO solo si en sistemas NO vistos gana a xz/brotli y el coste proyectado por GB baja del valor del ahorro
     - Los XML de factura del repo son sintéticos: no valen de gate
 - R-113: Cuantificar la vía 3 — segmentos donde el byte vale más que el cómputo
-  - **Estado**: ACTIVA
+  - **Estado**: COMPLETADA (2026-11-11) — **viable con condiciones**; informe
+    `docs/internal/research/path3-expensive-bytes-2026-11-11.md`
+  - **Resultado**: $/GB transmitido (revendedores): Iridium SBD 0.79-3.15M, IMT 300-500K, Certus 100 / BGAN
+    3.5-15K, IoT celular 28-210, Starlink marítimo 1-6, egress 0.05-0.12. Solo la banda estrecha por satélite
+    supera los $33-60/GB de coste. Mensajes cortos (480 mensajes reales de 128-2048 B, CPU, roundtrip 24/24):
+    el `.azth` es un 41-53% menor que brotli -11 (30/30 celdas); frente a zstd -19 con diccionario de dominio
+    gana 16/30 (todo el texto; todo a 2 KB) y pierde en mensajes cortos de logs/JSON por los 19 B de cabecera;
+    la carga útil sola gana 24/30 (-26% a -42%). IoT celular, Starlink y egress: no viables
   - **Prioridad**: P0 — única vía que cambia el umbral en lugar del coste
   - **Pregunta**: ¿existe un cliente para quien 1 GB ahorrado valga más de $33-60 (el coste actual)?
   - **Subtareas**:
-    - [ ] Precios reales por GB transmitido: satélite IoT/M2M, banda estrecha celular, egress de nube
-    - [ ] Punto de equilibrio por segmento con el ratio y el coste medidos (incluida la restricción de que el
-      extremo emisor tiene que poder ejecutar el modelo)
-    - [ ] Informe con veredicto por segmento
+    - [x] Precios reales por GB transmitido: satélite IoT/M2M, banda estrecha celular, egress de nube
+    - [x] Punto de equilibrio por segmento con el ratio medido en mensajes cortos
+    - [x] Informe con veredicto por segmento
   - **Criterios de aceptación**:
     - Tabla $/GB de valor por segmento con fuente, frente a $/GB de coste medido
     - Veredicto explícito: viable / no viable / viable con condiciones
 
-**Estado de la fase**: EN CURSO (2026-11-11).
+- R-114: Modo mensaje — encuadre compacto del AZTH para mensajes cortos
+  - **Estado**: PROPUESTA (pendiente de decisión sobre la vía 3)
+  - **Qué**: cabecera de 2-4 B (versión + perfil en 1 B, longitud en varint, CRC opcional) en lugar de 15 B + 4 B.
+    Con los 19 B actuales el `.azth` pierde contra zstd con diccionario por debajo de ~512 B en logs y JSON
+  - **Criterio**: repetir las 30 celdas de `short-message-bench`; ganar a zstd -19 + diccionario en >= 24
+- R-115: ARM64 — compilación, rendimiento y determinismo ARM <-> x86
+  - **Estado**: PROPUESTA (pendiente de decisión sobre la vía 3)
+  - **Qué**: el emisor en un enlace por satélite es un terminal ARM. Medir tok/s, memoria y energía por mensaje,
+    y verificar que un `.azth` de ARM descomprime en x86 y viceversa. Reactiva R-104 F2 (ruta escalar con el
+    orden de AVX2), que deja de ser higiene y pasa a ser requisito
+  - **Criterio**: mismo sha256 ARM64 == x86-64 en enwik8/facturae/apache y en un lote de mensajes cortos
+- R-116: Validación de mercado de la vía 3
+  - **Estado**: PROPUESTA (no es ingeniería)
+  - **Qué**: corpus real del segmento (partes meteorológicos, correo de a bordo, telemetría en JSON), tamaño
+    del mercado (terminales, MB/mes, disposición a pagar) y contraste con un integrador de comunicaciones por
+    satélite. Sin esto no se debe escribir más código para la vía 3
+
+**Estado de la fase**: R-111, R-112 y R-113 COMPLETADAS (2026-11-11). Veredicto: no viable como producto de
+ahorro de almacenamiento; un segmento candidato (satélite de banda estrecha) con condiciones abiertas.
+R-114/R-115/R-116 propuestas, pendientes de decisión.
 
 ---
 
@@ -3431,3 +3476,7 @@ pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por noso
 | 2026-11-11 | run-e-batch (T4, kernel B v4): plugin por la CLI N=12/32/64/128 = 530/573/582/559 tok/s (1.8-2.1 KB/s, $33-38/GB spot); saturado desde N=12, mitad del arnés FFI (1,117 tok/s); batch == single y roundtrip en lote PASS; R-110 definido (pipeline de host); fase D del notebook corregida |
 | 2026-11-11 | R-105 paso 1: sonda de backbones pequeños preentrenados (Kaggle T4, `small-backbone-probe` v1+v3): Pythia 14M-70M pierden 27-54% de bpb en texto y el margen en industria; L3TC 200K-12M solo sirven sobre enwik8 (1.46 bpb en enwik9 no visto, 4.3-7.3 en XML/logs) y su repo no tiene licencia; SmolLM2-135M mejor que Mamba en texto/XML a igual coste; NO-GO a los preentrenados, siguiente paso = especialista por dominio propio; hallazgo lateral: el periodo de reinicio pesa 18-75% en XML/logs |
 | 2026-11-11 | Repriorización: Fase 20 (R-111 periodo de reinicio en industria, R-112 especialista por dominio, R-113 vía 3). Deprecados R-101, pendientes de R-107, R-110 y kernels GPU, R-084/085/086, R-089 y la Fase 18 completa: no cierran una brecha de 100-170x. Regla de parada definida |
+| 2026-11-11 | 8304bee R-113: vía 3 cuantificada — solo el satélite de banda estrecha ($3.5K-3.15M/GB) vale más que el cómputo; mensajes cortos: `.azth` -41..-53% vs brotli (30/30), 16/30 vs zstd + diccionario (24/30 sin los 19 B de cabecera); viable con condiciones |
+| 2026-11-11 | 45d2026 R-112: especialista de logs NO-GO — estático 4.0-9.2 bpb en sistemas no vistos (11-38x peor que xz), dinámico 0.452 de media frente a 0.295 del clásico y 0.202 de Mamba-130M; vía 2 cerrada |
+| 2026-11-11 | R-111: barrido del periodo de reinicio con `.azth` reales (T4, roundtrip 7/7) — 4096 se mantiene (8192 +1.0% en industria, 2048 +10.3%, 16384 +54%); reinicio con solapamiento K=512-1024 -20..-22% de bits en industria con el backbone solo, no priorizado |
+| 2026-11-11 | Fase 20 cerrada: Redukt no es viable como producto de ahorro de almacenamiento; segmento candidato único = mensajería por satélite de banda estrecha, con R-114/R-115/R-116 propuestas |

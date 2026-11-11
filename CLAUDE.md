@@ -50,8 +50,23 @@ Admitted paths to close it (every new phase must justify itself against one of t
    generalization to unseen systems, not size). SmolLM2-135M beats Mamba-130M at equal cost on text (-5..-11%)
    and XML (-19..-21%), loses on logs (+3..+8%). Side finding: halving the reset period (4096 -> 2048 tokens)
    costs 18-75% bpb on XML/logs but 1.5-3% on text -> measure 8192 / overlapped reset on industry files.
+   Step 2 measured the same day (`docs/internal/research/log-specialist-2026-11-11.md`): byte-level specialists
+   (0.28M-3.6M) trained by us on 11 Loghub systems give 4.0-9.2 bpb on 5 UNSEEN systems (11-38x worse than xz);
+   with online adaptation 0.452 mean vs 0.295 best classical vs 0.202 Mamba-130M. Logs cap the value at
+   ~$0.07/GB anyway. **Path 2 is closed (NO-GO) in both variants.**
 3. Segments where bytes are expensive to move or retention is regulated (satellite/IoT links,
    egress, compliance), where the threshold is far lower than storage savings.
+   Quantified 2026-11-11 (`docs/internal/research/path3-expensive-bytes-2026-11-11.md`; reseller prices):
+   Iridium SBD $0.79-3.15M/GB, IMT $300-500K, Certus 100 / BGAN $3.5-15K — the ONLY segment worth more than the
+   compute; cellular IoT $28-210, Starlink maritime $1-6 and cloud egress $0.05-0.12 are not viable. Short
+   messages (480 real messages of 128-2048 B, CPU path, roundtrip 24/24): `.azth` is 41-53% smaller than
+   brotli -11 (30/30 cells); vs zstd -19 with a domain dictionary it wins 16/30 (all text, everything at 2 KB)
+   and loses on short log/JSON messages because of the 19-byte header (payload alone wins 24/30, -26..-42%).
+   Viable WITH CONDITIONS: compact message framing (R-114), the sender terminal must run a 130 MB model and
+   ARM <-> x86 determinism (R-115, reactivates R-104 F2), unverified market size (R-116), text-like traffic.
+**Verdict of Fase 20 (2026-11-11): Redukt is NOT viable as a storage-saving product** (cost 100-170x the value;
+paths 1 and 2 closed by measurement). The only candidate segment is narrowband satellite messaging. Do not
+start storage-oriented optimization work (kernels, quantization, fast tier) without new evidence.
 The metric is cost per GB (throughput per vCPU or per GPU-hour), NOT throughput per machine.
 Competitive reference (2026-11-10, `docs/internal/research/competitive-position-2026-11-10/REPORT.md`): no
 commercial neural lossless compressor exists for text/XML/logs (the category is empty for cost reasons, CIDR 2026
@@ -350,6 +365,9 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
 | R-108 periodic backbone state reset — in the format (PROFILE bit 6 + RESET_LOG2, default 4096 for Mamba) | enwik8 100 KB 1.6327 -> 0.9951 bpb; 5/5 whole industry files win again (-5% to -44% vs brotli); header-driven decompress roundtrip OK; `--reset-every 0` = old output; 10 KB references +1 B | done |
+| Fase 20 R-111 reset period sweep (`reset-period-sweep/`, T4, real `.azth`, roundtrip 7/7) | 4096 stays: 8192 +1.0% bytes on the 5 industry files, 2048 +10.3%, 16384 +54%; overlapped reset (warm-up K=512-1024 tokens) -20..-22% bits on industry backbone-only at +12..+24% forwards, not implemented | default unchanged |
+| Fase 20 R-112 log specialist (`log-specialist/`) | static 4.0-9.2 bpb on unseen systems; dynamic 0.452 vs 0.295 classical vs 0.202 Mamba-130M | NO-GO, path 2 closed |
+| Fase 20 R-113 path 3 + short messages (`short-message-bench/`) | narrowband satellite $3.5K-3.15M/GB; `.azth` -41..-53% vs brotli, 16/30 vs zstd + dictionary (24/30 without the 19 B header) | viable with conditions |
 | R-105 step 1: pretrained small-backbone probe (`small-backbone-probe/`, 2026-11-11) | backbone-only bpb, enwik8 500 KB: Mamba-130M 0.938, SmolLM2-135M 0.834, Pythia-160M/70M/31M/14M 1.026/1.193/1.283/1.448, L3TC-12M/3.2M/200K 0.850/1.039/1.318 (training file) but 1.467/1.455/1.628 on unseen enwik9 and 4.3-7.3 on XML/logs | NO-GO for published models; next = own domain specialist |
 | R-109 CLI batch scaling on T4 (`run-e-batch`, 2026-11-11) | N=12/32/64/128 = 530/573/582/559 tok/s engine (1.8-2.1 KB/s, $33-38/GB spot); 128 x 50 KB 1.049 bpb at 552 tok/s; batch == single 3/3 at N=12 and N=128, batch roundtrip 32/32; saturated from N=12, half the FFI harness | measured -> R-110 |
 | R-104 F3 libm lint (`tests/libm_lint.rs`, e93b72e) | fails on any platform transcendental on the codec path; found and fixed `log2` in content detection and 3 `powi`; output identical 6/6 | done (goldens pending) |
@@ -368,8 +386,9 @@ Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not d
 validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
 ceiling, headroom 15-25x); R-109 measured through the CLI at N=12..128 (flat ~550 tok/s, $33-38/GB) -> R-110 (host
 pipeline of the plugin lockstep) is the next GPU lever, before kernels; R-104 F1 done (libm replaced by `fmath`),
-F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending; R-105 step 1 done (no published
-smaller backbone keeps the ratio), step 2 (own domain specialist) pending; R-101 pending.
+F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending — required by R-115 if path 3 is
+pursued; R-105 closed (steps 1 and 2 NO-GO); R-101, R-110, R-107 follow-ups, R-084..R-086, R-089 and Fase 18
+DEPRECATED (ROADMAP "Prioridad vigente"). Fase 20 done: R-111, R-112, R-113; R-114/R-115/R-116 proposed.
 Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)
