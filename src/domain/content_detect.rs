@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use crate::domain::fmath::log_f64;
+
 /// Detected content type for preprocessing dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentType {
@@ -120,7 +122,8 @@ fn shannon_entropy(freq: &[u32; 256], n: f64) -> f64 {
     for &f in freq {
         if f > 0 {
             let p = f as f64 / n;
-            h -= p * p.log2();
+            // R-104 F3: fmath, not libm — the routing features must be identical on every platform.
+            h -= p * (log_f64(p) * std::f64::consts::LOG2_E);
         }
     }
     h

@@ -115,7 +115,7 @@ fn f16_to_f32(bits: u16) -> f32 {
         }
         // Subnormal f16 → normal f32
         let mut f = frac as f32 / 1024.0;
-        f *= 2.0f32.powi(-14);
+        f *= 1.0 / 16384.0; // 2^-14, exact (no powi: R-104 F3 lint)
         if sign == 1 { -f } else { f }
     } else if exp == 31 {
         if frac == 0 {
