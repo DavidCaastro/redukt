@@ -5,6 +5,29 @@
 
 ---
 
+## Prioridad vigente (2026-11-11) — ver Fase 20
+
+**Diagnóstico**: comprimir 1 GB cuesta $33-60 (CPU spot $56, T4 por la CLI $33-38) y el ahorro de almacenamiento
+vale $0.06-0.33/GB a 7 años: brecha de 100-170x. Todo lo que había pendiente y atacaba el coste suma ~3-4x. El
+límite es el tamaño del backbone (130M parámetros y 50K logits por token), no su implementación, y no existe
+ningún backbone preentrenado más pequeño que conserve el ratio (R-105 paso 1).
+
+| Orden | Tarea | Qué decide | Estado |
+|---|---|---|---|
+| 1 | R-111 — periodo de reinicio en ficheros de industria (8192/16384, solapamiento) | ratio a coste cero | ACTIVA |
+| 2 | R-112 — especialista por dominio entrenado por nosotros (logs, Loghub, sistemas retenidos) | si un modelo 10-100x más barato generaliza dentro de un dominio | ACTIVA |
+| 3 | R-113 — cuantificar la vía 3 (segmentos donde el byte vale más que $33-60/GB) | si existe cliente para el producto actual | ACTIVA |
+| — | R-104 F2 + goldens en CI, despliegue real de R-102 | higiene de producto | CONDICIONADAS a que R-112 o R-113 den un caso viable |
+
+**Deprecado en esta repriorización** (no cierran la brecha; el detalle queda en cada tarea como registro):
+R-101 (Q6), pendientes de R-107 (FMA por defecto), R-110 (pipeline de host GPU) y kernels GPU cuBLAS,
+R-084/R-085/R-086 (MambaByte general), R-089 (benchmark vs Nacrith), Fase 18 completa (R-091 a R-097).
+
+**Regla de parada**: si R-112 y R-113 salen negativas, el proyecto no es viable como producto de ahorro de
+almacenamiento y se documenta como tal antes de invertir más ingeniería.
+
+---
+
 ## P0 — Integridad y Fiabilidad (BLOCKER para producción)
 
 ### R-001: CRC-32 en formato AZTH v3
@@ -2189,7 +2212,10 @@ R-082 (Rust byte tokenizer) ─────────────────�
 > 353M) se convierte en el path prioritario mientras TPU permanezca inaccesible.
 
 - R-084: MambaByte-50M validation training (Kaggle TPU v5e-8)
-  - **Estado**: ⚠️ BLOQUEADO — Kaggle TPU saturado (2026-11-09)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — nunca llegó a entrenar (la TPU no arrancó). Un MambaByte general de 42M no ataca
+    la brecha: la sonda R-105 midió que un modelo general más pequeño pierde ratio de forma continua. Lo
+    aprovechable (notebook, conversión de pesos, cargador byte-level) se reutiliza en R-112
+  - **Estado previo**: ⚠️ BLOQUEADO — Kaggle TPU saturado (2026-11-09)
   - **Estado anterior**: EN EJECUCIÓN (2026-11-07, push exitoso pero sesión no inicia)
   - **Prioridad**: P0 → P1 (degradada mientras R-088 es P0)
   - **Deliverable**: Trained MambaByte-50M weights + BPB measurement
@@ -2217,7 +2243,7 @@ R-082 (Rust byte tokenizer) ─────────────────�
     - **Alt D**: Esperar ventana TPU libre (madrugada UTC, fines de semana)
 
 - R-085: MambaByte-96M production training
-  - **Estado**: BLOQUEADO (depende R-084 PASS + TPU disponible)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — mismo motivo que R-084 (modelo general de 96M: ~1.3x menos coste, brecha de 100x)
   - **Plataforma**: Kaggle TPU (3 sesiones × 9h) o A100 ($87, 2 días)
   - **Nota**: Si R-088 confirma pesos 353M compatibles, R-085 podría cancelarse
     o reenfocarse como fine-tuning del modelo pre-entrenado
@@ -2225,7 +2251,7 @@ R-082 (Rust byte tokenizer) ─────────────────�
   - **Training**: 30B bytes, 8192-byte sequences, batch 48, 76K steps
 
 - R-086: MambaByte integration + entropy gate re-enablement
-  - **Estado**: BLOQUEADO (depende R-085)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — depende de R-085; la integración byte-level ya existe (R-082/R-088)
   - **Deliverable**: Redukt compressing with MambaByte + CM entropy gate active
   - **Subtareas**:
     - [ ] Convert weights (R-081 script)
@@ -2287,7 +2313,8 @@ R-082 (Rust byte tokenizer) ─────────────────�
     convert --preset 353m, HF key stripping, norm bias auto-detect
 
 - R-089: Formal benchmark vs Nacrith
-  - **Estado**: BLOQUEADO (depende R-088 o R-086)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — una comparación de ratio no cambia el coste por GB; la posición frente a Nacrith
+    está en `docs/internal/research/competitive-position-2026-11-10/REPORT.md`
   - **Prioridad**: P2 — posicionamiento competitivo
   - **Deliverable**: Benchmark comparativo en datasets compartidos
   - **Subtareas**:
@@ -2297,7 +2324,7 @@ R-082 (Rust byte tokenizer) ─────────────────�
     - [ ] Publicar resultados en `data/benchmark/results/`
 
 - R-090: CUDA GPU kernels for Mamba inference (from strata-inference pattern)
-  - **Estado**: IMPLEMENTADO — pendiente validación en Kaggle T4
+  - **Estado**: COMPLETADO — validado en Kaggle T4 dentro de R-103 (3a2e8be) y R-109 (56570a1)
   - **Prioridad**: P1 — máximo impacto en throughput (15x proyectado)
   - **Deliverable**: CUDA plugin completo (libredukt_gpu.so) con Mamba forward pass
   - **Subtareas**:
@@ -2336,7 +2363,10 @@ dependencia de TPU completamente ($0, disponibilidad inmediata).
 
 ---
 
-## Fase 18: CPU Throughput Reformulation (R-091 → R-097)
+## Fase 18: CPU Throughput Reformulation (R-091 → R-097) — DEPRECADA (2026-11-11)
+
+> **Fase deprecada en la repriorización de la Fase 20**: dependía de un MambaByte general que no se va a
+> entrenar, y sus palancas son constantes (x1.1-x2) frente a una brecha de 100x. Se conserva como registro.
 
 > **Objetivo**: Reformular la asignación de responsabilidades por componente hardware para
 > maximizar throughput CPU-only. Aprovecha los cambios de régimen que MambaByte introduce
@@ -2365,7 +2395,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
 ### Tier 1: Optimizaciones quirúrgicas (zero BPB risk, <100 líneas)
 
 - R-091: NTA Prefetch para MambaByte weight streaming
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — depende de un MambaByte que ya no se va a entrenar
   - **Prioridad**: P1 — zero risk, +10-20% throughput
   - **Dependencia**: MambaByte integrado (R-088 o R-086)
   - **Archivos**: `src/domain/tensor.rs`
@@ -2384,7 +2414,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
   - **Proyección**: +10-20% throughput en tokens que ejecutan backbone
 
 - R-092: L2-tile weight layout para MambaByte
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — depende de un MambaByte que ya no se va a entrenar
   - **Prioridad**: P1 — zero risk, +12-20% GEMV
   - **Dependencia**: MambaByte integrado (R-088 o R-086)
   - **Archivos**: `src/application/model_loader.rs`, `src/infrastructure/mamba/model.rs`
@@ -2404,7 +2434,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
 ### Tier 2: Cambio arquitectónico CPU (zero GPU requerido)
 
 - R-093: Parallel scan para compresión batch (CPU)
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — sustituido por el lockstep R-100 (hecho)
   - **Prioridad**: P0 — mayor impacto individual (10-50× compress throughput)
   - **Dependencia**: MambaByte integrado, R-052 (parallel_scan.rs ya existe) (borrado en 1dc6402, nunca medido; rehacer a nivel byte tras MambaByte)
   - **Archivos**: `src/infrastructure/mamba/model.rs`, `src/application/codec.rs`
@@ -2429,7 +2459,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
     Throughput compresión: ~400-1500 tok/s (CPU-only, modelo 96M-353M)
 
 - R-094: CM pre-scan separado del backbone loop
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — optimización de constante; no mueve el orden de magnitud
   - **Prioridad**: P1 — complementa R-093
   - **Dependencia**: R-093
   - **Archivos**: `src/application/codec.rs`, `src/domain/cm_ensemble.rs`
@@ -2443,7 +2473,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
 ### Tier 3: Extensiones edge/deployment
 
 - R-095: HugePages para Linux deployment
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — optimización de constante; no mueve el orden de magnitud
   - **Prioridad**: P2 — solo Linux, +5-24% en weight streaming
   - **Dependencia**: ninguna (independiente)
   - **Archivos**: `src/application/model_loader.rs` (conditional compilation `#[cfg(target_os = "linux")]`)
@@ -2457,7 +2487,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
 ### Tier 4: FFI v2 para GPU batch (preparación futura)
 
 - R-096: BackendVTable v2 — batch forward API
-  - **Estado**: PENDIENTE
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — lo necesario se hizo en R-103/R-109 (FFI v2 por slots)
   - **Prioridad**: P2 — prepara GPU para parallel scan
   - **Dependencia**: R-093 (validar parallel scan en CPU primero)
   - **Archivos**: `src/domain/backend_ffi.rs`, `src/infrastructure/plugin_backend/`
@@ -2478,7 +2508,7 @@ Esto justifica re-evaluar NTA prefetch y L2 tiling bajo el nuevo régimen.
     ```
 
 - R-097: Q4 selective para MambaByte (re-evaluación)
-  - **Estado**: PENDIENTE (investigación)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — depende de MambaByte; Q4 ya falló el presupuesto (+12.7%)
   - **Prioridad**: P2 — re-evaluar Q4 bajo condiciones MambaByte
   - **Dependencia**: MambaByte integrado
   - **Archivos**: `src/domain/quant.rs`, `src/domain/tensor.rs`
@@ -2698,7 +2728,8 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - BPB idéntico al baseline (Δ = 0)
 
 - R-101: Q6 weight-only (L4)
-  - **Estado**: PENDIENTE (su gate, R-098, se superó: +0.57% a +1.21% BPB con Q8)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — ~1.3x en CPU con riesgo de BPB; el coste seguiría en decenas de $/GB
+  - **Estado previo**: PENDIENTE (su gate, R-098, se superó: +0.57% a +1.21% BPB con Q8)
   - **Prioridad**: P1 — ×1.3 adicional; solo si R-098 pasa su gate
   - **Dependencia**: R-098 (gate superado)
   - **Archivos**: `src/domain/quant.rs`, `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`
@@ -2832,7 +2863,7 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
   - **Resultados medidos** (maxperf, reposo): single sin cambio (DRAM-bound: Q8 130.3→130.5); lote Q8 N=16
     279.4→335.1 (+20%), F32 N=16 257.5→288.6 (+12%), Q8 N=32 299.1→**365.9** (+22%), F32 N=32 303.1→351.0 (+16%).
     BPB idéntico (Q8 0.9688, F32 0.9641). Cross-OS Windows↔Linux idéntico (Q8 sha 436f68f7…, F32 9580c28b…).
-  - **Pendiente**: API solo escribe/carga contrato 1 (paridad CLI↔API exige mantener default 1 hasta actualizar
+  - **Pendiente — DEPRECADO (2026-11-11, repriorización Fase 20)** (+12-22% en lote no mueve la viabilidad): API solo escribe/carga contrato 1 (paridad CLI↔API exige mantener default 1 hasta actualizar
     api.rs); FMA en conv/scan/SiLU; añadir contrato a `GroupKey` del lockstep; cambiar default a fma tras eso.
 - R-105: Tier rápido (backbone pequeño + receta CM)
   - **Estado**: EN CURSO (paso 1 ✅ 2026-11-11: sonda de candidatos preentrenados -> NO-GO a los publicados;
@@ -2920,7 +2951,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
       Coste por token-stream constante (~1.75 ms) -> el límite no es el kernel de GPU sino lo que rodea a la
       llamada al dispositivo -> R-110
 - R-110: Pipeline de host del lockstep con plugin (copia de logits + CDF en CPU)
-  - **Estado**: PENDIENTE (definido 2026-11-11 a partir de run-e-batch)
+  - **Estado**: DEPRECADO (2026-11-11, repriorización Fase 20) — hasta ~2x en T4, con techo ~$17/GB (50x el umbral de texto). El diagnóstico queda
+    documentado por si la vía 3 (R-113) encuentra un segmento donde $17-35/GB sea viable
+  - **Estado previo**: PENDIENTE (definido 2026-11-11 a partir de run-e-batch)
   - **Prioridad**: P0 del tier GPU — sin esto, los kernels optimizados (vía 1) no llegan al producto
   - **Dependencia**: R-109 (hecho). Precede a cualquier trabajo de kernels cuBLAS/tensor-core
   - **Archivos**: `plugins/redukt-gpu-cuda/mamba_cuda.cu`, `src/infrastructure/plugin_backend/model.rs`,
@@ -2997,6 +3030,63 @@ R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-1
 R-104 EN CURSO (F1 ✅, F3 lint ✅, F2 y goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
 R-110 (pipeline de host del plugin) PENDIENTE; R-105 EN CURSO (paso 1 ✅: ningún backbone preentrenado más
 pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por nosotros); R-101 PENDIENTE.
+
+---
+
+## Fase 20: Viabilidad — dos experimentos y una cuenta (R-111 → R-113)
+
+> **Objetivo**: decidir con medidas si existe un caso viable, en vez de seguir optimizando constantes.
+> **Origen**: run-e-batch (el tier GPU se satura en ~550 tok/s por la CLI) y la sonda R-105 paso 1 (ningún
+> backbone preentrenado más pequeño conserva el ratio), ambas del 2026-11-11.
+> **Budget**: $0 (Kaggle T4 gratuito + investigación de precios).
+> **Regla de parada**: R-112 y R-113 negativas -> no viable como producto de ahorro de almacenamiento.
+
+- R-111: Periodo de reinicio del estado en ficheros de industria
+  - **Estado**: ACTIVA
+  - **Prioridad**: P0 — ratio a coste de cómputo cero
+  - **Contexto**: R-108 fijó 4096 tokens con enwik8 100 KB. La sonda midió (backbone solo) que bajar de 4096 a
+    2048 cuesta 18-75% de bpb en XML y logs y solo 1.5-3% en texto: el contexto es de primer orden en datos
+    repetitivos. Mamba-130M degenera hacia los 16-18K tokens, así que hay margen hasta 8192-16384.
+  - **Subtareas**:
+    - [ ] `.azth` reales (con CM) de los 5 ficheros de industria y de texto (enwik8 1 MB, dickens 500 KB) con
+      `--reset-every` 2048/4096/8192/16384 en T4
+    - [ ] Reinicio con solapamiento (recalentar el estado con los últimos K tokens): estimación con el backbone
+      solo antes de tocar el formato
+    - [ ] Decidir el valor por defecto (global o por tipo de contenido) con roundtrip y gates de referencia
+  - **Criterios de aceptación**:
+    - Tabla bpb por fichero y periodo con el `.azth` real, roundtrip verificado
+    - Cambio de valor por defecto solo si mejora en industria sin empeorar texto más de un 1%
+- R-112: Especialista por dominio entrenado por nosotros (R-105 paso 2)
+  - **Estado**: ACTIVA
+  - **Prioridad**: P0 — única apuesta técnica que puede cambiar el orden de magnitud del coste
+  - **Pregunta**: ¿un modelo de 1-10M entrenado con logs de unos sistemas comprime los de sistemas que no ha
+    visto? (L3TC demostró que dentro del dominio 3-12M igualan a 130M y que fuera no sirven.)
+  - **Diseño**: corpus real y público (Loghub); entrenar con N sistemas y evaluar con sistemas retenidos
+    (incluidos los tres del benchmark: Apache, Linux, OpenSSH) y con la cola temporal de los sistemas vistos;
+    modelo a nivel de byte (vocab 256: sin el suelo de coste de la cabeza de 50K) cargable por el runtime
+    (infraestructura de la Fase 15: conversión de pesos + cargador byte-level).
+  - **Subtareas**:
+    - [ ] Entrenar 2-3 tamaños en T4 con división por sistemas
+    - [ ] Medir bpb (backbone solo) en sistemas retenidos frente a xz/brotli y frente a Mamba-130M
+    - [ ] Si pasa: cargarlo en el runtime y medir `.azth` real con CM y B/s por vCPU
+    - [ ] Decisión GO/NO-GO con `scripts/breakeven.py`
+  - **Criterios de aceptación**:
+    - GO solo si en sistemas NO vistos gana a xz/brotli y el coste proyectado por GB baja del valor del ahorro
+    - Los XML de factura del repo son sintéticos: no valen de gate
+- R-113: Cuantificar la vía 3 — segmentos donde el byte vale más que el cómputo
+  - **Estado**: ACTIVA
+  - **Prioridad**: P0 — única vía que cambia el umbral en lugar del coste
+  - **Pregunta**: ¿existe un cliente para quien 1 GB ahorrado valga más de $33-60 (el coste actual)?
+  - **Subtareas**:
+    - [ ] Precios reales por GB transmitido: satélite IoT/M2M, banda estrecha celular, egress de nube
+    - [ ] Punto de equilibrio por segmento con el ratio y el coste medidos (incluida la restricción de que el
+      extremo emisor tiene que poder ejecutar el modelo)
+    - [ ] Informe con veredicto por segmento
+  - **Criterios de aceptación**:
+    - Tabla $/GB de valor por segmento con fuente, frente a $/GB de coste medido
+    - Veredicto explícito: viable / no viable / viable con condiciones
+
+**Estado de la fase**: EN CURSO (2026-11-11).
 
 ---
 
@@ -3340,3 +3430,4 @@ pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por noso
 | 2026-11-11 | e93b72e test(R-104): lint de libm en la ruta del códec (F3, mitad lint); `shannon_entropy` pasa a fmath y 3 `powi` a constante exacta; salida idéntica 6/6, 304 + 3 + 5 tests |
 | 2026-11-11 | run-e-batch (T4, kernel B v4): plugin por la CLI N=12/32/64/128 = 530/573/582/559 tok/s (1.8-2.1 KB/s, $33-38/GB spot); saturado desde N=12, mitad del arnés FFI (1,117 tok/s); batch == single y roundtrip en lote PASS; R-110 definido (pipeline de host); fase D del notebook corregida |
 | 2026-11-11 | R-105 paso 1: sonda de backbones pequeños preentrenados (Kaggle T4, `small-backbone-probe` v1+v3): Pythia 14M-70M pierden 27-54% de bpb en texto y el margen en industria; L3TC 200K-12M solo sirven sobre enwik8 (1.46 bpb en enwik9 no visto, 4.3-7.3 en XML/logs) y su repo no tiene licencia; SmolLM2-135M mejor que Mamba en texto/XML a igual coste; NO-GO a los preentrenados, siguiente paso = especialista por dominio propio; hallazgo lateral: el periodo de reinicio pesa 18-75% en XML/logs |
+| 2026-11-11 | Repriorización: Fase 20 (R-111 periodo de reinicio en industria, R-112 especialista por dominio, R-113 vía 3). Deprecados R-101, pendientes de R-107, R-110 y kernels GPU, R-084/085/086, R-089 y la Fase 18 completa: no cierran una brecha de 100-170x. Regla de parada definida |
