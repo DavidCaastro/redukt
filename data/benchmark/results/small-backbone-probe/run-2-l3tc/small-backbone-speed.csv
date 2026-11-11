@@ -1,0 +1,5 @@
+model,total_params,active_params,mflop_per_token,cost_vs_mamba130m,cpu1_tok_s,bytes_per_token,note
+l3tc-200k,3295872,1723008,3.45,,560.6,3.507,"pytorch cpu 1 thread, stateful step"
+l3tc-800k,6278976,3395392,6.79,,508.4,3.507,"pytorch cpu 1 thread, stateful step"
+l3tc-3.2m,10364928,6170624,12.34,,289.8,3.507,"pytorch cpu 1 thread, stateful step"
+l3tc-12m,19287552,12996096,25.99,,147.9,3.507,"pytorch cpu 1 thread, stateful step"

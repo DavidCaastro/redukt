@@ -40,6 +40,16 @@ Admitted paths to close it (every new phase must justify itself against one of t
 2. Fast tier: 3-30M-param backbone + CM recipe (R-105). External references, correctly attributed: L3TC-3.2M 1.105 bpb
    enwik8 at 2.5 MB/s on an A100; L3TC-200K 1.404 bpb at 11-27 KB/s on an iPhone CPU; Hutter 2026 lineage (cmix + 6M
    pretrained transformer) 0.78 bpb enwik9 at 7.5 KB/s on one CPU core. Gate = KB/s per vCPU vs R* (`breakeven.py`).
+   Measured 2026-11-11 (`docs/internal/research/small-backbone-probe-2026-11-11.md`, backbone-only bpb, Kaggle T4):
+   NO published smaller backbone keeps the ratio. Pythia 14M/31M/70M (same tokenizer and corpus as Mamba-130M):
+   enwik8 500 KB 1.45/1.28/1.19 bpb vs 0.94, and they lose to brotli/xz on XML and logs. L3TC 200K-12M match
+   Mamba only on enwik8, their TRAINING file (3.2M: 1.04-1.10); on unseen enwik9 1.46 (+46%), on XML/logs
+   4.3-7.3 bpb; the L3TC repo has no license. Never cite "L3TC-3.2M 1.105 bpb" as general evidence. Cheapest
+   candidate (L3TC-200K, 72x cheaper per byte) projects to ~$0.77/GB vs $0.18/GB of value. The fast tier is
+   therefore only viable as a domain specialist trained by us on real client-like corpora (open question:
+   generalization to unseen systems, not size). SmolLM2-135M beats Mamba-130M at equal cost on text (-5..-11%)
+   and XML (-19..-21%), loses on logs (+3..+8%). Side finding: halving the reset period (4096 -> 2048 tokens)
+   costs 18-75% bpb on XML/logs but 1.5-3% on text -> measure 8192 / overlapped reset on industry files.
 3. Segments where bytes are expensive to move or retention is regulated (satellite/IoT links,
    egress, compliance), where the threshold is far lower than storage savings.
 The metric is cost per GB (throughput per vCPU or per GPU-hour), NOT throughput per machine.
@@ -340,6 +350,7 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
 | R-108 periodic backbone state reset — in the format (PROFILE bit 6 + RESET_LOG2, default 4096 for Mamba) | enwik8 100 KB 1.6327 -> 0.9951 bpb; 5/5 whole industry files win again (-5% to -44% vs brotli); header-driven decompress roundtrip OK; `--reset-every 0` = old output; 10 KB references +1 B | done |
+| R-105 step 1: pretrained small-backbone probe (`small-backbone-probe/`, 2026-11-11) | backbone-only bpb, enwik8 500 KB: Mamba-130M 0.938, SmolLM2-135M 0.834, Pythia-160M/70M/31M/14M 1.026/1.193/1.283/1.448, L3TC-12M/3.2M/200K 0.850/1.039/1.318 (training file) but 1.467/1.455/1.628 on unseen enwik9 and 4.3-7.3 on XML/logs | NO-GO for published models; next = own domain specialist |
 | R-109 CLI batch scaling on T4 (`run-e-batch`, 2026-11-11) | N=12/32/64/128 = 530/573/582/559 tok/s engine (1.8-2.1 KB/s, $33-38/GB spot); 128 x 50 KB 1.049 bpb at 552 tok/s; batch == single 3/3 at N=12 and N=128, batch roundtrip 32/32; saturated from N=12, half the FFI harness | measured -> R-110 |
 | R-104 F3 libm lint (`tests/libm_lint.rs`, e93b72e) | fails on any platform transcendental on the codec path; found and fixed `log2` in content detection and 3 `powi`; output identical 6/6 | done (goldens pending) |
 | R-109 plugin lockstep over FFI v2 slots | `prepare_streams` -> `batch_init(n)`, one slot per stream, `forward_multi` -> `forward_batch`; T4 jobs=12: bpb 0.7481 (was 1.949), batch == single 3/3, 1,401 B/s aggregate incl. load (CPU 4 vCPU 283 B/s) | done, validated on T4 |
@@ -357,7 +368,8 @@ Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not d
 validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
 ceiling, headroom 15-25x); R-109 measured through the CLI at N=12..128 (flat ~550 tok/s, $33-38/GB) -> R-110 (host
 pipeline of the plugin lockstep) is the next GPU lever, before kernels; R-104 F1 done (libm replaced by `fmath`),
-F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending; R-101, R-105 pending.
+F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending; R-105 step 1 done (no published
+smaller backbone keeps the ratio), step 2 (own domain specialist) pending; R-101 pending.
 Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)

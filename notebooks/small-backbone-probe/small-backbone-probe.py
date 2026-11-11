@@ -437,6 +437,28 @@ def l3tc_bits(model, segments, device, batch=256):
     return bits
 
 
+def l3tc_tokenizer(base):
+    import sentencepiece as spm
+    prefix = os.path.join(base, "spm_enwik8_bpe_16384_0.999")
+    if not os.path.isfile(prefix + ".model"):
+        t0 = time.time()
+        spm.SentencePieceTrainer.Train(
+            input=os.path.join(WORK_DIR, "data", "enwik8"), model_prefix=prefix, vocab_size=16384,
+            character_coverage=0.999, model_type="bpe", pad_id=0, unk_id=1, bos_id=2, eos_id=-1,
+            max_sentence_length=10000, add_dummy_prefix=False, remove_extra_whitespaces=False,
+            user_defined_symbols=[chr(10), chr(9)])
+        log(f"  tokenizer trained in {time.time() - t0:.0f} s")
+    return prefix + ".model"
+
+
+def l3tc_proto(sp, text):
+    """Pieces with id/begin/end/surface; the keyword changed between SentencePiece releases."""
+    try:
+        return sp.encode(text, out_type="proto")
+    except Exception:   # noqa: BLE001
+        return sp.encode(text, out_type="immutable_proto")
+
+
 def eval_l3tc(sets, device):
     import torch
     section("L3TC (RWKV-v4 HiRA + 16K SentencePiece, trained on enwik8; repo has no license)")
@@ -469,8 +491,12 @@ def eval_l3tc(sets, device):
     if not ckpts and os.path.isfile(bundle) and not listing:
         ckpts = [bundle]            # the drive file may be a single checkpoint
     if not spm_models:
-        log("  no SentencePiece model in the bundle: L3TC cannot be evaluated without its tokenizer (skipped)")
-        return
+        # The bundle ships checkpoints only. The tokenizer is rebuilt with the parameters of the repo's
+        # scripts/preprocessor.py (BPE 16384, coverage 0.999, trained on raw enwik8). SentencePiece BPE training
+        # is deterministic; a mismatch with the checkpoints would show as a garbage bpb on enwik8 (the models
+        # were trained on it: the paper reports ~1.1-1.4 bpb), so the result validates itself.
+        log("  no SentencePiece model in the bundle: rebuilding it from enwik8 with the repo parameters")
+        spm_models = [l3tc_tokenizer(base)]
     sp = spm.SentencePieceProcessor()
     sp.Load(spm_models[0])
     log(f"  tokenizer {os.path.basename(spm_models[0])}: {sp.GetPieceSize()} pieces")
@@ -498,7 +524,7 @@ def eval_l3tc(sets, device):
                 for text in pieces:
                     nbytes += len(text.encode("utf-8"))
                     for s in range(0, len(text), seg_chars):
-                        proto = sp.encode(text[s:s + seg_chars], out_type="immutable_proto")
+                        proto = l3tc_proto(sp, text[s:s + seg_chars])
                         ids = [2]
                         for piece in proto.pieces:
                             if piece.begin == piece.end:
@@ -569,7 +595,8 @@ def main():
     sets = prepare_data()
     try:
         classical(sets)
-        for hf_id, label, family, chunks, lic in HF_MODELS:
+        # the reference goes last: without mamba_ssm the HF Mamba runs a per-token Python loop (slowest)
+        for hf_id, label, family, chunks, lic in HF_MODELS[1:]:
             if ONLY and label not in ONLY:
                 continue
             try:
@@ -583,6 +610,11 @@ def main():
                 fn(sets, device)
             except Exception as e:   # noqa: BLE001
                 log(f"  FAILED {label}: {str(e)[:300]}\n{traceback.format_exc()[-800:]}")
+        if not ONLY or "mamba-130m" in ONLY:
+            try:
+                eval_hf(*HF_MODELS[0], sets, device)
+            except Exception as e:   # noqa: BLE001
+                log(f"  FAILED mamba-130m: {str(e)[:300]}")
     finally:
         summary(sets)
         log(f"\nDONE in {(time.time() - T_START) / 3600:.2f} h")

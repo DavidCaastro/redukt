@@ -1,0 +1,9 @@
+model,total_params,active_params,mflop_per_token,cost_vs_mamba130m,cpu1_tok_s,bytes_per_token,note
+pythia-14m,14067712,7628800,15.3,0.0592,154.6,3.620,"pytorch cpu 1 thread, cached decoding"
+pythia-31m,30494720,17616896,35.2,0.1363,91.6,3.620,"pytorch cpu 1 thread, cached decoding"
+pythia-70m,70426624,44670976,89.3,0.3457,46.5,3.620,"pytorch cpu 1 thread, cached decoding"
+pythia-160m,162322944,123689472,247.4,0.9578,17.9,3.620,"pytorch cpu 1 thread, cached decoding"
+distilgpt2,81912576,81912576,163.8,0.6341,31.2,3.440,"pytorch cpu 1 thread, cached decoding"
+gpt2,124439808,124439808,248.9,0.9636,19.2,3.440,"pytorch cpu 1 thread, cached decoding"
+smollm2-135m,134515008,134515008,269.0,1.0414,13.3,3.418,"pytorch cpu 1 thread, cached decoding"
+mamba-130m,129135360,129135360,258.3,1.0000,14.0,3.620,"pytorch cpu 1 thread, cached decoding"

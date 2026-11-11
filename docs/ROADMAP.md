@@ -2835,8 +2835,9 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
   - **Pendiente**: API solo escribe/carga contrato 1 (paridad CLI↔API exige mantener default 1 hasta actualizar
     api.rs); FMA en conv/scan/SiLU; añadir contrato a `GroupKey` del lockstep; cambiar default a fma tras eso.
 - R-105: Tier rápido (backbone pequeño + receta CM)
-  - **Estado**: PENDIENTE (investigación)
-  - **Prioridad**: P1 — única vía CPU-only que cruza el umbral económico
+  - **Estado**: EN CURSO (paso 1 ✅ 2026-11-11: sonda de candidatos preentrenados -> NO-GO a los publicados;
+    paso 2 PENDIENTE: especialista por dominio entrenado por nosotros)
+  - **Prioridad**: P1 — única vía CPU-only que podría cruzar el umbral económico (no demostrado)
   - **Dependencia**: ninguna técnica; puede reutilizar la infraestructura de entrenamiento de la Fase 15
   - **Archivos**: `src/infrastructure/` (backbone adicional), `docs/internal/research/` (informe de decisión)
   - **Contexto** (corregido 2026-11-10): L3TC (AAAI 2025) logra 1.105 bpb en enwik8 con RWKV de 3.2M parámetros a
@@ -2847,8 +2848,24 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     binario + routing) es independiente del tamaño del backbone. `token-reduction-strategies.md` §5.6 marcó la
     destilación como NO-GO por una **proyección** (+5-15% BPB); L3TC es una **medida**.
   - **Subtareas**:
-    - [ ] Definir 1-2 candidatos (rango 3-30M parámetros; vocab 256 vs 16K)
-    - [ ] Entrenar u obtener el backbone (presupuesto por definir)
+    - [x] Buscar y medir candidatos preentrenados (2026-11-11, `small-backbone-probe`, Kaggle T4; informe
+      `docs/internal/research/small-backbone-probe-2026-11-11.md`). Entropía cruzada del backbone solo, mismo
+      protocolo (trozos de C tokens = reinicio R-108), enwik8/enwik9/dickens + 5 ficheros de industria:
+      - Pythia 14M/31M/70M/160M (mismo tokenizador y corpus que Mamba-130M, Apache-2.0): enwik8 500K 1.45 / 1.28 /
+        1.19 / 1.03 bpb frente a 0.94 de Mamba; a 6% del coste, +54% bpb; en industria pierden contra brotli/xz
+      - L3TC 200K-12M (RWKV-v4 + SPM 16K, entrenados con enwik8, **repo sin licencia**): 1.04-1.10 bpb el de 3.2M
+        sobre enwik8 (su fichero de entrenamiento), 1.46 sobre enwik9 no visto (+46% vs Mamba), 1.90 en dickens,
+        4.3-7.3 bpb en XML y logs. No generalizan
+      - SmolLM2-135M (mismo tamaño): -5..-11% en texto, -19..-21% en XML, +3..+8% en logs frente a Mamba-130M
+      - Proyección económica en texto no visto: el más barato (L3TC-200K, 72x menos coste por byte) ~$0.77/GB
+        frente a $0.18/GB de valor; ninguno cruza
+      - nGPT-enwiki8 (nivel byte) no evaluable (`nGPT-pytorch` incompatible con el PyTorch de Kaggle)
+      - **Decisión**: NO-GO a sustituir Mamba-130M por un preentrenado más pequeño
+    - [ ] Paso 2: especialista por dominio entrenado por nosotros (1-10M, vocab <= 16K o bytes) sobre corpus real
+      (Loghub: entrenar con N sistemas, evaluar con sistemas retenidos). Gate: bpb en sistemas no vistos frente a
+      xz/brotli y frente a Mamba-130M, con coste por byte medido. Los XML del repo son sintéticos: no valen de gate
+    - [ ] Medir periodo de reinicio 8192 y reinicio con solapamiento en los 5 ficheros de industria (la sonda
+      mostró que bajar de 4096 a 2048 tokens cuesta 18-75% en XML/logs y solo 1.5-3% en texto)
     - [ ] Integrarlo como backbone adicional con la receta CM completa
     - [ ] Medir BPB y KB/s (single-stream y lockstep) sobre los 12 archivos del benchmark vs Mamba-130M
     - [ ] Decisión GO/NO-GO frente al umbral R* (18-100 KB/s por vCPU; `scripts/breakeven.py`)
@@ -2978,7 +2995,8 @@ optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
 R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-107 ✅ (FMA +12-22% en lote);
 R-104 EN CURSO (F1 ✅, F3 lint ✅, F2 y goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
-R-110 (pipeline de host del plugin) PENDIENTE; R-101 y R-105 PENDIENTES.
+R-110 (pipeline de host del plugin) PENDIENTE; R-105 EN CURSO (paso 1 ✅: ningún backbone preentrenado más
+pequeño conserva el ratio; paso 2 = especialista por dominio entrenado por nosotros); R-101 PENDIENTE.
 
 ---
 
@@ -3321,3 +3339,4 @@ R-110 (pipeline de host del plugin) PENDIENTE; R-101 y R-105 PENDIENTES.
 | 2026-11-11 | run-a-r108-gpu (T4, 56570a1): curva enwik8 con reinicio plana 0.965-1.037 bpb de 10 KB a 2 MB (2.2x mejor que xz/brotli a 2 MB); industry completos 5/5 por delante; R-108 cerrado también en el tier GPU |
 | 2026-11-11 | e93b72e test(R-104): lint de libm en la ruta del códec (F3, mitad lint); `shannon_entropy` pasa a fmath y 3 `powi` a constante exacta; salida idéntica 6/6, 304 + 3 + 5 tests |
 | 2026-11-11 | run-e-batch (T4, kernel B v4): plugin por la CLI N=12/32/64/128 = 530/573/582/559 tok/s (1.8-2.1 KB/s, $33-38/GB spot); saturado desde N=12, mitad del arnés FFI (1,117 tok/s); batch == single y roundtrip en lote PASS; R-110 definido (pipeline de host); fase D del notebook corregida |
+| 2026-11-11 | R-105 paso 1: sonda de backbones pequeños preentrenados (Kaggle T4, `small-backbone-probe` v1+v3): Pythia 14M-70M pierden 27-54% de bpb en texto y el margen en industria; L3TC 200K-12M solo sirven sobre enwik8 (1.46 bpb en enwik9 no visto, 4.3-7.3 en XML/logs) y su repo no tiene licencia; SmolLM2-135M mejor que Mamba en texto/XML a igual coste; NO-GO a los preentrenados, siguiente paso = especialista por dominio propio; hallazgo lateral: el periodo de reinicio pesa 18-75% en XML/logs |
