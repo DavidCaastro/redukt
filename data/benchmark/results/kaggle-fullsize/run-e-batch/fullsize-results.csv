@@ -1,0 +1,6 @@
+phase,file,size_bytes,system,config,out_bytes,bpb,seconds,bytes_per_s,note
+E-batch,enwik8w10k[12],122880,redukt-T4,plugin f32 jobs=12 x 10KB,17227,1.1215,69.0,1781.4,wall incl. model load; engine 530.4 tok/s = 1807.1 B/s; batch==single 3/3 (PASS)
+E-batch,enwik8w10k[32],327680,redukt-T4,plugin f32 jobs=32 x 10KB,45336,1.1068,168.4,1946.1,wall incl. model load; engine 573.4 tok/s = 1955.1 B/s; batch roundtrip 32/32 (PASS) in 157s
+E-batch,enwik8w10k[64],655360,redukt-T4,plugin f32 jobs=64 x 10KB,87949,1.0736,315.5,2077.3,wall incl. model load; engine 581.8 tok/s = 2082.5 B/s
+E-batch,enwik8w10k[128],1310720,redukt-T4,plugin f32 jobs=128 x 10KB,177941,1.0861,654.8,2001.7,wall incl. model load; engine 559.0 tok/s = 2004.5 B/s; batch==single 3/3 (PASS)
+E-batch,enwik8w50k[128],6553600,redukt-T4,plugin f32 jobs=128 x 50KB,859549,1.0493,3344.7,1959.4,wall incl. model load; engine 552.5 tok/s = 1959.9 B/s

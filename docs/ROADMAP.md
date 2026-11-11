@@ -2799,8 +2799,14 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     (F32 pasa de v4 a v5, +1 B): enwik8 F32 10 KB = 0.9641 BPB (0.9633 en v4). Cross-OS Windows<->Linux OK.
   - **F2 PENDIENTE**: nivel escalar con el orden de lanes de AVX2 (mismo `.azth` sin AVX2/FMA). Criterio: sha256 idéntico
     entre ruta escalar y AVX2 en enwik8/facturae/apache, F32 y Q8, con Δ tok/s medido.
-  - **F3 PENDIENTE**: CI multiplataforma (Windows + Linux, golden `.azth` por SHA-256) y lint que prohíba libm en rutas de
-    CDF/CM. Criterio: la CI falla ante cualquier cambio de sha256 de los goldens o uso de `f64::exp/ln/powf` en esas rutas.
+  - **F3 EN CURSO** (lint ✅ 2026-11-11, e93b72e; goldens PENDIENTES): `tests/libm_lint.rs` recorre el código no-test
+    y falla ante cualquier transcendental de plataforma (`exp`, `ln`, `powf`, `tanh`, `powi`, ...) fuera de las
+    excepciones auditadas (`sqrt`, el despacho `NumericContract`, la telemetría `ce_bits`, marcas `libm-ok:`); corre
+    sin pesos, así que la CI existente de 3 SO lo aplica con `cargo test`. El lint encontró 4 llamadas que F1 no
+    vio: `content_detect::shannon_entropy` usaba `f64::log2` (sus rasgos deciden los flags de preprocesado de la
+    cabecera) -> ahora `fmath::log_f64`; y 3 conversores f16 -> f32 de pesos usaban `2.0f32.powi(-14)` -> constante
+    exacta. Salida idéntica antes/después: 6/6 sha256 (enwik8/facturae/apache 10 KB, Q8 y F32), roundtrip 3/3.
+    Queda: golden `.azth` por SHA-256 en CI (necesita los pesos en el runner: caché o artefacto de ~500 MB).
   - **Opciones**: (A) orden de acumulación canónico, independiente de ISA y de hilos; (B) aritmética entera /
     punto fijo en las rutas que alimentan la CDF.
   - **Subtareas**:
@@ -2891,7 +2897,36 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - [x] `PluginState` por slot usando `batch_init/batch_reset/forward_batch` (R-096)
     - [x] Gate batch == single con el plugin en T4: 3/3 PASS (run-c-r109)
     - [x] Medido por la CLI con N=12: 1,401 B/s agregados incl. carga del modelo (~370 tok/s a 3.8 B/token)
-    - [ ] Medir N=32 y N=128 por la CLI (FFI dio 1,117 tok/s a N=128)
+    - [x] Medir N=32 y N=128 por la CLI (run-e-batch, 2026-11-11): N=12/32/64/128 = 530/573/582/559 tok/s de
+      motor (1.8-2.1 KB/s, $33-38/GB spot); se satura desde N=12 y queda en la mitad de los 1,117 tok/s del arnés
+      FFI. batch == single 3/3 en N=12 y N=128; roundtrip en lote 32/32; 128 x 50 KB = 1.049 bpb a 552 tok/s.
+      Coste por token-stream constante (~1.75 ms) -> el límite no es el kernel de GPU sino lo que rodea a la
+      llamada al dispositivo -> R-110
+- R-110: Pipeline de host del lockstep con plugin (copia de logits + CDF en CPU)
+  - **Estado**: PENDIENTE (definido 2026-11-11 a partir de run-e-batch)
+  - **Prioridad**: P0 del tier GPU — sin esto, los kernels optimizados (vía 1) no llegan al producto
+  - **Dependencia**: R-109 (hecho). Precede a cualquier trabajo de kernels cuBLAS/tensor-core
+  - **Archivos**: `plugins/redukt-gpu-cuda/mamba_cuda.cu`, `src/infrastructure/plugin_backend/model.rs`,
+    `src/application/lockstep.rs`, `docs/api/PLUGIN-FFI-V2.md`
+  - **Contexto medido**: por la CLI el plugin da 530-582 tok/s con N=12..128 (plano); el arnés FFI, que solo
+    llama a `forward_batch`, da 1,117 tok/s a N=128. Diferencia ~0.85 ms por token-stream. Por cada stream y
+    token el dispositivo copia 50,280 logits F32 a memoria paginable del host (25.7 MB por paso a N=128) y los
+    4 vCPU construyen la CDF (un `exp` por entrada de vocabulario), mezclan el CM y codifican. **El reparto
+    entre copia y CPU no está medido**: es una inferencia de los dos totales.
+  - **Techo actual**: con un forward de dispositivo infinitamente rápido quedarían ~1,150 tok/s (~4 KB/s,
+    ~$17/GB spot) en un host de 4 vCPU; el margen 15-25x de la vía 1 es inalcanzable sin tocar esto.
+  - **Subtareas**:
+    - [ ] Instrumentar el lockstep: tiempo de fase A (CM + CDF + coder) vs fase B (`forward_batch` + copia)
+      por paso, con N=12/32/128 en T4; separar copia de logits del cómputo en dispositivo
+    - [ ] Medir la sensibilidad a vCPU del host (4 vs 8-16 vCPU con la misma T4)
+    - [ ] Memoria anclada (`cudaHostAlloc`) para el buffer de logits de salida
+    - [ ] Softmax/CDF en dispositivo: devolver la CDF cuantizada (o el top-k + masa residual) en vez de 50,280
+      F32; exige contrato numérico propio del tier (PROFILE) porque cambia quién calcula el `exp`
+    - [ ] Gate: batch == single, roundtrip, BPB vs CPU F32 dentro del presupuesto, determinismo dentro del tier
+  - **Criterios de aceptación**:
+    - Reparto host/dispositivo medido y documentado
+    - tok/s por la CLI >= 90% del arnés FFI al mismo N, o explicación medida de por qué no
+    - $/GB del tier GPU recalculado con la medida
 
 **Paralelización**: R-098 y R-099 son independientes entre sí. R-100 requiere ambos. R-101 requiere R-098.
 R-102 y R-105 son independientes del resto. R-103 depende de R-090. R-104 es transversal y bloquea la entrega
@@ -2942,7 +2977,8 @@ optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
 R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-107 ✅ (FMA +12-22% en lote);
-R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
+R-104 EN CURSO (F1 ✅, F3 lint ✅, F2 y goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
+R-110 (pipeline de host del plugin) PENDIENTE; R-101 y R-105 PENDIENTES.
 
 ---
 
@@ -3283,3 +3319,5 @@ R-104 EN CURSO (F1 ✅, F2/F3 pendientes); R-101 y R-105 PENDIENTES.
 | 2026-11-10 | run-c-r109b (T4, 56570a1): plugin lockstep con periodo R-108 de cabecera -> bpb 0.7529 (CPU F32 0.7531), batch == single 3/3, 1,376 B/s agregados; R-108 y R-109 cerrados en ambos tiers |
 | 2026-11-10 | run-a-r108 (Kaggle, 61a9027): CPU enwik8 100 KB 0.9925 F32 / 0.9951 Q8 con reinicio; sha256 Windows == Linux en 10 KB y 100 KB (gate R-104 2b vigente con R-108); curva GPU aún sin reinicio (plugin corregido en 56570a1) -> kernel A v3 |
 | 2026-11-11 | run-a-r108-gpu (T4, 56570a1): curva enwik8 con reinicio plana 0.965-1.037 bpb de 10 KB a 2 MB (2.2x mejor que xz/brotli a 2 MB); industry completos 5/5 por delante; R-108 cerrado también en el tier GPU |
+| 2026-11-11 | e93b72e test(R-104): lint de libm en la ruta del códec (F3, mitad lint); `shannon_entropy` pasa a fmath y 3 `powi` a constante exacta; salida idéntica 6/6, 304 + 3 + 5 tests |
+| 2026-11-11 | run-e-batch (T4, kernel B v4): plugin por la CLI N=12/32/64/128 = 530/573/582/559 tok/s (1.8-2.1 KB/s, $33-38/GB spot); saturado desde N=12, mitad del arnés FFI (1,117 tok/s); batch == single y roundtrip en lote PASS; R-110 definido (pipeline de host); fase D del notebook corregida |

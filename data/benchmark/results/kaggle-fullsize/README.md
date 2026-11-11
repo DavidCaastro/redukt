@@ -121,6 +121,55 @@ and the industry losses** (0.9641 -> 3.9056; apache 0.4937 …) because at 61a90
 header period (fixed in 56570a1); the plugin lockstep was rejected by the pre-R-109 guard. Kernel A v3 (56570a1,
 phases A+B only so the 4 MB point fits the budget) re-measures the GPU curve with the reset.
 
+## E. Plugin batch scaling through the CLI (run-e-batch, kernel B v4, 2026-11-11, T4 + 4 vCPU)
+
+Open item of R-109: the bare FFI harness gave 1,117 tok/s at N=128 (2026-11-10), but the product path
+(`redukt compress --input-dir … --jobs N --backbone plugin`) had only been measured at N=12. Phase E of
+`notebooks/redukt-gpu-fullsize-bench.py` measures N = 12/32/64/128 lockstep streams on 128 distinct enwik8 windows
+(700 KB apart, 10 KB each) and one long pass of 128 × 50 KB (6.55 MB, 3 state resets per stream). Rust code at
+56570a1 (unchanged); raw data in `run-e-batch/fullsize-results.csv` and `fullsize-report.txt`.
+
+| Streams (`--jobs`) | Input | bpb | Wall s | Wall B/s (incl. model load) | Engine tok/s | Engine B/s | $/GB spot | $/GB on-demand | Gate |
+|---|---|---|---|---|---|---|---|---|---|
+| 12 | 12 × 10 KB | 1.1215 | 69.0 | 1,781 | 530.4 | 1,807 | $38.0 | $80.9 | batch == single sha256 3/3 PASS |
+| 32 | 32 × 10 KB | 1.1068 | 168.4 | 1,946 | 573.4 | 1,955 | $35.1 | $74.7 | batch decompress roundtrip 32/32 PASS (157 s) |
+| 64 | 64 × 10 KB | 1.0736 | 315.5 | **2,077** | **581.8** | 2,083 | **$32.9** | $70.2 | — |
+| 128 | 128 × 10 KB | 1.0861 | 654.8 | 2,002 | 559.0 | 2,005 | $34.2 | $72.9 | batch == single sha256 3/3 PASS |
+| 128 | 128 × 50 KB | 1.0493 | 3,344.7 | 1,959 | 552.5 | 1,960 | $35.0 | $74.6 | — |
+
+"Engine" is the CLI's own summary line (`N tokens in X s of lockstep`), i.e. the lockstep without model load;
+$/GB = price_h × 1e9 / (B/s × 3600) with g4dn.xlarge at $0.247/h spot and $0.526/h on-demand (engine B/s).
+Model load is ~1 s of wall here, so wall and engine rates agree within 1.5%.
+
+Findings:
+
+1. **The product path saturates at ~530-580 tok/s (~2.0 KB/s) from N=12 on.** Going from 12 to 128 streams changes
+   the aggregate rate by +5% (peak at N=64, slightly lower at 128). Cost per token-stream is constant at ~1.72-1.89 ms,
+   so the batch is not buying anything beyond N≈12: every stream adds a fixed cost.
+2. **It is half the bare FFI figure.** The harness that only calls `forward_batch` reached 1,117 tok/s at N=128
+   (0.90 ms per token-stream). The CLI adds ~0.85-0.9 ms per token-stream on top. That increment is whatever the
+   lockstep does around the device call: for every stream and every token the device copies 50,280 F32 logits to
+   the host (25.7 MB per step at N=128, pageable memory) and the 4 host vCPUs build the CDF (one `exp` per vocab
+   entry, 50,280 per stream-token), run the CM ensemble + mixer and the range coder. The split between the logits
+   copy and the host CPU work is NOT measured yet; it is an inference from the two totals.
+3. **Real GPU-tier cost through the CLI: ~$33-35/GB spot, $70-75/GB on-demand** — not the $9-17/GB extrapolated
+   from the FFI harness. That is ~100x the text threshold ($0.33/GB) and ~1.7x better than the 4-vCPU CPU tier
+   on the same machine ($56-61/GB). Earlier figure for 12 mixed slices (run-c-r109b): 1,376 B/s = $49.9/GB.
+4. **Correctness holds at every N**: batch == single-file sha256 at N=12 and N=128 (3/3 each), batch decompress
+   roundtrip 32/32 byte-identical, and the 128 × 50 KB pass (12-14K tokens per stream, R-108 resets inside the
+   batch) stays at 1.049 bpb. The bpb differences between rows are the windows themselves (more windows = other
+   regions of enwik8), not the batch size; 50 KB streams compress better than 10 KB ones as expected.
+5. **Consequence for the plan**: "GPU kernels at cuBLAS efficiency" (admitted path 1) cannot by itself deliver the
+   15-25x headroom through the product: even an infinitely fast device forward leaves the ~0.85 ms per token-stream
+   of copy + host work, i.e. a ceiling near ~1,150 tok/s (~4 KB/s, ~$17/GB) on this 4-vCPU host. The next GPU
+   lever is the host pipeline (R-110): measure the split, then move softmax/CDF construction to the device
+   (return a quantized CDF or only what the coder needs instead of 50,280 F32 logits) and/or pin the transfer.
+
+Phase D of the script was also fixed in this run: it used to print "T4 single-stream best 0 B/s -> $inf/GB"
+whenever phase A was not selected, and "measured 0.000 KB/s" when phase C was not; it now takes the best T4 row of
+any phase (single stream, lockstep or batch scaling), reports spot and on-demand $/GB for wall and engine rates,
+adds per-T4 R* columns to `gate-table.csv`, and says "n/a" for tiers that were not measured.
+
 ## R-109 validated (run-c-r109, kernel B v2, commit b219870, T4 + 4 vCPU)
 
 Phase C re-run with the FFI v2 slot lockstep (`run-c-r109/fullsize-results.csv`):

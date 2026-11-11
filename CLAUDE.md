@@ -25,12 +25,18 @@ Measured status (2026-11-10): CPU lockstep ~1,180 B/s on 12 vCPU = $50-60/GB (sp
 GPU T4 batch N=128 ~4.2 KB/s = $9-17/GB. Gap to threshold: 30x-500x.
 Kaggle re-measurement (2026-11-10, `data/benchmark/results/kaggle-fullsize/README.md`): 4-vCPU Xeon lockstep Q8 69 B/s per vCPU
 = $56/GB (c7i spot); T4 through the CLI was single-stream only (405 B/s = $169/GB) until R-109 wired the FFI v2
-slot batch into the lockstep: T4 CLI jobs=12 = 1,401 B/s incl. model load (~$49/GB at g4dn spot; N=32-128 pending,
-FFI-level N=128 gave $9-17/GB).
+slot batch into the lockstep: T4 CLI jobs=12 = 1,401 B/s incl. model load (~$49/GB at g4dn spot).
+CLI batch scaling measured 2026-11-11 (`kaggle-fullsize/run-e-batch`): N=12/32/64/128 = 530/573/582/559 tok/s
+(1.8-2.1 KB/s) = **$33-38/GB spot, $70-81 on-demand**; flat from N=12 and half the FFI harness (1,117 tok/s), so
+the $9-17/GB FFI figure is NOT reachable through the product until the host pipeline is fixed (R-110).
 Admitted paths to close it (every new phase must justify itself against one of them):
 1. GPU kernels at cuBLAS/tensor-core efficiency. The binding T4 limit at N=128 is recurrent-state traffic (~4.8 MB per
    token and stream in F32, ~55k tok/s ceiling), not the 65 TFLOPS: the plugin's 1,117 tok/s is ~2% of that ceiling and
    the realistic headroom with kernels at 30-50% of roofline is 15-25x (not 60x). Reaches the text threshold, not logs.
+   Precondition (R-110, measured 2026-11-11): through the CLI every token-stream costs ~1.75 ms regardless of N
+   (FFI alone 0.90 ms); the ~0.85 ms around the device call (50,280 F32 logits copied to the host + CDF/CM/coder
+   on 4 vCPU; split not yet measured) caps the product at ~1,150 tok/s (~$17/GB) even with an infinitely fast
+   forward. Fix the host pipeline (CDF on device, pinned transfer, more host vCPU) before any kernel work.
 2. Fast tier: 3-30M-param backbone + CM recipe (R-105). External references, correctly attributed: L3TC-3.2M 1.105 bpb
    enwik8 at 2.5 MB/s on an A100; L3TC-200K 1.404 bpb at 11-27 KB/s on an iPhone CPU; Hutter 2026 lineage (cmix + 6M
    pretrained transformer) 0.78 bpb enwik9 at 7.5 KB/s on one CPU core. Gate = KB/s per vCPU vs R* (`breakeven.py`).
@@ -334,20 +340,25 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | R-107 FMA numeric contract 2 (`--numeric fma`) | batch Q8 N=32 299 -> 366 tok/s (+22%), F32 N=32 303 -> 351; BPB identical; single unchanged | done, opt-in |
 | Kaggle full-size run (T4 + 4 vCPU, `notebooks/redukt-gpu-fullsize-bench.py`) | Mamba length collapse: enwik8 0.964 -> 3.91 bpb from 10 KB to 2 MB; all 5 whole industry files lose to brotli/xz; per-vCPU 69 B/s; plugin `--jobs>1` corrupted predictions (1.949 vs 0.750 bpb) | measured, see `kaggle-fullsize/README.md` |
 | R-108 periodic backbone state reset — in the format (PROFILE bit 6 + RESET_LOG2, default 4096 for Mamba) | enwik8 100 KB 1.6327 -> 0.9951 bpb; 5/5 whole industry files win again (-5% to -44% vs brotli); header-driven decompress roundtrip OK; `--reset-every 0` = old output; 10 KB references +1 B | done |
+| R-109 CLI batch scaling on T4 (`run-e-batch`, 2026-11-11) | N=12/32/64/128 = 530/573/582/559 tok/s engine (1.8-2.1 KB/s, $33-38/GB spot); 128 x 50 KB 1.049 bpb at 552 tok/s; batch == single 3/3 at N=12 and N=128, batch roundtrip 32/32; saturated from N=12, half the FFI harness | measured -> R-110 |
+| R-104 F3 libm lint (`tests/libm_lint.rs`, e93b72e) | fails on any platform transcendental on the codec path; found and fixed `log2` in content detection and 3 `powi`; output identical 6/6 | done (goldens pending) |
 | R-109 plugin lockstep over FFI v2 slots | `prepare_streams` -> `batch_init(n)`, one slot per stream, `forward_multi` -> `forward_batch`; T4 jobs=12: bpb 0.7481 (was 1.949), batch == single 3/3, 1,401 B/s aggregate incl. load (CPU 4 vCPU 283 B/s) | done, validated on T4 |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
 to single-file output. Per-row Q8 scales failed (+7%); R-064 failed due to W8A8 + per-row scale on the tied head.
 Aggregate gain ~9x per machine over the 34 tok/s start, but per-vCPU efficiency only ~1.5-2x (the baseline used
-1-2 cores, lockstep saturates 12 threads): cost per raw GB stays ~$50-60 on CPU spot; GPU T4 N=128 ~$9-17.
-See "Commercial Target". Next lever: FMA/kernels (new numeric profile) and optimized GPU batch kernels.
+1-2 cores, lockstep saturates 12 threads): cost per raw GB stays ~$50-60 on CPU spot; GPU T4 $33-38 through the CLI (FFI-only N=128 ~$9-17).
+See "Commercial Target". Next lever: host pipeline of the plugin lockstep (R-110), then GPU batch kernels.
 The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) and an independent review confirmed the BPB
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
-(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 295 unit + 5 integration.
+(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 304 unit + 3 lint +
+5 integration.
 Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
 validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
-ceiling, headroom 15-25x -> kernels are the next GPU lever); R-104 F1 done (libm replaced by `fmath`), F2 (scalar order = AVX2) and
-F3 (multi-platform CI + libm lint) pending; R-101, R-105 pending. Plan and gates: ROADMAP Fase 19.
+ceiling, headroom 15-25x); R-109 measured through the CLI at N=12..128 (flat ~550 tok/s, $33-38/GB) -> R-110 (host
+pipeline of the plugin lockstep) is the next GPU lever, before kernels; R-104 F1 done (libm replaced by `fmath`),
+F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending; R-101, R-105 pending.
+Plan and gates: ROADMAP Fase 19.
 
 ## Process Safety (Windows)
 

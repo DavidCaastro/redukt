@@ -16,6 +16,11 @@ Since R-109 the lockstep with `--backbone plugin` runs one FFI v2 `forward_batch
 device slots (before R-109 it silently interleaved the single v1 state: 1.949 bpb). Phase C records the
 aggregate throughput and checks batch == single-file sha256 on three slices.
 
+  E. Plugin batch scaling through the CLI (R-109 follow-up): N = 12/32/64/128 lockstep streams of 10 KB on the
+     T4, plus 128 x 50 KB when time allows. Records wall B/s (incl. model load) and the engine-only tok/s the
+     CLI prints, checks batch == single sha256 and a batch decompress roundtrip. Answers: what is the real
+     $/GB of the GPU tier through the product path (not the bare FFI harness)?
+
 Launch (repo root, after scripts/kaggle-setup.sh):
     cp notebooks/redukt-gpu-fullsize-bench.py notebooks/redukt-gpu-fullsize-bench/
     python -m kaggle kernels push -p notebooks/redukt-gpu-fullsize-bench
@@ -33,6 +38,7 @@ import csv
 import glob
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,7 +48,8 @@ REPO_URL = os.environ.get("REDUKT_REPO", "https://github.com/DavidCaastro/redukt
 REDUKT_REF = os.environ.get("REDUKT_REF", "56570a1")  # origin/master 2026-11-10, R-108 + R-109 (plugin slots + header reset)
 WORK_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("fullsize-out")
 DEADLINE_HOURS = float(os.environ.get("DEADLINE_HOURS", "9"))
-PHASES = os.environ.get("PHASES", "C,A2,B,A").split(",")   # C lockstep, A2 CPU points, B industry, A GPU curve
+# C lockstep, E plugin batch scaling, A2 CPU points, B industry, A GPU curve
+PHASES = os.environ.get("PHASES", "C,E,A2,B,A").split(",")
 T_START = time.time()
 ENWIK8_URL = "http://mattmahoney.net/dc/enwik8.zip"
 PREFIXES = [10_240, 51_200, 102_400, 512_000, 1_048_576, 2_097_152, 4_194_304]
@@ -67,6 +74,8 @@ RETENTION_MONTHS = 84   # 7 years
 RESULTS = []    # (phase, file, size_bytes, system, config, out_bytes, bpb, seconds, bytes_per_s, note)
 CLASSICAL = []  # (file, size_bytes, tool, out_bytes, bpb, comp_s, comp_MBs, decomp_s, decomp_MBs)
 REPORT = []
+ENGINE = {}     # config -> (engine tok/s, engine B/s): lockstep steady state without model load (phase E)
+BATCH_SIZES = [12, 32, 64, 128]
 
 
 def log(msg):
@@ -211,6 +220,12 @@ def prepare_data(repo):
     for name, p in industry.items():
         open(os.path.join(slices, name + ".10k"), "wb").write(open(p, "rb").read()[:10_240])
     log(f"  slices10k: {len(os.listdir(slices))} files")
+    # phase E: 128 distinct enwik8 windows (700 KB apart) at 10 KB and 50 KB for the plugin batch scaling
+    for kb in (10, 50):
+        d = os.path.join(data, f"batch{kb}k")
+        os.makedirs(d, exist_ok=True)
+        for i in range(128):
+            open(os.path.join(d, f"w{i:03d}.{kb}k"), "wb").write(blob[i * 700_000:i * 700_000 + kb * 1024])
     return full, prefixes, industry, slices
 
 
@@ -406,6 +421,84 @@ def lockstep_cpu(redukt, repo, wdir, slices):
                note)
 
 
+def batch_dir(src, n, tag):
+    """Directory with the first n files of src (the lockstep takes every file of --input-dir)."""
+    d = os.path.join(WORK_DIR, "tmp", f"{tag}_{n}")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    for f in sorted(os.listdir(src))[:n]:
+        shutil.copy(os.path.join(src, f), d)
+    return d
+
+
+def engine_rate(stderr, total_bytes):
+    """(tok/s, B/s) of the lockstep engine alone, parsed from the CLI summary line (excludes model load)."""
+    m = re.search(r"(\d+) tokens in ([\d.]+)s of lockstep = ([\d.]+) tok/s", stderr or "")
+    if not m or float(m.group(2)) <= 0:
+        return None
+    return float(m.group(3)), total_bytes / float(m.group(2))
+
+
+def plugin_batch_one(redukt, repo, wdir, src, n, kb, check_single, roundtrip):
+    ind = batch_dir(src, n, f"in{kb}k")
+    outd = os.path.join(WORK_DIR, f"batch_plugin_{kb}k_{n}")
+    shutil.rmtree(outd, ignore_errors=True)
+    os.makedirs(outd)
+    total = sum(os.path.getsize(os.path.join(ind, f)) for f in os.listdir(ind))
+    config = f"plugin f32 jobs={n} x {kb}KB"
+    t0 = time.time()
+    r = attempt(config, run, f"{redukt} compress --input-dir '{ind}' --output-dir '{outd}' --jobs {n} "
+                f"--backbone plugin --weights {wdir} --no-governor", repo, 36000, True, True)
+    if r is None:
+        return None
+    dt = time.time() - t0
+    osz = sum(os.path.getsize(os.path.join(outd, f)) for f in os.listdir(outd) if f.endswith(".azth"))
+    note = "wall incl. model load"
+    eng = engine_rate(r.stderr, total)
+    if eng:
+        ENGINE[config] = eng
+        note += f"; engine {eng[0]:.1f} tok/s = {eng[1]:.1f} B/s"
+    if check_single:
+        same = []
+        for f in sorted(os.listdir(ind))[:3]:
+            single = os.path.join(WORK_DIR, "tmp", f"single_{n}_{f}.azth")
+            one = attempt(f"single plugin {f}", redukt_compress, redukt, repo, wdir, os.path.join(ind, f),
+                          single, "plugin")
+            if one is not None:
+                same.append(sha(single) == sha(os.path.join(outd, f + ".azth")))
+        note += f"; batch==single {sum(same)}/{len(same)} ({'PASS' if same and all(same) else 'FAIL'})"
+    if roundtrip:
+        back = os.path.join(WORK_DIR, "tmp", f"back{kb}k_{n}")
+        shutil.rmtree(back, ignore_errors=True)
+        os.makedirs(back)
+        t1 = time.time()
+        d = attempt(f"batch decompress jobs={n}", run, f"{redukt} decompress --input-dir '{outd}' "
+                    f"--output-dir '{back}' --jobs {n} --weights {wdir} --no-governor", repo, 36000, True, True)
+        if d is not None:
+            good = sum(1 for f in os.listdir(ind) if os.path.isfile(os.path.join(back, f))
+                       and open(os.path.join(back, f), "rb").read() == open(os.path.join(ind, f), "rb").read())
+            note += f"; batch roundtrip {good}/{n} ({'PASS' if good == n else 'FAIL'}) in {time.time() - t1:.0f}s"
+    record("E-batch", f"enwik8w{kb}k[{n}]", total, "redukt-T4", config, osz, dt, note)
+    return total / dt
+
+
+def plugin_batch_scaling(redukt, repo, wdir, data):
+    section("E. Plugin batch scaling through the CLI — N lockstep streams on the T4 (FFI v2 slots)")
+    rate = 0.0
+    for n in BATCH_SIZES:
+        if hours_left() < 0.5:
+            log("  skip batch scaling: deadline")
+            return
+        got = plugin_batch_one(redukt, repo, wdir, os.path.join(data, "batch10k"), n, 10, n in (12, 128), n == 32)
+        rate = max(rate, got or 0.0)
+    # longer streams: model load amortized, 3 state resets per stream (R-108 period 4096 tokens)
+    need_h = estimate_seconds(128 * 51_200, rate, 1400.0) / 3600 * 1.3
+    if need_h > hours_left() - 0.3:
+        log(f"  skip 128 x 50 KB: needs ~{need_h:.2f} h, only {hours_left():.2f} h left")
+        return
+    plugin_batch_one(redukt, repo, wdir, os.path.join(data, "batch50k"), 128, 50, False, False)
+
+
 # ---------------------------------------------------------------- 6. gate
 
 def gate(industry, prefixes):
@@ -424,18 +517,32 @@ def gate(industry, prefixes):
                 return float(r[4])
         return None
 
-    # throughput per vCPU and per T4
+    # throughput per vCPU and per T4 (best row of ANY T4 phase: single stream, lockstep or batch scaling)
     cpu_rows = [r for r in RESULTS if r[0] == "C-lockstep" and r[3] == "redukt-CPU4"]
     best_cpu_bps = max((float(r[8]) for r in cpu_rows), default=0.0)
-    gpu_rows = [r for r in RESULTS if r[3] == "redukt-T4" and r[0] == "A-scale"]
-    best_gpu_bps = max((float(r[8]) for r in gpu_rows), default=0.0)
+    gpu_best = max((r for r in RESULTS if r[3] == "redukt-T4"), key=lambda r: float(r[8]), default=None)
+    best_gpu_bps = float(gpu_best[8]) if gpu_best else 0.0
     per_vcpu = best_cpu_bps / 4.0 if best_cpu_bps else 0.0
-    cost_cpu_spot = PRICES["vcpu_spot_c7i"] * 1e9 / (per_vcpu * 3600) if per_vcpu else float("inf")
-    cost_gpu_spot = PRICES["t4_spot_g4dn"] * 1e9 / (best_gpu_bps * 3600) if best_gpu_bps else float("inf")
-    log(f"  CPU lockstep best aggregate {best_cpu_bps:.0f} B/s on 4 vCPU = {per_vcpu:.0f} B/s per vCPU "
-        f"-> ${cost_cpu_spot:,.1f}/GB (c7i spot)")
-    log(f"  T4 single-stream best {best_gpu_bps:.0f} B/s -> ${cost_gpu_spot:,.1f}/GB (g4dn spot); "
-        f"FFI batch N=128 would be ~7.4x faster (1,117 vs 151 tok/s, 2026-11-10)")
+
+    def usd_gb(price_h, bps):
+        return price_h * 1e9 / (bps * 3600) if bps else float("inf")
+
+    cost_cpu_spot = usd_gb(PRICES["vcpu_spot_c7i"], per_vcpu)
+    cost_gpu_spot = usd_gb(PRICES["t4_spot_g4dn"], best_gpu_bps)
+    if cpu_rows:
+        log(f"  CPU lockstep best aggregate {best_cpu_bps:.0f} B/s on 4 vCPU = {per_vcpu:.0f} B/s per vCPU "
+            f"-> ${cost_cpu_spot:,.1f}/GB (c7i spot)")
+    else:
+        log("  CPU lockstep not measured in this run (phase C not selected): per-vCPU columns are n/a")
+    if gpu_best:
+        log(f"  T4 best wall {best_gpu_bps:.0f} B/s [{gpu_best[0]} {gpu_best[4]}] -> ${cost_gpu_spot:,.1f}/GB "
+            f"(g4dn spot), ${usd_gb(PRICES['t4_ondemand_g4dn'], best_gpu_bps):,.1f}/GB (on-demand)")
+    else:
+        log("  T4 not measured in this run")
+    for config, (toks, bps) in ENGINE.items():
+        log(f"  T4 engine-only {config:30s} {toks:8.1f} tok/s {bps:8.1f} B/s -> "
+            f"${usd_gb(PRICES['t4_spot_g4dn'], bps):,.1f}/GB spot, "
+            f"${usd_gb(PRICES['t4_ondemand_g4dn'], bps):,.1f}/GB on-demand (steady state, load amortized)")
 
     # value of the margin per raw GB, against the best classical codec on the WHOLE file
     largest = max((r for r in RESULTS if r[0] == "A-scale" and r[3] == "redukt-T4"), key=lambda r: r[2], default=None)
@@ -460,17 +567,22 @@ def gate(industry, prefixes):
             value = delta_gb * price * RETENTION_MONTHS
             rstar = PRICES["vcpu_spot_c7i"] * 1e9 / (3600 * value) if value > 0 else float("inf")
             speedup = rstar / per_vcpu if per_vcpu else float("inf")
+            rstar_t4 = PRICES["t4_spot_g4dn"] * 1e9 / (3600 * value) if value > 0 else float("inf")
+            speedup_t4 = rstar_t4 / best_gpu_bps if best_gpu_bps else float("inf")
             rows.append((key, f"{rbpb:.4f}", best_tool, f"{best_bpb:.4f}", f"{delta_gb:.4f}", store,
                          f"{value:.4f}", f"{rstar / 1e3:.1f}", f"{per_vcpu / 1e3:.3f}", f"{speedup:.0f}",
-                         f"{cost_cpu_spot:.1f}", f"{cost_gpu_spot:.1f}"))
+                         f"{cost_cpu_spot:.1f}", f"{cost_gpu_spot:.1f}", f"{rstar_t4 / 1e3:.1f}",
+                         f"{best_gpu_bps / 1e3:.3f}", f"{speedup_t4:.0f}"))
             log(f"  {key:26s} redukt {rbpb:.4f} vs {best_tool} {best_bpb:.4f}: saves {delta_gb:.4f} GB/GB; "
                 f"{store:12s} 7y value ${value:.4f}/GB; R*={rstar / 1e3:.1f} KB/s per vCPU; "
-                f"measured {per_vcpu / 1e3:.3f} KB/s -> fast tier needs x{speedup:.0f}")
+                f"measured {per_vcpu / 1e3:.3f} KB/s -> needs x{speedup:.0f}; T4 R*={rstar_t4 / 1e3:.1f} KB/s, "
+                f"measured {best_gpu_bps / 1e3:.3f} KB/s -> needs x{speedup_t4:.0f}")
     with open(os.path.join(WORK_DIR, "gate-table.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["file", "redukt_bpb", "best_classical", "classical_bpb", "gb_saved_per_raw_gb", "storage",
                     "value_7y_usd_per_gb", "rstar_kbs_per_vcpu", "measured_kbs_per_vcpu", "speedup_needed",
-                    "cost_cpu_spot_usd_per_gb", "cost_t4_spot_usd_per_gb"])
+                    "cost_cpu_spot_usd_per_gb", "cost_t4_spot_usd_per_gb", "rstar_kbs_per_t4",
+                    "measured_kbs_per_t4", "speedup_needed_t4"])
         w.writerows(rows)
 
 
@@ -494,6 +606,8 @@ def main():
     try:
         if "C" in PHASES:
             lockstep_cpu(redukt, repo, wdir, slices)      # short, gives the per-vCPU number early
+        if "E" in PHASES:
+            plugin_batch_scaling(redukt, repo, wdir, os.path.dirname(slices))
         if "A2" in PHASES:
             scale_points_cpu(redukt, repo, wdir, prefixes)
         if "B" in PHASES:
