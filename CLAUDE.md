@@ -397,6 +397,24 @@ decodes without FMA hardware through a pure-Rust FMA; ARM not measured yet — r
 DEPRECATED (ROADMAP "Prioridad vigente"). Fase 20 done: R-111, R-112, R-113; R-114/R-115/R-116 proposed.
 Plan and gates: ROADMAP Fase 19.
 
+## Strata Backbone Effort (opened 2026-11-12)
+
+Integer backbone designed from scratch together with the codec, justified ONLY by path 3 (a model far smaller than
+130 MB on the sender terminal, ARM <-> x86 bit-identity by construction). It does not change the Fase 20 storage
+verdict. Durable state: `docs/internal/research/strata-backbone/00-charter.md` (axioms A0-A8, test-independence rules
+T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
+- Spec `docs/api/BACKBONE-STRATA-SPEC.md` (arithmetic version 1) FROZEN for v1 after design gate G0 (2026-11-13):
+  tier `cm` (width 0, 208 MAC/byte) for long inputs, tier `msg88` (width 88, ~113 KB weights) for messaging files.
+  The design-stage bake-off did not beat the best classical codec on the selection set (`03-bakeoff.md`); gate V3
+  (vs zstd + same-source dictionary) is open. Reviewer re-check of the review fixes is pending; a reopened blocker
+  withdraws the freeze.
+- Every change to the frozen spec or to a gate needs a dated amendment in `05-gate-amendments.md` (rule T1).
+  Amendment 3 (2026-11-14) reserves the accelerator path: trunk only, exact and undeclared in the header, deferred
+  gate C12, reserved ABI `docs/api/PLUGIN-FFI-STRATA.md`.
+- AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
+  (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 0 used. "Strata" is a working name (ROADMAP R-087
+  cites an unrelated external `strata-inference`).
+
 ## Process Safety (Windows)
 
 - FOREGROUND terminal only — NEVER use run_in_background
