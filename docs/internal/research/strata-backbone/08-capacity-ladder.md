@@ -3,8 +3,8 @@
 > Opened 2026-11-14 on the owner's instruction. The rule of gate V7 is normative in `05-gate-amendments.md`
 > (amendment 4); this file holds the reasoning, the position at registration, and the plan.
 > Labels: MEASURED (with its command), DERIVED (arithmetic on stated inputs), HYPOTHESIS, INFERENCE.
-> No ladder model exists yet. Sections 6.2 and 6.3 must be completed, and this file's sha256 logged in the charter
-> ledger, before the first ladder model is evaluated on a decision file.
+> Sections 6.2 and 6.3 were registered on 2026-11-14 (charter ledger) before any ladder model was evaluated on a
+> decision file.
 
 ## 0. Result first
 
@@ -216,14 +216,23 @@ costs exactly. The projection of `09b-trainer-port.md` (240 KB/s at batch 512) w
 Expected cost of the long run: 22,000 updates at 1.80 updates/s = 3.4 h plus downloads and export; the script stops
 training at 260 minutes and itself at 300. Budget after it: at most 0.3 + 5.0 = 5.3 of the 12 GPU hours.
 
-### 6.3 To be fixed here before launch — arm P and the decision files
+### 6.3 Arm P, arm P-s and the decision files — registered 2026-11-14 (amendment 5), before any decision evaluation
 
-| Item | State |
+Selection evidence and harness: `09a-arm-p-selection.md`, `tools/strata/viability/primer_long.py`.
+
+| Item | Registered value |
 |---|---|
-| General primer | built from training sources only; composition and the table bits used at each size (0, 64 KB, 1 MB, 16 MB, largest that fits) to be listed. Existing code: `tools/strata/bakeoff/shortmsg.py` primes at message scale; a long-input harness is needed |
-| Classical competitors with the same prior | zstd -19 with the primer bytes as dictionary; brotli custom dictionary if the Python binding allows; PPMd reported without |
-| Extended decision set | >= 2 text, >= 3 log systems, >= 2 real markup or structured sources, >= 1 MB each where available, none sharing a source with training or selection. On disk today: `dickens` (10 MB), the three log samples (171-225 KB). To fetch: the full Apache, Linux and OpenSSH logs of the same public archive, a second prose source, real XML and JSON |
-| Mamba-130M on identical bytes | `redukt compress --quant q8` on the first 1 MiB of each decision file (about 15 minutes per MiB with the lockstep on this laptop) |
+| Arm P | specification 3.4 unchanged; primer `mixI` (4,096-byte line-aligned blocks of the Wikipedia training slice, the 11 training log systems and the Canterbury training files, 45 / 45 / 10; sizes are prefixes); sizes 0, 65,536, 1,048,576, 16,777,216; **primary point 1,048,576**; tables `L` for primed rungs (successor 8/16/22x6, bit cells 8/16/24/24: 235.4 MB of state per stream), `D` and `L` at size 0; rungs R0 and R1 with the G0 weights, seeds 1204 and 1205 |
+| Arm P-s (labelled, not specification 3.4) | the snapshot keeps only the successor tables; same primer, tables and rungs; sizes 1,048,576 and 16,777,216; **primary point 16,777,216**. Picked among six variants on the four selection sources |
+| Verdict of a primed rung | at its primary point only. Classical side = min(best classical without prior, zstd -19 / -22 with the primer as dictionary); conditional PPMd / xz reported as a stricter reference |
+| Extended decision set (`tools/strata/viability/sources.py`), 1,048,576 bytes each | text: `dickens` [500,000, 1,548,576), `bible.txt` [0, 1 MiB); logs: full `Apache.log` [0, 1 MiB), `Linux.log` and `OpenSSH.log` [951,424, 2,000,000); structured: GitHub event archive hour 2015-01-01-15 [0, 1 MiB), Silesia `nci` [0, 1 MiB). None is a training or selection source; the Linux and OpenSSH slices share no line with the frozen-test samples |
+| PPMd | standard input with 1 GB (`baselines_ext.py`); best of both modes per file |
+| Mamba-130M on identical bytes | `redukt compress --quant q8` on each decision slice (real `.azth`), run after the Strata evaluations |
+
+Selection result that the registration is based on (MEASURED, macro of the four sources, bpb, mean of two seeds):
+no primer 0.6193 (R0, default tables) / 0.6150 (large tables); arm P at 1 MiB with large tables 0.5995 (R0), 0.6048
+(R1); arm P-s 0.5912 at 1 MiB and 0.5891 at 16 MiB (R0); best classical without prior 0.5879. Expectation written
+before the measurement: O3 on text for both primed arms.
 
 ### 6.4 Order of work
 

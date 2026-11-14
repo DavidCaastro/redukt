@@ -251,3 +251,24 @@ loses to PPMd (+3.7 % to +8.1 %), parity 1.92-2.00. So at registration: `logs` =
 Effect on the freeze: the arithmetic of sections 2-4, the weight file and the AZTH declaration of section 5 and the
 v1 scope fixed by G0 are unchanged, so the freeze of 2026-11-13 stands. Ladder models above width 88 and general
 primers are not part of v1; a rung that reaches O1 or O2 enters the product only through its own amendment.
+
+## Amendment 5 (2026-11-14): V7 details fixed before any decision evaluation (PPMd memory, extended slices, arm P-s)
+
+Written after the arm-P exploration on the selection set (`09a-arm-p-selection.md`) and the smoke run of the
+trainer, and before any Strata model (primed, retrained or not) was evaluated on a decision file of V7.
+
+Seen before this amendment: classical codec sizes on the seven extended slices (`baselines-ext.csv`; classical
+codecs only), the arm-P results on the four selection sources, the training costs of the smoke run. Not seen: any
+Strata result on the extended set; any primed or retrained Strata result on the frozen test set.
+
+| Gate / section | Change | Direction | Reason |
+|---|---|---|---|
+| classical set, PPMd | PPMd is run through standard input with 1 GB of model memory (`baselines_ext.py`), not on a file: given a file, 7-Zip lowers the PPMd memory to about 16x the file size whatever `mem=` says. The best PPMd of each file is the smaller of the two modes | stricter | MEASURED on the extended slices: 4 of 7 improve (`nci` -4.3 %, the others <= 1.1 %); selection and frozen-test figures are unchanged |
+| V7 extended set | fixed as: `dickens` [500,000, 1,548,576); `bible.txt` [0, 1 MiB); full Loghub `Apache.log` [0, 1 MiB); `Linux.log` and `OpenSSH.log` [951,424, 2,000,000); GitHub event archive hour 2015-01-01-15 [0, 1 MiB); Silesia `nci` [0, 1 MiB). Classes: text = `dickens` + `bible`; logs = Apache + Linux + OpenSSH; structured = the JSON hour + `nci` (reported and judged as a third class, labelled; the frozen test set has no such class, so for it the extended set alone decides) | neutral / stricter | the first MiB of the full Linux and OpenSSH logs contains every line of the frozen-test samples (MEASURED: 2,000 of 2,000 lines each), so those slices would have counted the same bytes twice; the tails share no line with them. Apache shares none |
+| V7 arm P | registered configuration: specification 3.4 unchanged; primer `mixI` (training sources only); sizes 0, 65,536, 1,048,576, 16,777,216 with **1,048,576 as the primary point**; primed rungs use the large tables `L` (successor 8/16/22x6, bit cells 8/16/24/24; 235.4 MB of state per stream); rungs R0 and R1 with the G0 weights, seeds 1204 and 1205 | — | chosen on selection data only (`09a` section 5) |
+| V7 arm P-s (new, labelled) | a second primed arm: the snapshot keeps only the successor tables (bit cells, calibration cells and mixer start from boot). Same primer, tables and rungs; sizes 1,048,576 and 16,777,216, **primary point 16,777,216**. It is NOT specification 3.4: an outcome obtained with it enters the product only through an arithmetic amendment | adds one more chance to pass, disclosed | on selection the primed bit cells are what hurts (`09a` 4.3); the variant was picked among six on four sources, which is selection-set fitting and is why it is a separate, labelled arm |
+| V7 verdict for primed rungs | a primed rung is judged at its primary point only; the other sizes are reported. The classical side of a primed rung is the smaller of: best classical without prior, zstd -19 / -22 with the primer as raw-content dictionary. Conditional PPMd / xz (C(primer + input) - C(primer)) are reported next to it as a stricter, non-deployable reference | stricter than "any size" | one point per rung keeps the verdict from being the best of several sizes |
+
+Expectation written before the measurement (INFERENCE from the selection set): arm P ends O3 on text (about -2 %
+against PPMd at best, and the gain is front-loaded: 47 % on the first 10 KB, 1.4 % on the last 200 KB of a 300 KB
+input) and lowers the unprimed saving on logs.
