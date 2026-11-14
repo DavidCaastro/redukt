@@ -399,18 +399,31 @@ Plan and gates: ROADMAP Fase 19.
 
 ## Strata Backbone Effort (opened 2026-11-12)
 
-Integer backbone designed from scratch together with the codec, justified ONLY by path 3 (a model far smaller than
-130 MB on the sender terminal, ARM <-> x86 bit-identity by construction). It does not change the Fase 20 storage
-verdict. Durable state: `docs/internal/research/strata-backbone/00-charter.md` (axioms A0-A8, test-independence rules
+Integer backbone designed from scratch together with the codec. **Objective (owner, 2026-11-14, charter 1b): Strata
+is the project's intended backbone, built on the lessons learned; find whether some Strata size has a compute cost
+per raw GB below the storage value it saves against the best classical codec, and how close to Mamba-130M it gets**
+(gate V7, the capacity ladder: `docs/internal/research/strata-backbone/08-capacity-ladder.md`). v1 itself stays scoped
+to path 3 (a model far smaller than 130 MB on the sender terminal, ARM <-> x86 bit-identity by construction), and
+nothing measured so far changes the Fase 20 storage verdict. Durable state: `docs/internal/research/strata-backbone/00-charter.md` (axioms A0-A8, test-independence rules
 T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
 - Spec `docs/api/BACKBONE-STRATA-SPEC.md` (arithmetic version 1) FROZEN for v1 after design gate G0 (2026-11-13):
   tier `cm` (width 0, 208 MAC/byte) for long inputs, tier `msg88` (width 88, ~113 KB weights) for messaging files.
-  The design-stage bake-off did not beat the best classical codec on the selection set (`03-bakeoff.md`); gate V3
-  (vs zstd + same-source dictionary) is open. Reviewer re-check of the review fixes is pending; a reopened blocker
+  Gate V3 (vs zstd + same-source dictionary) is open.
+- Position, MEASURED 2026-11-14 (design-stage code lengths, held-out; `python -I tools/strata/viability/viability.py`):
+  the classical set now includes PPMd (amendment 4), and with it every Strata tier LOSES on text (`dickens` 500 KB:
+  PPMd 1.968 bpb, Strata 2.04-2.13) and on markup, and wins only on logs (-15 % to -22 % in bytes over three
+  systems). Mamba-130M is 1.2x smaller on logs and 1.9-2.0x on text. Never write "Strata beats the best classical
+  codec" without "on logs" and without naming PPMd. Projected gate V1: FAIL for both v1 tiers.
+- Storage economics, DERIVED: the saving per GB is linear in time and already counted over 7 years ($0.335/GB for
+  text); break-even at today's cost is 690-1,250 years. A model can cost at most 14K-115K MAC/byte on logs and
+  138K-1.1M on text even at Mamba's ratio (Mamba: ~35.7M). Strata's tiers (208 / 27,752 / 113,912) fit the cost;
+  they lack the ratio. Measured slope: 4x compute bought 0.3-2.3 %. Reviewer re-check of the review fixes is pending; a reopened blocker
   withdraws the freeze.
 - Every change to the frozen spec or to a gate needs a dated amendment in `05-gate-amendments.md` (rule T1).
   Amendment 3 (2026-11-14) reserves the accelerator path: trunk only, exact and undeclared in the header, deferred
-  gate C12, reserved ABI `docs/api/PLUGIN-FFI-STRATA.md`.
+  gate C12, reserved ABI `docs/api/PLUGIN-FFI-STRATA.md`. Amendment 4 (2026-11-14): PPMd in the classical set, gate
+  V7 pre-registered (compute rungs up to 2M MAC/byte and general primers; cost, 10 % materiality, parity <= 1.10 x
+  Mamba). Next V7 step: arm P (general primer, CPU only, existing weights), then the trainer port (stage 4c).
 - AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
   (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 0 used. "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).

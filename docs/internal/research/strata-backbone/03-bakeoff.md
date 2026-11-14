@@ -635,3 +635,37 @@ event archive (same source under the by-source rule, labelled so). Mean bytes pe
 JSON 131.6 / 153.2 (Mamba-130M: 91.2, 87.6, 105.0, 167.3, 133.3). With real framing and a primer from the message's
 own source the width-88 file wins 19 of the 25 held-out cells (gate V3 asks 20); with a primer from another source
 it wins none against a same-source dictionary.
+
+## 13. Addendum of 2026-11-14 — PPMd was missing from the classical set (decides nothing above)
+
+The classical codecs of this file (`baselines.py`) are xz, zstd, brotli, bz2 and gzip: the LZ and BWT families. The
+width-0 tier is a context mixer, and no context-model codec was among its competitors. Measured on 2026-11-14 with
+`python -I tools/strata/viability/ppmd_baseline.py` (7-Zip PPMd var.H, orders 4-32, packed stream without the
+container header), on exactly the same bytes:
+
+| Source | Best classical above | Best PPMd | Strata `cm` / width 88 / width 208 (mean of two seeds) |
+|---|---|---|---|
+| sel-webster | 1.8547 | **1.6681** | 1.7388 / 1.7293 / 1.7213 |
+| sel-xml | 0.3219 | **0.2778** | 0.3872 / 0.4047 / 0.4057 |
+| sel-zookeeper | 0.2043 | **0.1856** | 0.1490 / 0.1382 / 0.1356 |
+| sel-proxifier | 0.2416 | **0.2201** | 0.2023 / 0.1990 / 0.1971 |
+| test-dickens | 2.1960 | **1.9681** | 2.1269 / 2.0653 / 2.0408 |
+| test-apache | 0.3132 | **0.2576** | 0.2054 / 0.1948 / 0.1861 |
+| test-linux | **0.3697** | 0.4039 | 0.3495 / 0.3203 / 0.3136 |
+| test-openssh | 0.3460 | **0.3222** | 0.2506 / 0.2408 / 0.2381 |
+| test-facturae | 0.3953 | **0.3845** | 0.4785 / 0.4718 / 0.4876 |
+| test-ubl | **0.2470** | 0.2490 | 0.3150 / 0.3184 / 0.3278 |
+
+Statements of this file that hold only against the LZ and BWT families, and their value with PPMd included:
+- Section 12, G0d: "`cm` reaches 0.6193, 5.5 % below the best classical codec per source". With PPMd the classical
+  macro is 0.5879 and `cm` is **5.3 % above** it; it wins on the two log sources (-20 %, -8 %) and loses on
+  `webster` (+4.2 %) and `xml` (+39 %).
+- Section 12.2: "`cm` beats the best classical codec on all four [real held-out sources] and by 6.0 % in total
+  bytes; tier A by 9.1 %". With PPMd: `cm` **+4.2 %**, tier A **+0.75 %**, tier B -0.6 %; all tiers lose on
+  `dickens` (+3.7 % to +8.1 %) and win on the three logs (-15 % to -22 % in total).
+- Section 0, weak point 1 becomes stronger, not weaker: after G0 no tier beats the best classical codec on text or
+  markup.
+
+The G0 decision is unaffected (its rule never used a classical codec). The classical set of the specification's
+gates now includes PPMd (`05-gate-amendments.md`, amendment 4), and the consequences for storage viability are in
+`08-capacity-ladder.md`.

@@ -23,6 +23,26 @@ Why it is still justified (it must keep justifying itself against these):
 3. It produces new evidence on the closed fast-tier question under a different design (integer, bounded state,
    codec co-design, elastic tiers), with gates fixed before measuring. A NO-GO is an acceptable, reportable outcome.
 
+## 1b. Objective (owner, 2026-11-14)
+
+Asked what objective the effort serves, the owner stated it: **Strata is the project's intended backbone — built
+from scratch on the lessons learned, for a codec whose input, formulas and output are known — and it should reach
+what the product reaches today.** This widens reason 3 above from "new evidence" to the effort's goal, and it does
+not replace the measured framing of section 1.
+
+Operational form (so that it can be measured and can fail): on held-out data, find whether some Strata size has a
+compute cost per raw GB below the storage value of the bytes it saves against the best classical codec, and how
+close to Mamba-130M's ratio it gets. Gate V7 (`05-gate-amendments.md` amendment 4; plan and position at
+registration in `08-capacity-ladder.md`). Three things the owner was told the same day and that stay true:
+- the storage saving per GB is linear in time and already counted over 7 years; only the compute per byte can move;
+- knowing the codec's interface fixes the engineering (integer, bounded state, size), not the ratio: the ratio is
+  what the model knows about the data, and at equal budget the original trunk ties with GRU and LSTM controls;
+- at registration nothing meets the objective: with PPMd in the classical set every trained tier loses on text, the
+  width-0 tier is viable only on logs, and Mamba-130M is 1.2-2.0x smaller.
+
+Path 3 remains the scope of v1 (the frozen specification); the objective is pursued through V7 and through
+amendments, never by loosening a gate.
+
 ## 2. Design axioms (binding; deviation needs written justification in the spec and must still pass the gates)
 
 - **A0 Original design, derived from the codec.** (Owner's instruction, 2026-11-12.) Strata is not a port, a
@@ -90,6 +110,7 @@ Why it is still justified (it must keep justifying itself against these):
 | 5 Local training (functional proof) | small real weights | `weights/strata-*/` (gitignored) |
 | 6 Independent verification + audit | gate results, honest numbers | `06-verification.md` |
 | 7 Docs and roadmap | user docs, ROADMAP, CLAUDE.md facts | `docs/` |
+| V7 Capacity ladder (objective 1b) | frontier tool, PPMd baseline, plan; then results | `tools/strata/viability/`, `08-capacity-ladder.md`, `09-capacity-ladder-results.md` |
 
 Paths in the table are the plan; the spec may refine them.
 
@@ -132,3 +153,4 @@ Paths in the table are the plan; the spec may refine them.
 | 2026-11-13 | 2 / G0 | done: PASS, spec frozen for v1 | G0 decided 11:05 by the registered rule (`03-bakeoff.md` 12): v1 = width-0 tier `cm` for long inputs, width-88 trunk tier for messaging files, width 208 dropped; G0a TIE; G0b pass on both seeds. Review 04 blocking B-1..B-4 and grave G-1..G-4 fixed in the spec text (Appendix C), reviewer re-check pending; a reopened blocker withdraws the freeze. Report-only test set and R-113 messages in `03-bakeoff.md` 12.2. No GPU hour used |
 | 2026-11-14 | 2 / amendment 3 | done, freeze stands | owner asked to reserve the accelerator path (portability principle) before implementation: spec 6.9 (trunk-only offload, exact and undeclared, encoder windows, probe, reserved ABI, seam for 4a), hook H7, deferred gate C12, X17, risk 10, Appendix D. Arithmetic, format, v1 scope and thresholds unchanged. `05-gate-amendments.md` sha256 now `218cc8f82f97fc08f42b4bb4ee130c1f7b6b7be729451c04f0c7cf22fb8378dd` (amendments 1 and 2 byte-identical, append-only). No GPU hour used |
 | 2026-11-14 | legacy fixes | done, committed | full re-verification (`07-legacy-fixes.md` section 11): 0 warnings, 318 + 3 + 5 tests and all 15 ignored integration tests pass, 23/23 legacy archives byte-identical (T6), batch == single 10/10, `REDUKT_NO_SIMD=1` identical. Pre-existing fixture `data/test-fixtures/golden.azth` fails identically at the previous HEAD (not caused here, no test reads it). Committed as 4b92829; the owner authorized commit and push of this effort's work on 2026-11-14 (section 5's no-commit rule still binds sub-agents) |
+| 2026-11-14 | objective 1b / amendment 4 | registered, freeze stands | owner stated the objective (section 1b). PPMd measured and added to the classical set (stricter): Strata loses on text (`dickens` +3.7 % to +8.1 %), still wins on logs (-15 % to -22 %); projected V1 FAIL for both v1 tiers (`03-bakeoff.md` 13). Gate V7 (capacity ladder) registered before any ladder model exists; position at registration: logs "CM only" passes, text O3, nothing O1. `05-gate-amendments.md` sha256 now `9b0b61f44ea442f25a883565b9be29a613c7cbdd179fe39a20b1425f9da2a7d6` (amendments 1-3 byte-identical: the first 160 lines still hash to `218cc8f8…`). `08-capacity-ladder.md` is a plan: its sections 6.2 and 6.3 are incomplete, and the sha256 that counts is the one logged here before the first ladder evaluation. No GPU hour used |

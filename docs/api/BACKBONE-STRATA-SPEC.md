@@ -12,6 +12,10 @@
 > portability principle requires (section 6.9, hook H7, gate C12, crossover X17, risk 10, Appendix D). It is
 > additive: no arithmetic of sections 2-5, no format field, no gate threshold and no v1 scope changes, nothing of
 > it is implemented in v1, and the freeze stands.
+> **Amendment 4 (2026-11-14):** PPMd joins the classical set of the viability gates (stricter; projected V1 becomes
+> FAIL for both v1 tiers) and gate V7, the capacity ladder, is registered for the owner's objective (charter 1b:
+> find whether some Strata size is viable for storage and how close to Mamba-130M it gets). No arithmetic, format
+> field or v1 scope changes; ladder models are not part of v1; the freeze stands.
 > Date: 2026-11-13. Working name: Strata. Nothing in this document is implemented in Rust yet.
 > Scope: an integer, coder-domain backbone for Redukt, its weight file, its AZTH declaration, its integration
 > module ("the dock"), its cost model, its training recipe, its gates and its test plan.
@@ -58,8 +62,10 @@ sides hold; on short messages it is the decisive lever (with real framing it doe
 dictionary on the selection sources: `03-bakeoff.md` 12).
 
 **What G0 measured (`03-bakeoff.md` 12).** With the bit cells of 3.3 in the training loop, the width-0 tier alone
-(208 MAC/byte) codes the four selection sources at 0.619 bpb, 5.5 % below the best classical codec per source, and
-a trunk adds 0.0-0.9 % on long streams; on short messages the width-88 trunk saves 10 % per cell (16-17 % on logs).
+(208 MAC/byte) codes the four selection sources at 0.619 bpb, 5.5 % below the best classical codec per source of the
+LZ and BWT families (with PPMd in the set, amendment 4: **5.3 % above**; it wins on logs and loses on text and
+markup, `03-bakeoff.md` 13), and a trunk adds 0.0-0.9 % on long streams; on short messages the width-88 trunk
+saves 10 % per cell (16-17 % on logs).
 Hence the v1 scope above.
 
 What is new here is the combination and its derivation from the codec; the ingredients have relatives in
@@ -1038,8 +1044,8 @@ MAC/s per core and 1 us per byte for tables, bit cells and bit steps, to be repl
 - Reference: Mamba-130M touches 153.6 MB of weights per token in Q8 and its file is 516.6 MB; `msg88` is 0.11 MB.
 - Budgets, per vCPU (not per core): with Strata's own measured margins over the classical codecs (prototype,
   `03-bakeoff.md` 7.3) text had no break-even speed and logs need 250-890 KB/s per vCPU at $0.014 per vCPU-hour
-  (review 04, m-15); the G0 margins (`cm` 5.5 % below the best classical codec on the selection macro) do not change
-  the storage verdict of Fase 20. Path 3 has no throughput budget.
+  (review 04, m-15); the G0 margins (`cm` 5.5 % below the best LZ / BWT codec on the selection macro, 5.3 % above
+  once PPMd is in the set: amendment 4) do not change the storage verdict of Fase 20. Path 3 has no throughput budget.
 
 ### 7.3 Crossover table
 
@@ -1225,8 +1231,11 @@ tier on short messages only (v1 = `cm` for long inputs, width 88 for messaging f
 
 ### 9.2 Viability gates (GO / NO-GO information; a NO-GO is reported, it does not block correctness work)
 
-Sizes are real `.azth` bytes including header and CRC (rule T3), next to xz -9e, zstd -19 and brotli -11
-(lgwin 24) on the identical bytes.
+Sizes are real `.azth` bytes including header and CRC (rule T3), next to the classical set on the identical bytes:
+xz -9e, zstd -19 and -22, brotli -11 (lgwin 24), bz2 -9 and PPMd (7-Zip PPMd var.H, orders 4-32, packed stream
+without the container header; `tools/strata/viability/ppmd_baseline.py`). PPMd was added by amendment 4
+(2026-11-14): the width-0 tier is a context mixer and its classical set had no context-model codec. "Best classical"
+means the smallest of the set for each file.
 
 | Id | Gate | Threshold (GO) | Command / protocol |
 |---|---|---|---|
@@ -1236,12 +1245,19 @@ Sizes are real `.azth` bytes including header and CRC (rule T3), next to xz -9e,
 | V4 | Speed vs budget | there is a tier with `R >= 13 KB/s per vCPU` and `bpb <= bpb_classical - 16.1 / R[KB/s]` on `dickens` 500 KB (text) — and one with `R >= 110 KB/s per vCPU` and the same inequality on the three logs (formula of `02-evidence` C.4 at $0.014 per vCPU-hour) | `tools/strata/gates/speed.py`: wall bytes/s of `compress --input-dir` on 12 x 100 KB, divided by logical CPUs |
 | V5 | Integer cost | bpb of the integer model <= 1.05 x bpb of the same architecture trained without the integer simulation (the repo's +5 % budget) | bake-off: MEASURED; repeated on the long run only if hours remain |
 | V6 | Terminal footprint | on the same messaging file `M` as V3 and in the same run: peak RSS of a 256-byte compress <= 32 MB; file <= 1.5 MB | `--strata-compact` |
+| V7 | Capacity ladder (storage viability by model size; amendment 4) | per class (`text`, `logs`), on the frozen test set and on an extended held-out set, the worse of the two: a trunk rung (MAC caps 32K / 128K / 512K / 2M) or a rung with a general primer has `bpb_classical - bpb >= 16.1 / R[KB/s]` with `R = 1 / (1 us + MAC / 10 G MAC/s)`, saves >= 10 % of the best classical bytes, and codes <= 1.10 x Mamba-130M's bytes on identical bytes (O1, objective met). Cost and materiality without parity = O2, reported for the owner's decision; otherwise O3. The full rule, arms, stop rules and the position of the trained rungs at registration are in `05-gate-amendments.md` (amendment 4) and `08-capacity-ladder.md` | `tools/strata/viability/viability.py`; an O1 or O2 is confirmed by V4 on the Rust implementation |
 
 The messaging weight file `M` (tier, successor table bits, bit-cell orders) is chosen before V3 by a pre-registered sweep at message scale on selection sources (successor table bits {12, 16, 18} beyond order 2, bit-cell orders {0-1, 0-3}, 64 KB primer, 128-2,048 B messages); V3 and V6 are then measured on `M` only (review 04, G-2). The prototype's 30 / 30 used 5 MB of tables and no bit cells: it says nothing about `M`.
 
 V4 uses the classical codec as the competitor because the value of a byte saved is measured against it
 (`scripts/breakeven.py`). With the Fase 20 verdict in force, a NO-GO on V4 is the expected outcome for storage
 and does not, by itself, stop the path-3 use.
+
+V7 does not belong to v1: it measures whether a larger, better-trained or primed Strata would be viable for storage
+(the owner's objective of 2026-11-14, charter 1b). Position at registration, projected from the design-stage code
+lengths with PPMd in the classical set (`08-capacity-ladder.md` 3): V1 is expected to FAIL for both v1 tiers (they
+lose on `dickens` by 4.9-8.1 % and the total over the four real sources is 0.75-4.2 % above the classical total);
+on logs the width-0 tier passes cost and materiality at 1.29 x Mamba's bytes; nothing reaches O1.
 
 ---
 
@@ -1400,3 +1416,4 @@ Fixed by the author on 2026-11-13; not yet re-checked by the reviewer.
 | # | Date | What changed | Arithmetic (2-4) / format (5) / v1 scope / gate thresholds | Where |
 |---|---|---|---|---|
 | 3 | 2026-11-14 | Accelerator path reserved for the portability principle: offload boundary (trunk only), exact contract without a header field, encoder windows, data exchanged, device arithmetic traps and load-time probe, reserved ABI, the seam stage 4a must keep, expected value; new deferred gate C12 | unchanged / unchanged / unchanged / unchanged (C12 is new and deferred) | status block, 3.5, 6.2, 6.5, 6.7, 6.9, X17, C12, 10, risk 10 |
+| 4 | 2026-11-14 | Owner's objective recorded (charter 1b). Classical set of the viability gates gains PPMd (and names zstd -22 and bz2 -9). New gate V7, the capacity ladder: compute rungs up to 2M MAC/byte and general primers, judged by cost (V4's inequality at 10 G MAC/s), materiality (10 %) and parity with Mamba-130M (1.10) | unchanged / unchanged / unchanged / **stricter** (classical set; projected V1 FAIL for both v1 tiers); V7 is new and outside v1 | status block, 9.2 |

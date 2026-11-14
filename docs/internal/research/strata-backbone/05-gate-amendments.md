@@ -158,3 +158,96 @@ Effect on the freeze: none of B-1..B-4 or G-1..G-4 is reopened. The arithmetic o
 the AZTH declaration of section 5, the v1 scope fixed by G0 and every existing gate threshold are unchanged, so the
 freeze of 2026-11-13 stands. v1 ships no accelerator code; the only obligation on stage 4a is the seam of 6.9.6
 (a plain module boundary, no dead code).
+
+## Amendment 4 (2026-11-14): owner's objective, PPMd in the classical set, capacity-ladder gate V7
+
+Requested by the owner on 2026-11-14, after asking what objective the effort serves. The owner's statement, in
+substance: Strata is the project's intended backbone, built from scratch on the lessons learned, and it should reach
+what the product reaches today with a process designed for the codec. The economic reading given to the owner the
+same day: the storage saving per GB is fixed and grows linearly with the retention time, so the only variable that
+can close the Fase 20 gap is the compute cost per byte, which is the size of the model. The question this amendment
+turns into a gate is therefore: **on held-out data, is there a Strata size whose compute cost per raw GB is below the
+storage value of the bytes it saves against the best classical codec, and how close to Mamba-130M's ratio is it?**
+
+Seen before this amendment (disclosed in full):
+- every result of `03-bakeoff.md`, including the frozen test set of its section 12.2 (report-only, read on
+  2026-11-13);
+- the PPMd baseline of `tools/strata/viability/ppmd_baseline.py`, run and read on 2026-11-14 before this text was
+  written (`03-bakeoff.md` section 13);
+- the output of `tools/strata/viability/viability.py` for the three trained rungs (`08-capacity-ladder.md`
+  section 3, "position at registration").
+
+Not seen, because it does not exist: any Strata model wider than 208, any model trained on more than the 33.55 MB of
+the bake-off or for more than 2,048 steps, any measurement of arm P below, any Rust throughput.
+
+| Gate / section | Change | Direction | Reason |
+|---|---|---|---|
+| 9.2 preamble; V1, V4 and every "best classical" figure from now on | the classical set is xz -9e, zstd -19 and -22, brotli -11 (lgwin 24), bz2 -9 and **PPMd** (7-Zip PPMd var.H, model orders 4, 6, 8, 12, 16, 24, 32 with 256 MB, smallest packed stream, container header excluded). zstd -22 and bz2 -9 are written down because the bake-off already used them | stricter | the width-0 tier is a context mixer; a classical set made only of the LZ and BWT families leaves out its closest classical relative. MEASURED effect on the frozen test set (ideal code lengths, mean of two seeds): the best classical total over the four real held-out sources falls from 163,699 B to 147,595 B; `cm` goes from -6.0 % to **+4.2 %**, width 88 from -9.2 % to **+0.75 %**, width 208 from -10.4 % to -0.6 %. Every tier now loses on `dickens` (+3.7 % to +8.1 %) and still wins on the three logs. Selection macro of the best classical codec: 0.6556 -> 0.5879 (the G0 tiers are at 0.614-0.619). **Projected V1: FAIL for both v1 tiers** (3 of 4 sources, but the total is above the classical total) |
+| V7 (new, 9.2) | capacity ladder, defined below | new gate; no existing threshold is touched | the owner's objective needs a measurement with a rule written before it |
+| `00-charter.md` section 1 | objective recorded (section 1b) | — | owner's instruction |
+
+The G0 decision is not reopened: its rule compared tiers with each other and with equal-budget controls, never with a
+classical codec, so the classical set does not enter it.
+
+### V7 — capacity ladder (pre-registered 2026-11-14, before any ladder model exists)
+
+**Arms.**
+- Arm W (capacity in compute): one model per rung, each trained alone or nested, on a training set at least 10x the
+  bake-off's bytes. Rungs by cap on MAC per byte: R0 = 208 (`cm`), R1 <= 32,000, R2 <= 128,000, R3 <= 512,000,
+  R4 <= 2,000,000. R4 is a slope probe: by the ceilings of `08-capacity-ladder.md` section 4 it cannot be viable for
+  storage on logs at any ratio, and on text only at 20 G MAC/s with an output close to zero bytes.
+- Arm P (capacity in memory, constant compute): the primer mechanism of specification 3.4 with a general primer built
+  from training sources only, sizes 0, 64 KB, 1 MB, 16 MB and the largest the table state allows, on rungs R0 and R1.
+  CPU only. Its classical competitors receive the same prior where they can (zstd -19 with the primer bytes as a
+  dictionary; brotli with a custom dictionary if the binding allows); PPMd has no such mode and is reported without.
+
+The exact configuration of every model (widths, depth, table bits, steps, training sources and weights, seeds) and
+the extended decision files are written in `08-capacity-ladder.md` and its sha256 is logged in the charter ledger
+**before the first ladder model is evaluated on any decision file**. Hyper-parameters are chosen on the selection
+set only.
+
+**Data.** By-source split as in the bake-off: no source contributes to more than one role. The decision is read on
+(a) the existing frozen test set, classes `text` (`dickens` 500 KB) and `logs` (Apache, Linux, OpenSSH), and (b) an
+extended set with at least two text sources, three log systems and two real markup or structured sources, each of
+1 MB or more where the source has that much. A class verdict is the **worse** of (a) and (b). The two synthetic
+invoice files are reported and do not vote (as in V1).
+
+**Quantities** (per rung `r` and class `c`; computed by `tools/strata/viability/viability.py`):
+- `B_r`, `B_cl`, `B_mamba`: total coded bytes of the class for the rung, for the best classical codec of each file,
+  and for Mamba-130M on the identical bytes (Mamba re-run locally, real `.azth`; the first 1 MiB of a file is enough).
+  Ideal code lengths of the integer reference are accepted for `B_r` until the Rust backbone exists, and labelled.
+- `delta = 8 (B_cl - B_r) / N` bpb; `saving = 1 - B_r / B_cl`; `parity = B_r / B_mamba`.
+- `seconds per byte = 1 us + MAC_r / R_mac` (the hypothesis of specification 7.2); `R = 1 / seconds`.
+- `viable <=> delta >= 16.10 / R[KB/s]` (gate V4's inequality: $0.014 per vCPU-hour, $0.023 per GB-month, 7 years).
+
+**Thresholds.** Decision point `R_mac = 10 G MAC/s` (the lower hypothesis of 7.2); 2.5 G (today's effective rate,
+`02-evidence` C.5), 20 G and the $0.022 price are reported next to it.
+- cost: `viable` at the decision point;
+- materiality: `saving >= 10 %` (a codec a few percent ahead of PPMd is not a product);
+- parity: `parity <= 1.10` ("the same as Mamba-130M"); `<= 1.30` is reported (V2's threshold).
+
+**Outcomes, per class.**
+- O1, objective met: a rung of arm W with width > 0, or any rung of arm P with a primer, passes cost, materiality and
+  parity. Conditional on gate V4 measured on the Rust implementation.
+- O2, cheaper and weaker: cost and materiality pass, parity does not. Reported with its distance to Mamba; whether
+  that is a product is the owner's decision.
+- O3, not viable: otherwise.
+- Separately reported: R0 without a primer (a classical-class context mixer). It passing cost and materiality is not
+  the objective; it is recorded as "CM only".
+
+**Stop rules.** (1) If no class reaches O1 or O2 with a trunk rung or a primed rung, the trunk does not pay for
+storage at any tested capacity: the storage question is closed for Strata and no further capacity work starts
+without new evidence; the path-3 scope of v1 is unaffected. (2) R4 is trained only if R2 -> R3 lowers the total
+bytes of at least one class by 2 % or more. (3) GPU budget and order as in charter 5b (12 h ceiling; CPU end to end,
+then a smoke run of at most 30 minutes, then the long runs).
+
+**New constants and where the trained rungs stood when they were chosen** (the 10 % and 1.10 are judgements made with
+the position of R0-R2 known; everything else was already registered in V4, 7.2 or `scripts/breakeven.py`): on the
+frozen test set with PPMd in the classical set, `logs`: R0 saving 15.0 %, parity 1.29, cost passes; R1 20.2 %, 1.21,
+cost passes at 10 and 20 G and fails at 2.5 G; R2 22.0 %, 1.18, cost fails at all three rates. `text`: every rung
+loses to PPMd (+3.7 % to +8.1 %), parity 1.92-2.00. So at registration: `logs` = "CM only" passes and R1 would be O2;
+`text` = O3; nothing is O1. The unknowns V7 measures are better-trained and larger rungs, and arm P.
+
+Effect on the freeze: the arithmetic of sections 2-4, the weight file and the AZTH declaration of section 5 and the
+v1 scope fixed by G0 are unchanged, so the freeze of 2026-11-13 stands. Ladder models above width 88 and general
+primers are not part of v1; a rung that reaches O1 or O2 enters the product only through its own amendment.
