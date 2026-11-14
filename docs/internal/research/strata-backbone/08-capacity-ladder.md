@@ -185,15 +185,36 @@ Arms W (compute rungs R0-R4 by MAC cap) and P (general primer sizes on R0 and R1
 and on an extended set, the worse of the two; cost at 10 G MAC/s and $0.014, materiality 10 %, parity 1.10;
 outcomes O1 / O2 / O3 per class; stop rules; GPU order and 12 h ceiling of charter 5b.
 
-### 6.2 To be fixed here before launch — arm W
+### 6.2 Arm W — configuration registered 2026-11-14, before the long run was launched
 
-| Item | State |
+Trainer: `tools/strata/train/` (stage 4c; report in `09b-trainer-port.md`). It keeps the prototype's arithmetic and
+runs its three sequential loops on the device. Exactness, MEASURED: new model == prototype on CPU, 0 mismatches
+(`check_exact.py --test A`); cuda == cpu on a Tesla T4, 0 mismatches of 884,736 / 1,179,648 probabilities, trunk and
+mixer state identical, for random and for trained weights (`--test B`, smoke run); trained export == sequential
+int64 reference, 0 of 96,000 probabilities per tier (`export.py --check`); features == prototype's, 0 mismatches.
+
+| Item | Registered value |
 |---|---|
-| Trainer that runs on GPU | NOT READY. The bake-off trainer runs its exact sequential parts (accumulator scans, online mixers) as Python loops: 80 minutes for 2,048 steps on CPU. Stage 4c of the charter. It must still match the integer reference bit for bit (G0b-style check) at every rung |
-| Rung configurations | R1 = (88), R2 = (88, 208) as in G0. R3 and R4: width, depth and gearing to be chosen under the caps 512,000 and 2,000,000 MAC/byte, with the parameter count stated |
-| Training set | >= 335 MB (10x), by-source rule. Candidates: more of enwik9 beyond byte 3e8, public-domain prose not sharing a source with the decision files, the full Loghub training systems, real XML / JSON / source code. Sources and sampling weights to be listed with their origin |
-| Steps, seeds | to be stated; two seeds for any rung that decides an outcome |
-| GPU hours per rung | to be estimated from the smoke run; ceiling 12 h in total |
+| Model | one nested Strata model `ladder3`: L = 3, geared, bit cells on, widths (88, 208, 456) = rungs R1, R2, R3 |
+| MAC / byte, parameters | 27,752 / 73,392; 113,912 / 220,437; 499,552 / 731,906 (456 is the largest legal width under 512,000) |
+| R0 | the existing G0 `cm` tier (no retraining: it has 1,199 parameters and no trunk) |
+| R4 (only under stop rule 2) | `r4`: width 760 alone, 1,961,768 MAC / byte, 2,348,364 parameters |
+| Training bytes | text 0.45: enwik9 bytes [1e8, 1e9) (900 MB); logs 0.45, uniform over the 11 training systems of the bake-off, first 64 MB of each (about 560 MB); misc 0.10: first 64 MB of the public DBLP XML snapshot of 2026-01-01 and the four non-literary Canterbury files. About 1.5 GB against the bake-off's 33.55 MB |
+| Excluded by source | every selection and decision source (`corpus.check_training_list`), and the two Canterbury files that are Project Gutenberg etexts (`world192.txt`, `lcet10.txt`: the bake-off trained on them; PG text also occurs in `webster` and `dickens`) |
+| Chunks | 8,192 bytes as 32 windows of 256, state carried inside a chunk, as in G0 (not the 32,768 of specification 8.3: kept equal to G0 so that the only changes are data, updates and width) |
+| Optimiser | AdamW, lr 2e-3 with the bake-off's warm-up and cosine, clip 1.0, as G0 |
+| Batch, updates | 256 streams x 256 bytes per update, 22,000 updates = 1.44 GB seen (G0: 64 x 256 x 2,048 = 33.55 MB): 43x the bytes, 10.7x the updates |
+| Seeds | 1204 and 1205, one per GPU of the same session |
+| Hyper-parameter search | none. The smoke run probed lr 1e-3 / 2e-3 / 4e-3 for 256 updates at batch 512 (train cost of the widest tier 1.608 / 1.531 / 1.465): too short to decide, so the G0 value is kept. Batch 256 instead of 512 because the T4 is saturated (118 vs 130 KB/s) and 256 gives 1.8x the updates per hour |
+| Evaluation | `tools/strata/train/run_eval.py` on CPU, integer model, one stream per file, no reset; selection first, decision files only after this file's sha256 is in the ledger |
+
+Smoke run (MEASURED, Kaggle T4 x2, 2026-11-14, 17.8 minutes = 0.30 GPU h, kernel version 1): every step passed;
+`ladder3` 118 / 130 / 134 KB/s at batch 256 / 512 / 1,024 (1.80 / 0.99 / 0.51 updates/s), `ladder4` 65 / 61 KB/s,
+`r4` 88 KB/s at batch 256; peak memory 2.7 / 5.4 / 10.7 GB; pause + resume reproduced the uninterrupted run's logged
+costs exactly. The projection of `09b-trainer-port.md` (240 KB/s at batch 512) was 1.8x too optimistic.
+
+Expected cost of the long run: 22,000 updates at 1.80 updates/s = 3.4 h plus downloads and export; the script stops
+training at 260 minutes and itself at 300. Budget after it: at most 0.3 + 5.0 = 5.3 of the 12 GPU hours.
 
 ### 6.3 To be fixed here before launch — arm P and the decision files
 
