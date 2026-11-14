@@ -33,3 +33,5 @@ weights/mambabyte-353m/
 # Kaggle full-size outputs: regenerable copies of the repo / weights / raw inputs
 data/benchmark/results/kaggle-fullsize/*/redukt/
 data/benchmark/results/kaggle-fullsize/*/data/
+# Strata bake-off: downloaded public corpora, checkpoints and feature caches (regenerable)
+data/strata/
