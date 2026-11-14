@@ -8,7 +8,8 @@
 writes a snapshot at every size of --sizes (the primers are prefixes of one another, so one pass serves all sizes).
 It is resumable: run the same command again until it prints DONE. `code` codes each input from the snapshot (trunk,
 delay taps, history, byte count and time runs back to boot; tables, cells and mixer kept) and appends ideal code
-lengths of the integer model to data/strata/runs/<run>/arm-p-select.csv; finished rows are skipped.
+lengths of the integer model to data/strata/runs/<run>/arm-p-select.csv; finished rows are skipped, inputs of
+equal length are coded as one batch, and a call pauses after --minutes (run it again until it prints DONE).
 `verify` compares every P(bit = 1) of a primed stream with the sequential integer reference `bakeoff/ref_int.py`.
 `occupancy --size 65536,1048576,16777216` prints how full the tables of each snapshot are.
 
@@ -407,46 +408,57 @@ def prime(coders, comp, tables, sizes, minutes, chunk=CHUNK):
 
 
 def load_inputs(names, allow_decision):
-    data = []
+    """Inputs grouped by length: [(names, uint8 [B, N])]; each group is coded as one batch of streams."""
+    groups = {}
     for name in names:
         if is_decision(name) and not allow_decision:
             raise SystemExit(f"refusing to code {name}: not a selection source (decision files need "
                              "--allow-decision, after the arm-P configuration is registered)")
-        data.append(load_extended(name) if name in EXTENDED else load_source(name))
-    if len({len(d) for d in data}) != 1:
-        raise SystemExit("inputs of one call must have the same length")
-    return np.stack(data)
+        data = load_extended(name) if name in EXTENDED else load_source(name)
+        groups.setdefault(len(data), []).append((name, data))
+    return [([n for n, _ in g], np.stack([d for _, d in g])) for g in groups.values()]
 
 
-def code_inputs(coder, comp, tables, size, names, xb, keep=KEEP, chunk=CHUNK):
+def code_inputs(coder, comp, tables, size, names, xb, keep=KEEP, resume=None, minutes=1e9, chunk=CHUNK // 4):
     """Ideal bits of every input coded from the snapshot of (comp, tables, size); size 0 = boot.
-    `keep` names the parts of the snapshot that are used; the others start from boot (a diagnostic: the primer
-    of specification 3.4 keeps all four)."""
-    q0 = np.load(os.path.join(CACHE, "q0.npy"))
-    online = Online(len(names), tables, q0)
-    deltas = None
-    if size:
-        with np.load(snapshot_path(coder, comp, tables, size)) as f:
-            snap = {k: f[k] for k in f.files}
-        boot = Online(1, tables, q0).snapshot()
-        snap.update({k: v for k, v in boot.items() if not any(k.startswith(part) for part in keep)})
-        online.load_snapshot(snap)
-        if "mix" in keep:
-            deltas = {k: snap[f"delta{k}"] for k in coder.tiers}
-    st = coder.boot(len(names), deltas)
-    parts = {k: [] for k in coder.tiers}
-    for lo in range(0, xb.shape[1], chunk):
+    `keep` names the parts of the snapshot that are used; the others start from boot (specification 3.4 keeps
+    all four; arm P-s of amendment 5 keeps `succ` only). With `resume`, pauses after `minutes` and returns None."""
+    if resume and os.path.isfile(resume):
+        ck = torch.load(resume, weights_only=False)
+        online, st, parts, lo = ck["online"], ck["st"], ck["parts"], ck["lo"]
+    else:
+        q0 = np.load(os.path.join(CACHE, "q0.npy"))
+        online = Online(len(names), tables, q0)
+        deltas = None
+        if size:
+            with np.load(snapshot_path(coder, comp, tables, size)) as f:
+                snap = {k: f[k] for k in f.files}
+            boot = Online(1, tables, q0).snapshot()
+            snap.update({k: v for k, v in boot.items() if not any(k.startswith(part) for part in keep)})
+            online.load_snapshot(snap)
+            if "mix" in keep:
+                deltas = {k: snap[f"delta{k}"] for k in coder.tiers}
+        st, parts, lo = coder.boot(len(names), deltas), {k: [] for k in coder.tiers}, 0
+    t0 = time.time()
+    while lo < xb.shape[1]:
+        if resume and time.time() - t0 > minutes * 60:
+            torch.save({"online": online, "st": st, "parts": parts, "lo": lo}, resume + ".tmp")
+            os.replace(resume + ".tmp", resume)
+            print(f"at byte {lo:,d} of {xb.shape[1]:,d} ({len(names)} streams)", flush=True)
+            return None
         piece = xb[:, lo:lo + chunk]
         s, top = online.step(piece)
         cost = coder.code(st, piece, s, top)
         for k in coder.tiers:
             parts[k].append(cost[k])
+        lo += chunk
+    if resume and os.path.isfile(resume):
+        os.remove(resume)
     return {k: np.concatenate(v, axis=1) for k, v in parts.items()}
 
 
 def cmd_code(args, coder):
-    names = args.inputs.split(",")
-    xb = load_inputs(names, args.allow_decision)
+    groups = load_inputs(args.inputs.split(","), args.allow_decision)
     out = os.path.join(RUNS, args.run, args.out)
     done = set()
     if os.path.isfile(out):
@@ -458,28 +470,33 @@ def cmd_code(args, coder):
     keep = tuple(args.keep.split(","))
     if not set(keep) <= set(KEEP):
         raise SystemExit(f"--keep takes a subset of {','.join(KEEP)}")
+    t0 = time.time()
     for size in [int(v) for v in args.size.split(",")]:
         comp = (args.comp if set(keep) == set(KEEP) else f"{args.comp}/keep-{'-'.join(keep)}") if size else "none"
-        keys = [(comp, args.tables, str(size), BUDGET[k], n) for k in coder.tiers for n in names]
-        if all(k in done for k in keys):
-            print(f"{comp} {args.tables} {size:,d}: already in {out}", flush=True)
-            continue
-        t0 = time.time()
-        cost = code_inputs(coder, args.comp, args.tables, size, names, xb, keep)
-        rows = []
-        for k in coder.tiers:
-            width = coder.model.widths[k]
-            for i, name in enumerate(names):
-                bits = float(cost[k][i].sum())
-                rows.append([args.run, coder.seed, BUDGET[k], width, coder.budget[k][1], comp, args.tables, size,
-                             state_bytes(args.tables, width), name, xb.shape[1], f"{bits:.1f}",
-                             f"{bits / xb.shape[1]:.4f}"]
-                            + [f"{cost[k][i, :p].sum() / p:.4f}" if p <= xb.shape[1] else "" for p in PREFIX])
-            print(f"{args.run} tier {BUDGET[k]} primer {comp} {size:>10,d} tables {args.tables}: "
-                  + "  ".join(f"{n}={cost[k][i].sum() / xb.shape[1]:.4f}" for i, n in enumerate(names))
-                  + f"  | macro {cost[k].sum() / cost[k].size:.4f}  [{time.time() - t0:.0f} s]", flush=True)
-        with open(out, "a", newline="") as f:
-            csv.writer(f).writerows(r for r, key in zip(rows, keys) if key not in done)
+        for names, xb in groups:
+            keys = [(comp, args.tables, str(size), BUDGET[k], n) for k in coder.tiers for n in names]
+            if all(k in done for k in keys):
+                continue
+            left = args.minutes - (time.time() - t0) / 60
+            cost = code_inputs(coder, args.comp, args.tables, size, names, xb, keep,
+                               f"{out}.{size}.{xb.shape[1]}.resume.pt", left)
+            if cost is None:
+                print("PAUSED: run the same command again", flush=True)
+                return
+            rows = []
+            for k in coder.tiers:
+                width = coder.model.widths[k]
+                for i, name in enumerate(names):
+                    bits = float(cost[k][i].sum())
+                    rows.append([args.run, coder.seed, BUDGET[k], width, coder.budget[k][1], comp, args.tables, size,
+                                 state_bytes(args.tables, width), name, xb.shape[1], f"{bits:.1f}",
+                                 f"{bits / xb.shape[1]:.4f}"]
+                                + [f"{cost[k][i, :p].sum() / p:.4f}" if p <= xb.shape[1] else "" for p in PREFIX])
+                print(f"{args.run} tier {BUDGET[k]} primer {comp} {size:>10,d} tables {args.tables}: "
+                      + "  ".join(f"{n}={cost[k][i].sum() / xb.shape[1]:.4f}" for i, n in enumerate(names)),
+                      flush=True)
+            with open(out, "a", newline="") as f:
+                csv.writer(f).writerows(r for r, key in zip(rows, keys) if key not in done)
     print("DONE", flush=True)
 
 
@@ -506,7 +523,7 @@ def cmd_verify(args, coder):
     ref_int.TABLE_BITS, ref_int.BC_TB = TABLES[args.tables]
     q0 = np.load(os.path.join(CACHE, "q0.npy"))
     primer = np.frombuffer(build_primer(args.comp, args.primer_bytes), dtype=np.uint8)
-    data = load_inputs([args.source], False)[:, :args.bytes]
+    data = load_inputs([args.source], False)[0][1][:, :args.bytes]
     online = Online(1, args.tables, q0)
     sts = {coder.run: coder.boot(1)}
     for lo in range(0, len(primer), args.chunk):         # small chunks: every carry across chunks is exercised

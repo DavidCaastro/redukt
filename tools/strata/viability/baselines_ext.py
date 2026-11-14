@@ -9,8 +9,8 @@ packed stream without the container header, exactly as `ppmd_baseline.py` (`ppmd
 A second PPMd row per order, `ppmd-oN-1g`, feeds 7-Zip through stdin with 1 GB: given a file, 7-Zip lowers the model
 memory to the power of two that holds 16x the file size whatever `mem` says (16 MB for a 1 MiB file), the model
 restarts at high orders and PPMd is under-served. The best classical codec is reported with and without those rows.
-Writes data/strata/runs/baselines-ext.csv; the proposed replacement slices of `sources.ALTERNATIVES` are coded too
-and labelled `alternative`. `--frozen` codes the selection, frozen-test and seen sources of the bake-off with the
+Writes data/strata/runs/baselines-ext.csv (slices of `sources.ALTERNATIVES`, when there are any, are coded too and
+labelled `alternative`). `--frozen` codes the selection, frozen-test and seen sources of the bake-off with the
 `-1g` rows only and writes data/strata/runs/ppmd-baseline-1g.csv, next to the registered `ppmd-baseline.csv`.
 Classical codecs only: no Strata model is evaluated here.
 """

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "bakeoff"))
 sys.path.insert(0, HERE)
 from common import RUNS, SOURCES, load_source  # noqa: E402
 from ppmd_baseline import ORDERS, find_sevenzip  # noqa: E402
+from sources import EXTENDED, load_extended  # noqa: E402
 
 SEEDS = {"strata_g_bc": 1204, "strata_g_bc_s1205": 1205}
 OUT = os.path.join(RUNS, "arm-p-classical.csv")
@@ -95,7 +96,7 @@ def classical(args):
             for size in [int(v) for v in args.sizes.split(",")]:
                 primer = build_primer(args.comp, size)
                 for name in args.inputs.split(","):
-                    data = bytes(load_source(name))
+                    data = bytes(load_extended(name) if name in EXTENDED else load_source(name))
                     for level in (19, 22):
                         record(size, name, len(data), f"zstd-{level}-dict", lambda: zstd_dict(level, primer, data))
                     for codec, fnc in cond.items():
