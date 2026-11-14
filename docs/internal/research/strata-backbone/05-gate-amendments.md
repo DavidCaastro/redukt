@@ -134,3 +134,27 @@ remove an ambiguity.
 | C3 | empty input rejected; primer archives included | clarified | review B-4 |
 | C4a | late window <= 1.10 x early window (was 1.25) | stricter | review m-12 (1.25 would hide a 20 % drift; the prototype measured 1.043) |
 | C9, C9b | the reader-validation table of 5.5 and the default tier of a truncated file are tested; new C9b checks the weight-file layout across teams | new / stricter | review B-2, G-3, m-2 |
+
+## Amendment 3 (2026-11-14): accelerator path reserved (portability principle)
+
+Requested by the owner on 2026-11-14, before any Rust, reference or device code exists. The question was raised on
+2026-11-13 while answering whether the design parallelises and adapts to the hardware: the frozen v1 text defined no
+inference path on an accelerator (GPU appeared only for training, section 8.8), while the repository's portability
+principle (`CLAUDE.md`) asks that every backbone be demonstrable on CPU and on any accelerator through the same format
+and CLI, with the CPU as the reference.
+
+Seen before this amendment: nothing new. No gate has been measured on a Rust implementation, no device executor
+exists, and no number was produced or read for this change. The only figures used are DERIVED from section 7 of the
+specification (MAC per byte, state bytes, the 10-20 G MAC/s and ~1 us per byte hypotheses of 7.2) and from the
+FFI v2 logits size; they are labelled as such in section 6.9.
+
+| Gate / section | Change | Direction | Reason |
+|---|---|---|---|
+| C12 (new, 9.1) | Accelerator == CPU, deferred until a device executor exists (like C11): identical sha256 of the C1b set and the C2d batches with the device executor forced and with the CPU executor forced (encoder windows included), decode in both directions across devices, and the load-time probe must reject two deliberately faulty executors (`asr` rounding toward zero; clamp to -128) with an unchanged archive after the fallback | stricter (adds a gate) | an accelerator must give the same bits as the CPU reference by construction (axiom A1); the gate makes that claim testable before any device code is written |
+| 6.9 (new) | offload boundary = section 2.3 only; exact contract, the device is part of the execution plan and is never written to the header; encoder windows (the trunk depends only on the bytes); data exchanged per byte (`d + NORD` bytes to the host); device arithmetic traps; load-time probe with an exact fallback; reserved ABI (`docs/api/PLUGIN-FFI-STRATA.md`, slot model of FFI v2, the weight file itself as input); the seam stage 4a must keep; expected value | no threshold | portability principle; the R-110 lesson (a device path is capped by its per-step host copy) applied before implementation |
+| 3.5, 6.2, 6.5, 6.7, X17, section 10, risk 10, Appendix D, status block | cross-references: H7 as an execution hook with no encoding; `begin_byte` as the only offloadable call; Phase B as one device call; a "trunk executor" row in the autoscaler table (v1: CPU only); crossover row X17; ownership of C12; risk row 10 | no threshold | consistency of the frozen text with 6.9 |
+
+Effect on the freeze: none of B-1..B-4 or G-1..G-4 is reopened. The arithmetic of sections 2-4, the weight file and
+the AZTH declaration of section 5, the v1 scope fixed by G0 and every existing gate threshold are unchanged, so the
+freeze of 2026-11-13 stands. v1 ships no accelerator code; the only obligation on stage 4a is the seam of 6.9.6
+(a plain module boundary, no dead code).

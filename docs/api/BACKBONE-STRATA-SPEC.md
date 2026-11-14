@@ -8,6 +8,10 @@
 > `05-gate-amendments.md` (rule T1).
 > **v1 scope, fixed by G0:** the width-0 tier `cm` (no trunk) for long inputs; one trunk tier of width 88 for
 > messaging weight files (path 3). Wider tiers are not part of v1 (section 7.2).
+> **Amendment 3 (2026-11-14, `05-gate-amendments.md`):** reserves the accelerator path that the repository's
+> portability principle requires (section 6.9, hook H7, gate C12, crossover X17, risk 10, Appendix D). It is
+> additive: no arithmetic of sections 2-5, no format field, no gate threshold and no v1 scope changes, nothing of
+> it is implemented in v1, and the freeze stands.
 > Date: 2026-11-13. Working name: Strata. Nothing in this document is implemented in Rust yet.
 > Scope: an integer, coder-domain backbone for Redukt, its weight file, its AZTH declaration, its integration
 > module ("the dock"), its cost model, its training recipe, its gates and its test plan.
@@ -455,6 +459,9 @@ v1 implements exactly sections 3.2 to 3.4. The following are specified as hooks 
 
 (H2, the primer, was promoted into v1 as section 3.4 after the bake-off measured it.)
 
+(H7, an accelerator executor of the trunk, is an execution hook of the dock, not a model hook: an accelerator
+changes no bit, so nothing is reserved for it in the weight file or the archive. Section 6.9, amendment 3.)
+
 ---
 
 ## 4. Output interface: binary decisions into the AZTH range coder
@@ -747,7 +754,7 @@ pub trait CoderBackbone: Sync {
 
 No method returns floats, allocates per call, or can fail after construction; loading returns `AzResult`
 (unlike `load_dyn_model`, a bad weight file is an error, not a panic). `begin_byte` is the only method that may
-use the worker pool.
+use the worker pool, and the only one whose trunk part an accelerator may execute (section 6.9).
 
 ### 6.3 Registration and loading
 
@@ -792,7 +799,8 @@ One generic routine codes a stream; the three entry points share it.
 per stream:  boot; for each byte:  [begin_byte]  ->  8 x (bit_p1 -> encode/decode -> bit_update)  ->  commit_byte
 single file: the loop above on one stream.
 lockstep:    Phase A (one pool unit per active stream): the 8 bit steps + commit of the current byte, coder included.
-             Phase B (one call): begin_byte for all active streams.
+             Phase B (one call): begin_byte for all active streams (one device call when an accelerator
+             executes the trunk, section 6.9).
              Finished streams are replaced from the source (continuous batching), slots are reused after boot().
 ```
 
@@ -831,6 +839,7 @@ output.
 | lockstep width | N in {1, 2, 4, 8, 16, 32, 64} | calibration |
 | per-matrix row threading | on / off per layer | calibration |
 | GEMM row block | {8, 16, 32, 64} rows | calibration |
+| trunk executor (amendment 3) | CPU; in a later version also a device executor of hook H7 (section 6.9). v1: CPU only | availability, the load-time probe of 6.9.4, then calibration |
 
 Memory cap: the lockstep width is limited so that `width x state bytes per stream <= REDUKT_STRATA_MEM`
 (default 2 GiB; 39 MB per stream at the default tables gives at most 52 streams). Streams are booted lazily
@@ -841,7 +850,8 @@ weights with pseudo-random input bytes for a fixed budget (default 30 ms per tie
 keeps the plan with the highest bytes per second for the number of streams actually requested, and prints it
 under `--verbose` together with the measured MAC/s. Nothing is hard-coded from the cost model of section 7:
 the model predicts, the calibration decides. `REDUKT_STRATA_PLAN=<plan string>` forces a plan (used by gate C2
-to prove every plan gives the same sha256); `REDUKT_THREADS` keeps its meaning.
+to prove every plan gives the same sha256); `REDUKT_THREADS` keeps its meaning. A device executor, once one exists,
+is a plan like any other: its presence, absence or rejection by the probe changes no output bit.
 
 ### 6.8 Tier autoscaling (axiom A4b: declared, opt-in)
 
@@ -849,6 +859,140 @@ to prove every plan gives the same sha256); `REDUKT_THREADS` keeps its meaning.
 least `--target-kbps` (default 16 KB/s per thread), and writes it to the header like any explicit tier. Same
 input + same flags then gives the same bytes only on machines that resolve to the same tier, which is why it is
 never the default and why gates 2b / 2c / 3b run with explicit tiers.
+
+### 6.9 Accelerators (portability principle; hook H7 — reserved, not implemented in v1)
+
+Added by amendment 3 (2026-11-14). The repository's portability principle asks that every backbone be
+demonstrable on CPU and on any accelerator (GPU, NPU, DSP, other) through the same format and the same CLI/API,
+with the CPU as the reference that decodes everything. This section fixes, before any Rust code exists, what an
+accelerator may do for Strata, so that adding one later touches neither the arithmetic, nor the format, nor the CPU
+reference, nor the engine's bit loop. **v1 ships no accelerator code, no plugin symbol and no CLI flag for it.**
+
+#### 6.9.1 Contract: exact, therefore undeclared
+
+- A device executor MUST produce exactly the integers of section 2.3 for every stream, byte and tier. There is no
+  tolerance and no numeric tier. This is stricter than the goal stated for the float backbones (bit-identity across
+  tiers is a goal there, R-104, not a precondition) and is what axiom A1 already requires ("bit-identical across
+  ISA, thread count, batch size and accelerator").
+- Consequently the device is part of the **execution plan** (axiom A4a, section 6.7): it is never written to the
+  AZTH header, the weight file or the PROFILE byte, and it is never a reason to refuse an archive. An archive written
+  with a device decodes on the CPU reference and the reverse (gate C12).
+- If no device is installed, or the installed one fails the probe of 6.9.4, the dock uses the CPU executor. Both
+  are exact, so this fallback changes no output bit — unlike the GPU plugin of the float backbone, whose fallback to
+  the CPU path changes the archive. A device error **after** a stream's first byte aborts that stream with an error
+  naming the device and the call (the device owns its trunk state); the dock never continues it from another state.
+
+#### 6.9.2 Offload boundary: the trunk only
+
+A device MAY execute exactly part 1 of the byte step — section 2.3: input bank, strata layers with their gates,
+trunk-driven gains — which is the trunk work of `begin_byte`, for the streams of one lockstep group (6.5).
+Everything else stays on the host: the lookups, the eight bit steps with their node dot products, the mixer, the
+calibration and bit cells, the COMMIT of section 2.5, the primer snapshot's online state and the range coder.
+Reasons:
+
+1. In the decoder the bit steps are sequential within a byte (each tree node depends on the bit just decoded,
+   2.5); a device round trip per bit would cost eight synchronisations per byte and group.
+2. The online state is random-access, private to each stream, updated at every bit and is most of the memory
+   (38.8 MB per stream at the default tables of 7.2, against 1,416 B of trunk state for `msg88`). It is the part
+   least suited to an accelerator.
+3. The measured lesson of R-110 (CLAUDE.md, path 1): a device path is capped by what it copies to the host per
+   step. Here that copy is O(d) per byte, not O(vocabulary) per token (6.9.3).
+4. Section 2.5 already allows the split: "the trunk of byte `t + 1` may be computed any time after COMMIT of byte
+   `t`", and the trunk reads only the committed bytes and its own accumulators, never the tables, the cells, the
+   mixer or the coder state.
+
+The host keeps its own copy of the delay taps `in[0..3]` (the bit cells of 3.3 read them); the device keeps the
+trunk state.
+
+**Encoder asymmetry.** On compression every byte is known in advance and, by point 4, the trunk depends only on
+the bytes. An executor MAY therefore compute the trunk of a whole stream, or of a window of it, in one call: per layer,
+one matrix product over all positions of the window (weights reused across positions instead of one matrix-vector
+product per byte) followed by the per-channel accumulator scan and the gain products. This removes the per-byte
+synchronisation from the encoder. The decoder cannot do it (byte `t + 1` is known only after its eight bits are
+decoded) and keeps one call per byte and group. The archive is identical either way (gate C12). The same freedom
+exists for the CPU executor; whether it pays is a calibration question (X17) and v1 does not require it. For path 3
+the sender terminal is the encoder, so a terminal-side engine benefits from the windowed mode.
+
+#### 6.9.3 Data exchanged (DERIVED)
+
+| Direction | Per stream and byte | `msg88` (`d = 88`, `NORD = 8`) |
+|---|---|---|
+| host -> device | slot index (u32) and the byte committed since the slot's last call, or "none" on the first call after a reset (encoder windows: the window's bytes once) | 5 B |
+| device -> host | `h` of the top layer (`d` int8 values in [-127, 127]) and `gain[0 .. NORD-1]` (values in 0 .. 127, one byte each) | 96 B |
+| device-resident, per slot | `in[0..3]` (9-bit values) and `S0`, `S[1..L]` (`4 (L + 1) d` bytes) | 1,416 B |
+| device-resident, per tier | the trunk blocks of the weight-file prefix (`EMB`, `W`, `B`, `WG`, `BG`, `GW`, `GB`); `HW`, `HB`, `W0` stay on the host | < 112,510 B |
+
+For comparison, Mamba-130M through FFI v2 copies 50,280 F32 logits (201,120 B) per token to the host, about 57 KB
+per input byte at 3.5 bytes per token: some 600 times the 96 B above.
+
+#### 6.9.4 Arithmetic requirements on a device, and the load-time probe
+
+Every rule of section 1 applies on the device. The ones that commonly break on accelerators:
+
+| Rule of this document | Typical device trap |
+|---|---|
+| `asr(x, k)` is floor division by `2^k`, also for negative `x` | integer division and some shift intrinsics round toward zero |
+| int8 values are in [-127, 127]; `u = clamp(asr(a + 64, 7), -127, 127)` | int8 engines that requantise to [-128, 127], with round-half-even, or with a per-tensor scale and zero point |
+| products accumulate exactly in i32 (bounds of 2.7); no saturating intermediate | saturating 16-bit pair sums without the +-127 rule; reduced-precision accumulators |
+| gate `open = (ag >= 0)` and gains on the exact sums | gates or gains computed from a requantised value |
+| accumulation order is free (integer addition) | none: this is what makes an exact device possible at all |
+
+An int8 matrix engine that returns only requantised outputs is a valid executor only if its requantisation can be
+made exactly `clamp(asr(a + 64, 7), -127, 127)` and the gate and gain sums can still be obtained exactly.
+
+**Probe.** At load, before it is offered to the calibration of 6.7, a device executor MUST run every tier it will
+serve on a fixed probe and compare every `h` and `gain` with the CPU executor. Probe bytes: `x_0 = 1204`,
+`x_{t+1} = (1103515245 x_t + 12345) mod 2^31`, byte `t` (`t = 0 .. 4095`) is `x_{t+1} >> 23`. Streams: the 4,096
+bytes as one stream from boot, and 8 streams in one lockstep group starting at byte offsets 0, 512, ..., 3,584 of
+the probe, each running to its end (so the group shrinks as streams finish), all from boot. One mismatch: the device
+is not used for that weight file and the dock prints the first mismatching (tier, stream, byte, channel) under
+`--verbose`.
+
+#### 6.9.5 Interface (reserved; normative text in a later document)
+
+The ABI gets its own document, `docs/api/PLUGIN-FFI-STRATA.md`, written before any device code. It follows the slot
+model of `docs/api/PLUGIN-FFI-V2.md` section 2 — a process-global executor, `u32` slots in a device-resident pool,
+synchronous calls, no device pointer on the host, a call rejected with `INVALID_ARGUMENT` changes no state — and
+differs from FFI v2 where the float interface would break Strata:
+
+- The weights are the bytes of the Strata weight file itself (section 5), parsed and CRC-checked by the plugin; the
+  plugin reports the `TIER_ID`s it loaded and the dock refuses a mismatch. No converted copy (no `.rbin`), no second
+  source of truth.
+- One call advances a set of slots by one byte and returns `h` and `gain` (6.9.3); an optional call computes an
+  encoder window (6.9.2). There are no logits.
+- Resetting a slot is a boot of its trunk part (accumulators 0, taps `BOS`). A primed stream needs nothing from the
+  device: the primer snapshot sets the trunk part back to boot (3.4), so a primed slot is a booted slot, and the
+  snapshot itself is computed on the CPU.
+- A separate symbol set (prefix `redukt_strata_`), so that no existing host can load a Strata executor as a float
+  backbone or the reverse. The library loader of `src/infrastructure/plugin_backend/` MAY be reused.
+
+The device executor plugs into the dock (`src/infrastructure/strata/`), so the list of core files of 6.1 does not
+grow.
+
+#### 6.9.6 What the v1 implementation (stage 4a) MUST do now
+
+No device path is built in v1, but the CPU implementation MUST keep the seam that makes one additive later:
+
+1. The computation of section 2.3 lives in one place of the dock (the trunk executor), called only from
+   `begin_byte`. Its inputs are the committed bytes of the streams; its outputs are `h` and `gain` per stream.
+2. Inside `Stream`, the trunk state (`S0`, `S[l]` and the executor's copy of the taps) is held apart from the
+   online state, so that a device executor can own it without the bit steps, the engine or the coder changing.
+3. No trait object, plugin hook or flag is added for it in v1 (zero dead code): a plain module boundary suffices.
+4. The goldens of team O (gate C1) are the device's goldens as well; nothing device-specific is computed.
+
+#### 6.9.7 Where it can pay (DERIVED; HYPOTHESIS until measured)
+
+- `cm` (`d = 0`): there is no trunk and nothing to offload. Never offloaded.
+- `msg88`: the trunk costs 27,752 MAC per byte, 1.4-2.8 us per byte on one core at the 10-20 G MAC/s of 7.2,
+  against ~1 us per byte of host work that stays on the host (X16). Even with an infinitely fast device and every
+  transfer hidden, the host-bound ceiling is `(trunk + host) / host` = 2.4-3.8 times per host core; the decoder
+  must hide a device call per byte and group (launch and synchronisation: several microseconds, amortised over the
+  group) by double-buffering two groups; the encoder can use windows (6.9.2). Path 3 has no throughput budget (7.2).
+  **Expected value for v1: small.** The hook exists for the principle, for a sender terminal whose SoC has an exact
+  int8 engine (encoder side, windowed), and for wider tiers.
+- Wider tiers (not in v1): the trunk grows as `L d^2` while the host work per byte stays fixed (X16), so the device
+  share grows with width; the crossover is row X17 of 7.3, to be calibrated (6.7) when such a tier exists.
+- GPU training (8.8) is unrelated to this section.
 
 ---
 
@@ -921,6 +1065,7 @@ calibration).
 | X14 | Weights below 8 bits | — | not measured (RWKV Q4 cost +12.7 % in the repo) | H | out of v1 |
 | X15 | Table sizes (successor 2^16-2^18, bit cells 2^8-2^22) | long and diverse inputs | short messages, small terminals; accesses beyond L2/L3 add latency per byte | H | not swept; hook H5 |
 | X16 | Online update cost per byte | fixed: 8 bit steps x `N_IN` mixer inputs + `NORD` table writes, independent of `d` | dominates the per-byte time of `cm` .. `micro` (hypothesis ~1 us/byte) | H | calibration prints the split |
+| X17 | Accelerator executor of the trunk (6.9, hook H7; amendment 3) | the trunk dominates the per-byte time (`L d^2`-scale MACs well above the fixed host work of X16); many streams per group to amortise a device call; the `d + NORD` bytes per byte and stream hidden by double-buffering; encoder windows (6.9.2) remove the per-byte call on compression | `cm` (no trunk); `msg88`, where even an infinitely fast device leaves a host-bound ceiling of 2.4-3.8x per core; a single decoder stream (one device call per byte) | D / H | 6.9.7; calibration (6.7) and gate C12 once a device executor exists |
 
 ---
 
@@ -1076,6 +1221,7 @@ tier on short messages only (v1 = `cm` for long inputs, width 88 for messaging f
 | C9b | Weight-file layout across teams | from the synthetic parameters of `make_synth.py` (team O), team T's exporter writes a file whose SHA-256 equals O's synthetic file; team R loads O's file and reproduces O's golden `p1` (a layout misreading cannot pass both) | sha256 of the two files; C1 on O's file |
 | C10 | Trainer == reference | 0 mismatching `p1` between the trainer's forward pass and the reference on 64 KB per tier of the exported file | `export.py` (8.7) |
 | C11 | Cross-architecture (deferred until hardware exists) | identical sha256 x86-64 <-> aarch64 for the C1b set | same commands on an ARM64 host |
+| C12 | Accelerator == CPU (amendment 3; deferred until a device executor of 6.9 exists) | identical sha256 of the C1b set and of the C2d batches with the device executor forced and with the CPU executor forced, encoder windows included; a device-written archive decodes on the CPU and a CPU-written archive decodes on the device; the probe of 6.9.4 rejects two deliberately faulty executors (`asr` rounding toward zero; clamp to -128), after which the dock falls back to the CPU and the archive is unchanged | `REDUKT_STRATA_PLAN` forcing the executor; fault-injected test builds of the executor |
 
 ### 9.2 Viability gates (GO / NO-GO information; a NO-GO is reported, it does not block correctness work)
 
@@ -1116,6 +1262,9 @@ Dock tests (owned by R, expected values from O where bytes are involved): header
 every legal and illegal combination of 5.6; flag rejection of 6.4; group keying of 6.5; plan forcing of 6.7;
 `/v1/status` content; 422 paths; slot reuse after `boot()` equals a fresh stream.
 
+A device executor (6.9), once one exists, is owned by R and verified by V through gate C12 against the same goldens
+of team O; no device-specific golden value exists.
+
 Files touched outside code: `docs/api/FORMAT-SPEC.md` (backbone id table, STRATA block, history),
 `weights/MANIFEST.md`, `README.md`, `CLAUDE.md` facts, `.gitignore` (`data/strata/` added by the bake-off),
 `deploy/gcp/entrypoint.sh` (weight set per backbone).
@@ -1135,6 +1284,7 @@ Files touched outside code: `docs/api/FORMAT-SPEC.md` (backbone id table, STRATA
 | 7 | The dock is larger than "register a backbone" (A7 deviation) and touches `coder.rs` and the three engines' dispatch | 6.1 | additive edits only; C5 before and after every merge |
 | 8 | Resemblance to prior art (section 12) may not satisfy the owner's reading of A0 | documented | owner decision; the measured comparison stands either way |
 | 9 | The primer result is a best case (primer from the same source as the messages, like the zstd dictionary) and both ends must hold the same primer | measured same-source only | V3 requires the different-source pairing; the header carries `PRIMER_ID` |
+| 10 | An accelerator executor diverges from the integer contract in a way the gates miss (signed shift as division, -128 saturation, requantising int8 engines), or the accelerator path buys nothing at v1 sizes (amendment 3) | derived (6.9.4, 6.9.7); no device code exists | load-time probe with exact fallback (6.9.4) and gate C12; the path stays a reserved hook until a tier where X17 pays exists |
 
 **Abandon (or go back to design) if any of these is measured:**
 
@@ -1244,3 +1394,9 @@ Fixed by the author on 2026-11-13; not yet re-checked by the reviewer.
 | m-3 | minor | chunk rule restated for long chunks; G0 and the bake-off below it, disclosed | 8.3; `05` |
 | m-5, m-8, m-10, m-18 | minor | corrected or disclosed in `03-bakeoff.md` (held-out macro +1.9 %, Gutenberg text, D1 caveat, frozen copy of the measured sources) | `03-bakeoff.md` 0, 2, 3, 7 |
 | m-9 | minor | G0b labelled a same-author consistency check | `05`; `03-bakeoff.md` 12 |
+
+## Appendix D. Amendments after the freeze (rule T1; the normative log is `05-gate-amendments.md`)
+
+| # | Date | What changed | Arithmetic (2-4) / format (5) / v1 scope / gate thresholds | Where |
+|---|---|---|---|---|
+| 3 | 2026-11-14 | Accelerator path reserved for the portability principle: offload boundary (trunk only), exact contract without a header field, encoder windows, data exchanged, device arithmetic traps and load-time probe, reserved ABI, the seam stage 4a must keep, expected value; new deferred gate C12 | unchanged / unchanged / unchanged / unchanged (C12 is new and deferred) | status block, 3.5, 6.2, 6.5, 6.7, 6.9, X17, C12, 10, risk 10 |
