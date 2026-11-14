@@ -9,18 +9,21 @@
 //! preprocessing, backbone routing, weight profile and header as `compress --input`, and
 //! runs the same lockstep engine (1 stream), so the body of the response is byte-identical
 //! to the CLI archive for the same content and flags. `/v1/decompress` takes backbone and
-//! weight profile from the archive header and answers 422 when that model is not loaded.
+//! weight profile from the archive header and answers 422 when that model is not loaded;
+//! like `decompress --input` it decodes under the archive's numeric contract (GEMV kernel
+//! family, `exp`/`ln`) and bounds the token count of a corrupt stream.
 //!
 //! Models are loaded once at start-up. Single-threaded accept loop: one request at a time
 //! (compression is CPU-bound; the GEMV worker pool already uses every core).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::application::codec::{
-    extract_stream_and_crc_v, parse_header, preprocess_input, validate_magic, cdf_from_logits_with,
-    HeaderInfo, DEFAULT_BIAS_LR, DEFAULT_MIX_ETA, DEFAULT_NGRAM_SCALE,
+    cdf_from_logits_with, check_token_budget, extract_stream_and_crc_v, parse_header, parse_quant_override,
+    preprocess_input, validate_magic, HeaderInfo, DEFAULT_BIAS_LR, DEFAULT_MIX_ETA, DEFAULT_NGRAM_SCALE,
 };
 use crate::application::lockstep::{run_lockstep, Admission, EncodeMeta, StreamResult};
 use crate::application::model_loader::{self, resolve_auto_profile, DynModel, DynTokenizer};
@@ -111,9 +114,15 @@ struct LoadedInfo {
     vocab: usize,
 }
 
+/// A loaded model with its tokenizer.
+type Engine = (DynModel, DynTokenizer);
+
 struct Server {
     info: Vec<LoadedInfo>,
-    engines: Vec<(DynModel, DynTokenizer)>,
+    /// One engine per loaded backbone. The lock gives a request exclusive use of its model:
+    /// a decode switches the Mamba GEMV kernels to the archive's numeric contract (R-107)
+    /// and a compress back to the contract this server writes.
+    engines: Vec<Mutex<Engine>>,
     forced: Option<BackboneChoice>,
     threads: usize,
 }
@@ -154,8 +163,10 @@ impl Server {
         }
     }
 
-    fn engine(&self, idx: usize) -> Result<&(DynModel, DynTokenizer), ApiError> {
-        self.engines.get(idx).ok_or_else(|| api_err(500, "model table inconsistent"))
+    /// Exclusive access to the engine at `idx` for the duration of one request.
+    fn engine(&self, idx: usize) -> Result<MutexGuard<'_, Engine>, ApiError> {
+        let slot = self.engines.get(idx).ok_or_else(|| api_err(500, "model table inconsistent"))?;
+        Ok(slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
     fn status_json(&self) -> String {
@@ -184,9 +195,10 @@ pub fn cmd_api(args: &[String]) -> AzResult<()> {
     for choice in choices {
         let profile = resolve_auto_profile(&cfg.quant, choice)
             .map_err(|e| AzError::Parse { context: "--quant".into(), value: e })?;
+        // An unknown `--quant` value is an error (for RWKV it used to mean "auto" silently).
+        let quant_override = parse_quant_override(&cfg.quant)?;
         eprintln!("[api] loading {} (profile {}) from {} ...", choice, profile, cfg.weights_dir);
         let t0 = Instant::now();
-        let quant_override = model_loader::parse_quant_flag(&cfg.quant);
         let (model, tokenizer) = model_loader::load_dyn_model(choice, &cfg.weights_dir, quant_override, profile);
         if model.weight_profile() != profile {
             return Err(AzError::Format(format!(
@@ -195,7 +207,7 @@ pub fn cmd_api(args: &[String]) -> AzResult<()> {
         }
         eprintln!("[api] {} loaded in {:.1}s (vocab={})", choice, t0.elapsed().as_secs_f64(), model.vocab_size());
         info.push(LoadedInfo { choice, profile, vocab: model.vocab_size() });
-        engines.push((model, tokenizer));
+        engines.push(Mutex::new((model, tokenizer)));
     }
     let server = Server { info, engines, forced, threads: crate::domain::gemv::pool_threads() };
 
@@ -285,7 +297,11 @@ fn compress_request(body: &[u8], server: &Server) -> Result<Vec<u8>, ApiError> {
     let prep = preprocess_input(body, "", "", "", "api");
     let choice = server.forced.unwrap_or_else(|| route_backbone(&prep.content_type));
     let idx = server.engine_for(choice, None)?;
-    let (model, tokenizer) = server.engine(idx)?;
+    let mut engine = server.engine(idx)?;
+    // Kernels of the contract `build_header` declares (the process contract), whatever
+    // contract the previous decode on this engine needed.
+    engine.0.set_numeric_contract(model_loader::process_contract()).map_err(|e| api_err(500, e))?;
+    let (model, tokenizer) = &*engine;
     let tokens = tokenizer.encode(&prep.data);
     let meta = EncodeMeta {
         total_bytes: body.len(),
@@ -352,8 +368,12 @@ fn decompress_request(data: &[u8], server: &Server) -> Result<Vec<u8>, ApiError>
     if data.len() < 8 {
         return Err(api_err(400, "body too short for AZTH header"));
     }
-    let (idx, _) = check_archive(data, server)?;
-    let (model, tokenizer) = server.engine(idx)?;
+    let (idx, hdr) = check_archive(data, server)?;
+    let mut engine = server.engine(idx)?;
+    // CLI parity (`cmd_decompress`): the archive's numeric contract selects the GEMV kernel
+    // family (plain for contracts 0/1, FMA for contract 2) before any token is decoded.
+    engine.0.set_numeric_contract(hdr.numeric_contract).map_err(|e| api_err(422, e))?;
+    let (model, tokenizer) = &*engine;
     decompress_bytes(data, model, tokenizer).map_err(|e| api_err(422, e))
 }
 
@@ -539,8 +559,9 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
             } else {
                 cm.compute_biases(None);
 
-                // R-077: entropy gate — identical to compress path
-                let cm_h = cm.cm_only_entropy(&mut ensemble_buf);
+                // R-077: entropy gate — identical to the CLI decoder: the entropy decides
+                // the gate, so it is computed under the archive's numeric contract.
+                let cm_h = cm.cm_only_entropy_with(&mut ensemble_buf, hdr.numeric_contract);
                 let do_gate = skip_threshold > 0
                     && consec_skips < MAX_CONSEC_SKIP
                     && cm_h < entropy_thr_f;
@@ -570,6 +591,9 @@ pub fn decompress_bytes<M: Backbone, T: BackendTokenizer>(
                 consec_skips = 0;
             }
             t += 1;
+            // Same bound as the CLI decoder: a corrupt stream that keeps decoding zero-length
+            // tokens ends in an error instead of holding the single-threaded server forever.
+            check_token_budget(t, output.len(), total_bytes).map_err(|e| e.to_string())?;
         }
     }
 
@@ -762,5 +786,123 @@ mod tests {
         assert_eq!(srv.engine_for(srv.forced.unwrap(), None).unwrap(), 0);
         // Model table without engines is reported as an internal error, never a panic.
         assert_eq!(call("POST", "/v1/compress", b"abc abc abc abc", &srv).status, 500);
+    }
+
+    // ---- CLI parity of the API decoder: token budget and numeric contract ----
+
+    /// Deterministic toy backbone (vocab 256): logits peak at the previous token.
+    struct ToyBackbone;
+    struct ToyState;
+    struct ToyScratch;
+    impl BackboneState for ToyState {
+        fn reset(&mut self) {}
+    }
+    impl crate::domain::backbone::BackboneScratch for ToyScratch {}
+    impl Backbone for ToyBackbone {
+        type State = ToyState;
+        type Scratch = ToyScratch;
+        fn vocab_size(&self) -> usize { 256 }
+        fn create_state(&self) -> ToyState { ToyState }
+        fn create_scratch(&self) -> ToyScratch { ToyScratch }
+        fn forward_into(&self, token: usize, _: &mut ToyState, _: &mut ToyScratch, out: &mut [f32]) {
+            for (i, o) in out.iter_mut().enumerate() {
+                let d = i as f32 - token as f32;
+                *o = -(d * d) * 0.001;
+            }
+        }
+    }
+
+    /// Every id decodes to zero bytes: a corrupt stream stuck on empty / special ids.
+    struct EmptyTokenizer;
+    impl BackendTokenizer for EmptyTokenizer {
+        fn encode(&self, data: &[u8]) -> Vec<u32> { data.iter().map(|&b| b as u32).collect() }
+        fn decode_token(&self, _: u32) -> &[u8] { &[] }
+    }
+
+    fn encode_meta(data: &[u8], profile: WeightProfile) -> EncodeMeta {
+        EncodeMeta {
+            total_bytes: data.len(), crc: crc32::crc32(data), e8e9: false, shuffle: 0, delta: 0,
+            backbone: BackboneChoice::Mamba, profile, bias_lr: DEFAULT_BIAS_LR, ngram_scale: DEFAULT_NGRAM_SCALE,
+            mix_eta: DEFAULT_MIX_ETA, emb_surgery: String::new(),
+            reset_log2: crate::application::codec::default_reset_log2(BackboneChoice::Mamba),
+        }
+    }
+
+    /// One lockstep stream, as `/v1/compress` runs it.
+    fn encode_one<M: Backbone, T: BackendTokenizer>(
+        model: &M, tok: &T, data: &[u8], profile: WeightProfile,
+    ) -> Vec<u8> {
+        let mut adm = Some(Admission::Encode {
+            name: "t".into(), tokens: tok.encode(data), meta: encode_meta(data, profile),
+        });
+        let mut source = || adm.take().map(Ok);
+        let mut out: Option<Vec<u8>> = None;
+        let mut on_result = |r: StreamResult| out = r.output.ok();
+        run_lockstep(model, tok, 1, None, &mut source, &mut on_result).unwrap();
+        out.expect("archive")
+    }
+
+    /// The API decode loop has the CLI's token budget: zero-length tokens end in an error
+    /// after `total_bytes` tokens instead of spinning the single-threaded server forever.
+    #[test]
+    fn api_decoder_bounds_zero_length_tokens_like_the_cli() {
+        use crate::infrastructure::mamba::byte_tokenizer::ByteTokenizer;
+        let data: Vec<u8> = (0..300u32).map(|i| b'a' + (i * 7 % 23) as u8).collect();
+        let tok = ByteTokenizer::new();
+        let archive = encode_one(&ToyBackbone, &tok, &data, WeightProfile::F32);
+        // A valid stream of 300 one-byte tokens stays inside the budget.
+        assert_eq!(decompress_bytes(&archive, &ToyBackbone, &tok).unwrap(), data);
+        let err = decompress_bytes(&archive, &ToyBackbone, &EmptyTokenizer).unwrap_err();
+        assert!(err.contains("300 tokens decoded but only 0 of 300 bytes"), "{}", err);
+    }
+
+    /// Server with one weight-free synthetic Mamba engine and the byte tokenizer.
+    fn synthetic_server(profile: WeightProfile) -> Server {
+        use crate::infrastructure::mamba::byte_tokenizer::ByteTokenizer;
+        let model = crate::infrastructure::mamba::model::synthetic_model(48, 2, 256, profile);
+        let engine: Engine = (DynModel::Mamba(model), DynTokenizer::Byte(ByteTokenizer::new()));
+        Server {
+            info: vec![LoadedInfo { choice: BackboneChoice::Mamba, profile, vocab: 256 }],
+            engines: vec![Mutex::new(engine)],
+            forced: Some(BackboneChoice::Mamba),
+            threads: 1,
+        }
+    }
+
+    /// `/v1/decompress` decodes an archive whose numeric contract is not the server's
+    /// default (contract 2 = FMA kernels) and the engine goes back to the contract the
+    /// server writes: the next `/v1/compress` is byte-identical to the first one.
+    #[test]
+    fn api_decodes_a_non_default_numeric_contract_and_keeps_writing_its_own() {
+        use crate::domain::fmath::NumericContract;
+        let data = b"GET /index.html HTTP/1.1 200 512\nGET /logo.png HTTP/1.1 200 2048\nPOST /api 201 17\n".repeat(5);
+        for profile in [WeightProfile::Q8, WeightProfile::F32] {
+            let srv = synthetic_server(profile);
+            let own = call("POST", "/v1/compress", &data, &srv);
+            assert_eq!(own.status, 200, "{}", String::from_utf8_lossy(&own.body));
+            assert_eq!(own.body[13] & 0x30, 0x10, "the API writes numeric contract 1 (fmath-v1)");
+
+            // The same data under contract 2: FMA kernels and PROFILE contract bits = 2,
+            // i.e. what `compress --numeric fma` writes. The engine is left on the FMA kernels.
+            let fma = {
+                let mut engine = srv.engine(0).unwrap();
+                engine.0.set_numeric_contract(NumericContract::FmaV1).unwrap();
+                let mut a = encode_one(&engine.0, &engine.1, &data, profile);
+                a[13] = (a[13] & !0x30) | 0x20;
+                a
+            };
+            assert_eq!(parse_header(&fma).unwrap().numeric_contract, NumericContract::FmaV1);
+            assert_ne!(fma[14..], own.body[14..], "{}: contract 2 must change the coded stream here", profile);
+
+            for (archive, what) in [(&own.body, "contract 1"), (&fma, "contract 2"), (&own.body, "contract 1 again")] {
+                let dec = call("POST", "/v1/decompress", archive, &srv);
+                assert_eq!(dec.status, 200, "{} {}: {}", profile, what, String::from_utf8_lossy(&dec.body));
+                assert_eq!(dec.body, data, "{} {}", profile, what);
+            }
+            let fma_dec = call("POST", "/v1/decompress", &fma, &srv);
+            assert_eq!((fma_dec.status, &fma_dec.body), (200, &data), "{}: contract 2 decode", profile);
+            let again = call("POST", "/v1/compress", &data, &srv);
+            assert_eq!(again.body, own.body, "{}: compress after an FMA decode must use contract-1 kernels", profile);
+        }
     }
 }

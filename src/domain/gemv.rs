@@ -10,8 +10,9 @@
 //!   stay f32 (never quantized: per-tensor W8A8 is what sank R-064).
 //!   `out[r] = Σ_g scale[r,g] * Σ_{c∈g} f32(q[r,c]) * x[c]`.
 //!
-//! Q8 kernel numeric contract (the kernel is SIMD/scalar tier-invariant; a Q8
-//! *archive* is still tier-bound through the f32 SSM/x_proj/dt_proj kernels):
+//! Q8 kernel numeric contract (SIMD/scalar tier-invariant; since R-104 F2 so are
+//! the f32 GEMV, the SSM scan and the element-wise kernels in `tensor.rs`, hence
+//! every archive):
 //! per (row, group) the AVX2 kernel uses 8 lanes, lane `l` accumulating the
 //! group's columns `c ≡ l (mod 8)` with separate `vmulps` + `vaddps` (no FMA),
 //! then a fixed horizontal-sum tree, then a sequential tail; the row result is
@@ -23,7 +24,7 @@
 //!   contract above (numeric contracts 0 and 1); `Kernel::Fma` selects the
 //!   fused multiply-add kernels of numeric contract 2 (`fma-v1`) in
 //!   [`crate::domain::gemv_fma`]: same accumulation order, one rounding per
-//!   multiply-add, SIMD and scalar (`f32::mul_add`) bit-identical.
+//!   multiply-add, SIMD and scalar (pure-Rust `fma_f32`) bit-identical.
 
 use std::sync::OnceLock;
 
@@ -175,7 +176,8 @@ fn check_multi_shapes(n_outs: usize, xs: &[&[f32]], cols: usize) {
 // ---- F32 (bit-identical to the single-thread kernel) ----
 
 /// Single-thread f32 rows kernel. Plain: same dispatch as `mat_vec_mul_into`'s
-/// single-thread path (AVX2 noFMA > scalar). Fma: contract-2 kernel (R-107).
+/// single-thread path (AVX2 noFMA > scalar, same bits on both since R-104 F2).
+/// Fma: contract-2 kernel (R-107).
 pub fn f32_rows(out: &mut [f32], m: &[f32], v: &[f32], cols: usize, k: Kernel) {
     if k == Kernel::Fma {
         gemv_fma::f32_rows_fma(out, m, v, cols);

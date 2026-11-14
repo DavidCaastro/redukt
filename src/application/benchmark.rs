@@ -139,11 +139,7 @@ pub fn cmd_benchmark(args: &[String]) -> AzResult<()> {
 
     // Load model once for all files
     eprintln!("[benchmark] loading model from {} ...", weights_dir);
-    let quant_override = if quant_str.is_empty() {
-        None
-    } else {
-        model_loader::parse_quant_flag(&quant_str)
-    };
+    let quant_override = crate::application::codec::parse_quant_override(&quant_str)?;
     let (mut model, tokenizer) =
         model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
 

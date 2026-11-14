@@ -371,6 +371,10 @@ fn multi_process_determinism() {
 /// On Q8 (default), cross-tier roundtrip may fail due to transcendental
 /// approximation differences (SIMD Cephes vs scalar libm).
 /// This test documents the current behavior.
+///
+/// Since R-104 F2 (2026-11-12) the two tiers are bit-identical, so this test reports
+/// "IDENTICAL"; it never asserted either outcome. The asserting gate is
+/// `scalar_tier_is_bit_identical_to_simd_tier` below.
 #[test]
 #[ignore] // requires weights
 fn cross_tier_roundtrip_documents_divergence() {
@@ -503,6 +507,18 @@ fn has_mamba_weights() -> bool {
     Path::new("weights/mamba-130m/model.safetensors").exists()
 }
 
+// AZTH v5 PROFILE byte (offset 13), from docs/api/FORMAT-SPEC.md, "PROFILE byte": bits 0-3 QUANT
+// (0 = F32, 1 = Q8), bits 4-5 NUMERIC_CONTRACT (1 = fmath-v1, 2 = fma-v1), bit 6 RESET_PERIOD (a
+// RESET_LOG2 byte follows at offset 14). Since R-108 the Mamba family writes RESET_PERIOD by
+// default with RESET_LOG2 = 12 (a state reset every 4096 forwards), so a default Mamba archive
+// carries 0x50 (F32) / 0x51 (Q8), and 0x60 / 0x61 with `--numeric fma`.
+const PROFILE_QUANT_F32: u8 = 0;
+const PROFILE_QUANT_Q8: u8 = 1;
+const PROFILE_CONTRACT_FMATH_V1: u8 = 1 << 4;
+const PROFILE_CONTRACT_FMA_V1: u8 = 2 << 4;
+const PROFILE_RESET_PERIOD: u8 = 1 << 6;
+const MAMBA_DEFAULT_RESET_LOG2: u8 = 12;
+
 fn run_redukt(bin: &Path, args: &[&str], threads: &str) -> std::process::Output {
     Command::new(bin)
         .args(args)
@@ -536,7 +552,9 @@ fn mamba_q8_profile_roundtrip_and_mismatch() {
     }
     let azth = std::fs::read(&az_n).unwrap();
     assert_eq!(&azth[..8], b"AZTH\x05\x00\x00\x00", "Q8 archive must be AZTH v5");
-    assert_eq!(azth[13], 0x11, "PROFILE byte must carry quant 1 (Q8) + numeric contract 1 (fmath-v1)");
+    assert_eq!(azth[13], PROFILE_QUANT_Q8 | PROFILE_CONTRACT_FMATH_V1 | PROFILE_RESET_PERIOD,
+        "PROFILE byte must carry quant 1 (Q8), numeric contract 1 (fmath-v1) and RESET_PERIOD (R-108)");
+    assert_eq!(azth[14], MAMBA_DEFAULT_RESET_LOG2, "RESET_LOG2 must follow PROFILE (default: 2^12 forwards)");
     assert_eq!(azth, std::fs::read(&az_1).unwrap(), "Q8 bytes differ between 1 and 4 threads");
 
     let o = run_redukt(&bin, &["decompress", "--input", nn, "--output", restored.to_str().unwrap()], "4");
@@ -639,7 +657,7 @@ fn lockstep_batch_matches_single_file_both_directions() {
 // R-107: numeric contract 2 (fma-v1)
 // ---------------------------------------------------------------------------
 
-/// Contract 2 with real Mamba weights, Q8 and F32: PROFILE = quant | 2 << 4,
+/// Contract 2 with real Mamba weights, Q8 and F32: PROFILE = quant | 2 << 4 | RESET_PERIOD,
 /// byte-identical restore, decodable through the scalar `mul_add` kernels
 /// (`REDUKT_NO_FMA=1` = AVX2 CPU without FMA), lockstep batch == single file,
 /// and a batch mixing contracts 1 and 2 is rejected before any decoding.
@@ -659,7 +677,11 @@ fn fma_contract_roundtrip_real_weights() {
     std::fs::write(&input, text).unwrap();
     let s = |p: &Path| p.to_str().unwrap().to_string();
 
-    for (quant, profile) in [("q8", 0x21u8), ("f32", 0x20u8)] {
+    for (quant, quant_code) in [("q8", PROFILE_QUANT_Q8), ("f32", PROFILE_QUANT_F32)] {
+        // Default Mamba archives carry RESET_PERIOD since R-108: 0x61 / 0x60 with contract 2,
+        // 0x51 / 0x50 with the default contract 1.
+        let profile = quant_code | PROFILE_CONTRACT_FMA_V1 | PROFILE_RESET_PERIOD;
+        let default_profile = quant_code | PROFILE_CONTRACT_FMATH_V1 | PROFILE_RESET_PERIOD;
         let az = tmp.join(format!("{}.azth", quant));
         let plain = tmp.join(format!("{}-plain.azth", quant));
         let o = run_redukt(&bin, &["compress", "--input", &s(&input), "--output", &s(&az),
@@ -669,8 +691,8 @@ fn fma_contract_roundtrip_real_weights() {
             "--quant", quant, "--no-governor"], "4");
         assert!(o.status.success(), "default compress failed");
         let (a, p) = (std::fs::read(&az).unwrap(), std::fs::read(&plain).unwrap());
-        assert_eq!(a[13], profile, "{}: PROFILE must be quant | contract 2 << 4", quant);
-        assert_eq!(p[13], profile - 0x10, "{}: default must stay contract 1", quant);
+        assert_eq!(a[13], profile, "{}: PROFILE must be quant | contract 2 << 4 | RESET_PERIOD", quant);
+        assert_eq!(p[13], default_profile, "{}: default must stay contract 1", quant);
         for no_fma in ["0", "1"] {
             let out = tmp.join(format!("{}-{}.txt", quant, no_fma));
             let o = Command::new(&bin)
@@ -698,6 +720,82 @@ fn fma_contract_roundtrip_real_weights() {
             &s(&tmp.join("mixed-out")), "--no-governor"], "4");
         assert!(!o.status.success(), "mixed-contract batch must fail");
         assert!(String::from_utf8_lossy(&o.stderr).contains("mixes numeric contracts"));
+    }
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
+// R-104 F2: scalar tier (REDUKT_NO_SIMD=1) == AVX2 tier, bit for bit
+// ---------------------------------------------------------------------------
+
+/// One redukt run on the scalar tier (`REDUKT_NO_SIMD=1`) or on the default SIMD tier.
+fn run_tier(bin: &Path, args: &[String], scalar: bool) -> std::process::Output {
+    let mut cmd = Command::new(bin);
+    cmd.args(args).env("REDUKT_THREADS", "4").env_remove("REDUKT_NO_SIMD");
+    if scalar {
+        cmd.env("REDUKT_NO_SIMD", "1");
+    }
+    cmd.output().expect("failed to run redukt")
+}
+
+/// The scalar kernels follow the AVX2 kernels' operation order (R-104 F2): an archive has the
+/// same bytes with and without `REDUKT_NO_SIMD=1`, and each tier decodes the other tier's
+/// archive. Mamba F32 / Q8 under numeric contracts 1 and 2, RWKV Q8 / F32.
+#[test]
+#[ignore] // requires Mamba and RWKV weights; run with --release for speed
+fn scalar_tier_is_bit_identical_to_simd_tier() {
+    let bin = ensure_bin();
+    if !has_mamba_weights() || !has_weights() { eprintln!("SKIP: needs mamba and rwkv weights"); return; }
+
+    let tmp = std::env::temp_dir().join("redukt_test_f2_tiers");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let text: &[u8] = b"<invoice id=\"42\"><total currency=\"EUR\">1234.56</total></invoice>\n\
+        192.168.1.10 - - [10/Nov/2026:10:00:01 +0000] \"GET /index.html HTTP/1.1\" 200 512\n\
+        The quick brown fox jumps over the lazy dog. 0123456789\n";
+    let input = tmp.join("in.txt");
+    std::fs::write(&input, text).unwrap();
+    let s = |p: &Path| p.to_str().unwrap().to_string();
+    let owned = |v: &[&str]| -> Vec<String> { v.iter().map(|a| a.to_string()).collect() };
+
+    // (name, backbone, quant, extra compress flags)
+    let configs: [(&str, &str, &str, &[&str]); 6] = [
+        ("mamba-q8", "mamba", "q8", &[]),
+        ("mamba-f32", "mamba", "f32", &[]),
+        ("mamba-q8-fma", "mamba", "q8", &["--numeric", "fma"]),
+        ("mamba-f32-fma", "mamba", "f32", &["--numeric", "fma"]),
+        ("rwkv-q8", "rwkv", "q8", &[]),
+        ("rwkv-f32", "rwkv", "f32", &[]),
+    ];
+    for (name, backbone, quant, extra) in configs {
+        let mut archives = Vec::new();
+        for scalar in [false, true] {
+            let out = tmp.join(format!("{}-{}.azth", name, if scalar { "scalar" } else { "simd" }));
+            let mut args = owned(&["compress", "--no-governor", "--backbone", backbone, "--quant", quant]);
+            args.extend(owned(extra));
+            args.extend(["--input".to_string(), s(&input), "--output".to_string(), s(&out)]);
+            let o = run_tier(&bin, &args, scalar);
+            assert!(o.status.success(), "{} compress (scalar={}): {}",
+                name, scalar, String::from_utf8_lossy(&o.stderr));
+            archives.push(out);
+        }
+        assert_eq!(std::fs::read(&archives[0]).unwrap(), std::fs::read(&archives[1]).unwrap(),
+            "{}: archive bytes differ between the SIMD tier and the scalar tier", name);
+
+        // Cross-tier roundtrips: SIMD archive -> scalar decoder, scalar archive -> SIMD decoder.
+        for (archive, decode_scalar) in [(&archives[0], true), (&archives[1], false)] {
+            let restored = tmp.join(format!("{}-decoded-{}.txt", name, if decode_scalar { "scalar" } else { "simd" }));
+            let mut args = owned(&["decompress", "--no-governor"]);
+            args.extend(["--input".to_string(), s(archive), "--output".to_string(), s(&restored)]);
+            if backbone == "rwkv" {
+                // The RWKV quantization level is not in the header: pass the encoder's.
+                args.extend(owned(&["--quant", quant]));
+            }
+            let o = run_tier(&bin, &args, decode_scalar);
+            assert!(o.status.success(), "{} cross-tier decode (scalar={}): {}",
+                name, decode_scalar, String::from_utf8_lossy(&o.stderr));
+            assert_eq!(std::fs::read(&restored).unwrap(), text.to_vec(), "{} (decoder scalar={})", name, decode_scalar);
+        }
     }
     std::fs::remove_dir_all(&tmp).ok();
 }

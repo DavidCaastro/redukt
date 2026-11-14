@@ -69,13 +69,17 @@ fn print_usage() {
     eprintln!("  --tau <F>            Surprise-modulated lr decay (0 = static, default: 0)");
     eprintln!("  --emb-surgery <M>    Embedding surgery method (analyze|norm|center|spread)");
     eprintln!("  --log <FILE>         Structured .jsonl log output");
-    eprintln!("  --quant <LEVEL>      RWKV: f32, q8, q4, auto (default: auto)");
+    eprintln!("  --quant <LEVEL>      RWKV: f32, q8, q4, auto (default: auto = q8, a fixed choice). The RWKV level");
+    eprintln!("                       is not stored in the archive: decompress needs the same --quant unless it");
+    eprintln!("                       was the default.");
     eprintln!("                       Mamba: auto|q8 (default: weight-only Q8, AZTH v5) or f32 (AZTH v4).");
     eprintln!("                       f32 gives ~1% better BPB and is the recommended profile for batches of");
     eprintln!("                       >=16 streams (--input-dir), where aggregate throughput is equal; q8 is ~3.3x");
     eprintln!("                       faster for single files (+0.6..1.2% BPB). decompress ignores this flag:");
     eprintln!("                       the profile always comes from the archive header (a conflicting value fails).");
-    eprintln!("  --backbone <B>       rwkv, mamba, mambabyte, auto (default: auto = route by content)");
+    eprintln!("  --backbone <B>       rwkv, mamba, mambabyte, plugin, auto (default: auto = route by content);");
+    eprintln!("                       any other value is an error (also for --quant, --numeric, --e8e9, --shuffle,");
+    eprintln!("                       --delta)");
     eprintln!("                       api: also a comma list (e.g. mamba,rwkv) to load several models at start-up");
     eprintln!("  --bind <ADDR>        api: listen address (default: 0.0.0.0; --host is an alias)");
     eprintln!("  --port <PORT>        api: listen port (default: 8080)");
@@ -99,5 +103,5 @@ fn print_usage() {
     eprintln!("Environment:");
     eprintln!("  REDUKT_THREADS=N     Mamba GEMV/SSM worker threads incl. caller (default: all logical CPUs)");
     eprintln!("  REDUKT_SPIN_US=N     Worker spin before parking, microseconds (default: 100)");
-    eprintln!("  REDUKT_NO_SIMD=1     Force scalar kernels (must match between compress and decompress)");
+    eprintln!("  REDUKT_NO_SIMD=1     Force scalar kernels (slower; same bytes as the AVX2 kernels since R-104 F2)");
 }

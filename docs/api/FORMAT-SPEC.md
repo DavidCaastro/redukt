@@ -178,8 +178,9 @@ Offset  Size  Field          Description
 0x0C    1B    FLAGS          Same bits and semantics as v4
 0x0D    1B    PROFILE        Weight profile (see below)
 [0x0E]  1B    RESET_LOG2     Only if PROFILE bit 6 is set (R-108): backbone state reset period = 2^RESET_LOG2
-                             forwards, 8 <= RESET_LOG2 <= 20 (256 .. 1,048,576). Written by default for the
-                             Mamba family (12 = 4096); never for RWKV/plugin.
+                             forwards, 8 <= RESET_LOG2 <= 20 (256 .. 1,048,576). Written by default (12 = 4096)
+                             for the Mamba family and for the GPU plugin, which hosts the same Mamba-130M;
+                             never for RWKV.
 var     var   [optional]     Exactly the v4 optional fields, same order:
                              [HP 12B] [EMB 5B] [SHUFFLE 1B] [DELTA 1B] [SKIP 1B] [BACKBONE 1B]
 var     var   STREAM         Arithmetic coded probability stream
@@ -198,7 +199,8 @@ Header size: **14 bytes** minimum (16 for a default Mamba archive: +1 RESET_LOG2
 | 7    | —                 | Reserved, must be 0 (decoder rejects) |
 
 Values written by the current encoder: Mamba family `0x50` (F32) and `0x51` (Q8) by default (bit 6 set, RESET_LOG2 = 12),
-`0x60` / `0x61` with `compress --numeric fma`; `0x10` / `0x11` with `--reset-every 0`; RWKV `0x10`.
+`0x60` / `0x61` with `compress --numeric fma`; `0x10` / `0x11` with `--reset-every 0`; plugin `0x50` by default
+(QUANT = F32, contract 1, RESET_LOG2 = 12) and `0x10` with `--reset-every 0`; RWKV `0x10`.
 
 ### RESET_LOG2 (R-108)
 
@@ -208,10 +210,23 @@ encoder zeroes the backbone conv + SSM state every 2^RESET_LOG2 forwards (the co
 and records the period here so the decoder replays it exactly. Measured: enwik8 100 KB 1.6327 -> 0.9951 bpb with 4096;
 all five whole industry files go from losing to beating brotli-11/xz. Inputs shorter than the period produce the same
 coded stream as before R-108 (+1 header byte). `compress --reset-every N` (0 = never, power of two 256..1048576)
-overrides the default; the flag applies to the Mamba family only. In lockstep batches every stream carries its own
-period (from its header on decode), so batch output stays byte-identical to single-file output.
+overrides the default; the flag applies to the Mamba family and to the GPU plugin (the host counts the forwards and
+resets the plugin's state on the same schedule); for RWKV a non-zero value is ignored with a warning. In lockstep
+batches every stream carries its own period (from its header on decode), so batch output stays byte-identical to
+single-file output.
 A non-F32 profile is only valid for the Mamba / MambaByte backbones;
-the decoder rejects it for RWKV (RWKV's own `--quant` is not part of the format).
+the decoder rejects it for RWKV and for the plugin.
+
+### RWKV quantization (not part of the format)
+
+RWKV's `--quant` level (`f32`, `q8`, `q4`) changes the logits but is **not** recorded in the header: QUANT is `0`
+for every RWKV archive. `--quant auto` (the default) is the fixed level Q8 (`Rwkv7Model::AUTO_QUANT`). Until
+2026-11-12 it was the winner of a load-time wall-clock benchmark of F32 / Q8 / Q4 — all three pass its quality gate
+on RWKV-7 0.1B — so the same input could compress to different bytes on another machine, and the decoder repeated
+the benchmark; Q8 is what it selected on the reference machines, so archives written with the old default decode
+unchanged. An archive compressed with an explicit `--quant f32` or `--quant q4` (or by an old build whose benchmark
+did not pick Q8) must be decompressed with the same `--quant`; a mismatch surfaces as a decoder error or a CRC-32
+mismatch, never earlier. Recording the level would need a format change (for example RWKV QUANT codes in PROFILE).
 
 ### Numeric contract (R-104)
 
@@ -224,7 +239,7 @@ f32 kernels of R-013b.
 |------|-------------|------------------------------------------|-------------|
 | 0    | legacy libm | `f64::exp` / `f64::ln` of the platform libm (MSVC UCRT, glibc, …) | bit-exact only where the decoder's libm equals the encoder's (UCRT and glibc differ in 0.5% of `exp` values by 1 ulp; masked in practice, latent risk ~1e-8–1e-6 per token) |
 | 1    | fmath-v1    | `src/domain/fmath.rs`: port of musl `exp.c`/`log.c` (ARM optimized-routines, MIT), non-FMA path, pure IEEE f64 arithmetic, < 0.52 ulp | identical on every IEEE-754 platform; golden values and a golden sweep hash in the unit tests |
-| 2    | fma-v1      | same as contract 1 (fmath-v1), **plus** fused multiply-add GEMV/GEMM kernels in the Mamba backbone (below) | as contract 1; the GEMV/GEMM is in addition SIMD/scalar tier-invariant (scalar `f32::mul_add`) |
+| 2    | fma-v1      | same as contract 1 (fmath-v1), **plus** fused multiply-add GEMV/GEMM kernels in the Mamba backbone (below) | as contract 1; the scalar kernels use a pure-Rust fused multiply-add (`gemv_fma::fma_f32`), never the platform `fmaf`, so a CPU or build without FMA decodes it bit for bit |
 
 Interpretation by version: v2, v3, v4 and v5 with bits 4–5 = 0 → contract 0.
 A decoder selects the implementation from the header, so legacy archives keep
@@ -234,8 +249,40 @@ header, before the model is loaded; so is contract 2 with a non-Mamba backbone
 (RWKV / plugin). Decoders older than R-107 reject contract 2 the same way
 (`numeric contract 2 not supported by this build`), never with a CRC mismatch.
 
-Contracts 0 and 1 do **not** cover the SIMD tier: F32 GEMV / SSM accumulation
-order still differs between the AVX2 and scalar kernels (R-104 F2).
+### SIMD tier (R-104 F2, 2026-11-12): not part of the contract
+
+The AVX2 kernels and the scalar kernels (`REDUKT_NO_SIMD=1`, a CPU without AVX2, any
+non-x86 target) produce the same bits for every contract, every backbone and every weight
+profile: the same archive bytes, and each tier decodes the other tier's archives. The AVX2
+operation order is normative — every archive written before this change was produced with
+it — and the scalar kernels reproduce it:
+
+- **f32 GEMV** (Mamba `x_proj`, `dt_proj`, and `in_proj` / `out_proj` / head under F32; RWKV
+  LoRA matrices and every F32 matrix): per output row, 8 lanes from +0, lane `l` accumulating
+  the columns `c ≡ l (mod 8)` of the 8-aligned body as `acc_l = acc_l + w_c * x_c` (separate
+  multiply and add); horizontal sum `((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7))`; then the
+  remaining `K mod 8` columns added sequentially.
+- **Mamba selective scan** (`d_state = 16`): per channel, `a = exp(A_log)`,
+  `da = exp(0 - dt * a)`, `s = da * s + (dt * x) * B`; `y` reduces the 8 lanes
+  `s[l] * C[l] + s[l+8] * C[l+8]` as `((l0+l4)+(l1+l5)) + ((l2+l6)+(l3+l7))`, then adds
+  `D * x`. A channel with `|dt| < 1e-6` keeps its state. Both `exp` are the f32 Cephes
+  polynomial of `tensor.rs` (`fast_exp_ps` / `portable_expf`, bit-identical).
+- **Element-wise kernels** (SiLU, gated SiLU, tanh, sigmoid and the RWKV decay / mix forms):
+  the first `len - len mod 8` elements of each call use the lane form (`sigmoid(x) =
+  1 / (1 + exp(0 - x))`, the lane `exp` clamps a NaN input to its lower bound `-87.34`), the
+  last `len mod 8` elements the `portable_*` form (NaN propagates). Both forms agree on every
+  non-NaN input.
+- **Integer kernels** (RWKV W8A8 Q8, Q4): exact i32 accumulation, identical by construction.
+- **Q8 weight-only GEMV** (Mamba): see the Q8 recipe below.
+
+Unit tests compare each scalar kernel with its AVX2 twin bit for bit (NaN, ±inf, ±0 and
+subnormal inputs included); `tests/roundtrip.rs::scalar_tier_is_bit_identical_to_simd_tier`
+checks whole archives with real weights.
+
+Compatibility: an archive written **on the scalar tier by a build older than this change**
+used a different (sequential) f32 order. No newer build decodes it, on either tier, and the
+header cannot tell it apart; decode it with the build that wrote it (`REDUKT_NO_SIMD=1`).
+All reference archives and benchmarks were produced on AVX2 hosts and are unaffected.
 
 ### Numeric contract 2: fma-v1 GEMV/GEMM (R-107)
 
@@ -255,18 +302,28 @@ and lockstep multi-stream). Each `acc + w·x` of contract 1 becomes one IEEE 754
 Register tiling (rows × streams), thread count and lockstep stream count never
 change the per-output order, hence never the bits. Not covered (unchanged
 contract-1 code): conv1d, selective scan (`exp`), softplus, SiLU, norms,
-residual adds — so contract 2 keeps the SIMD-tier rule for those phases.
+residual adds — those phases follow the contract-1 rules above, which are
+tier-invariant since R-104 F2.
 
-Implementation: `src/domain/gemv_fma.rs` (AVX2+FMA `vfmadd231ps` kernels and a
-scalar `f32::mul_add` emulation; unit-tested bit-identical, including 10^6
-random triples with subnormals and exact cancellation, against both the hardware
-scalar `vfmadd` and the MSVC UCRT `fmaf`). A decoder on a CPU with AVX2 but
-without FMA (or with `REDUKT_NO_FMA=1`) uses the scalar kernels — bit-exact,
-much slower — and prints a warning. Selection: `compress --numeric fma`
-(default `fmath` = contract 1); decompression always follows the header. A
+Implementation: `src/domain/gemv_fma.rs` (AVX2+FMA `vfmadd231ps` kernels and
+scalar kernels in the same order). The scalar fused multiply-add is
+`fma_f32`, pure Rust: the product of two f32 is exact in f64, the sum is
+rounded once to f64 and, when that f64 lands on an f32 rounding boundary with
+a non-zero error (recovered exactly with TwoSum), it is moved one ulp towards
+the exact value (round to odd) before the final rounding to f32. No platform
+`fmaf` is called on any target (`tests/libm_lint.rs` bans `mul_add` outside the
+`#[target_feature(enable = "fma")]` kernels). Unit tests: 4·10^6 random triples
+with subnormals and exact / near cancellation against `vfmadd231ps`, and
+constructed sums just below / above an f32 midpoint (the double-rounding case)
+against the analytically known result. A decoder on a CPU without AVX2+FMA (or
+with `REDUKT_NO_FMA=1` / `REDUKT_NO_SIMD=1`) uses the scalar kernels —
+bit-exact, much slower — and prints a warning. Selection: `compress --numeric
+fma` (default `fmath` = contract 1); decompression always follows the header. A
 `decompress --input-dir` batch must not mix contract 2 with contracts 0/1 for
 Mamba archives (rejected before loading the model). The HTTP API (`api`) writes
-and loads contract 1 only.
+contract 1 and decodes every contract: `/v1/decompress` switches the loaded
+model to the archive's kernel family for the request, as `decompress --input`
+does.
 
 ### Q8 profile recipe (QUANT = 1)
 
@@ -286,8 +343,8 @@ Part of the format contract — any change needs a new QUANT code.
   then horizontal sum `((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7))`, then a sequential
   tail; the row result is `0 + Σ_groups dot_g * scale_g` in group order. The
   AVX2 and scalar Q8 GEMV kernels implement this order exactly (bit-identical).
-  The archive as a whole still needs the same SIMD tier on both sides, because
-  the f32 parts (x_proj/dt_proj GEMV, SSM `exp`, SiLU) keep the F32 tier rule.
+  Since R-104 F2 the f32 parts (x_proj/dt_proj GEMV, SSM, SiLU) are tier-invariant
+  too, so a Q8 archive no longer depends on the SIMD tier.
 
 Measured (Mamba-130M, 10 KB, vs F32): enwik8 +0.6%, facturae XML +1.2%,
 apache log +1.1% BPB; weight traffic 516.5 → 153.6 MB/token.
@@ -327,10 +384,12 @@ The decoder accepts v2, v3, v4 and v5 files:
 
 The encoder writes **v5** for every archive since R-104 F1 (PROFILE `0x10` for
 F32, `0x11` for Q8; `0x20` / `0x21` with `--numeric fma`, R-107; since R-108 the Mamba
-family sets bit 6 and appends RESET_LOG2, i.e. `0x50` / `0x51` by default). Before that,
+family and the plugin set bit 6 and append RESET_LOG2, i.e. `0x50` / `0x51` by default and
+`0x60` / `0x61` with `--numeric fma`). Before that,
 F32 archives were written as v4. A timing-based
 auto-selection of the weight profile is never used: it would make the bitstream
-machine-dependent.
+machine-dependent. (RWKV's own `--quant auto` was timing-based until 2026-11-12; it is
+now the fixed level Q8, see "RWKV quantization".)
 
 ## Format Layout (v3 — legacy)
 
@@ -474,11 +533,15 @@ Decompression produces byte-identical output if and only if:
 7. Same numeric contract (v5 PROFILE bits 4–5 since R-104). Contract 1 (fmath-v1)
    is OS/libm-independent; contract 0 (v2–v4 and R-099 v5) relies on the
    platform libm `exp`; contract 2 (fma-v1, R-107) is contract 1 plus FMA
-   GEMV/GEMM kernels, whose scalar fallback (`f32::mul_add`) is bit-identical
-8. Same SIMD tier (`REDUKT_NO_SIMD=1` must match on both sides), for every
-   profile: the AVX2 (no-FMA) and scalar f32 kernels (GEMV accumulation order,
-   SSM `exp`, SiLU) are NOT bit-compatible. In the Q8 profile the int8 GEMV
-   itself is tier-invariant, but x_proj/dt_proj/SSM remain f32 and tier-bound.
+   GEMV/GEMM kernels, whose scalar fallback (pure-Rust `fma_f32`) is bit-identical
+8. For RWKV: the same `--quant` level on both sides. It is not stored in the
+   header; the default (`auto`) is the fixed level Q8 (see "RWKV quantization").
+
+The SIMD tier is **not** in this list since R-104 F2 (2026-11-12): the scalar
+kernels (`REDUKT_NO_SIMD=1`, CPUs without AVX2, non-x86 targets) reproduce the
+AVX2 kernels' operation order bit for bit, for every backbone, profile and
+contract (see "SIMD tier"). The one exception is historical: archives written
+on the scalar tier by builds older than that change.
 
 The number of GEMV threads (`REDUKT_THREADS`) never affects the output: work is
 partitioned by output rows / SSM channels and every row or channel is computed

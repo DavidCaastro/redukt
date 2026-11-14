@@ -18,7 +18,7 @@ ningún backbone preentrenado más pequeño que conserve el ratio (R-105 paso 1)
 | 2 | R-112 — especialista por dominio entrenado por nosotros (logs, Loghub, sistemas retenidos) | si un modelo 10-100x más barato generaliza dentro de un dominio | ✅ HECHA: **NO-GO** (4-9 bpb en sistemas no vistos) |
 | 3 | R-113 — cuantificar la vía 3 (segmentos donde el byte vale más que $33-60/GB) | si existe cliente para el producto actual | ✅ HECHA: **viable con condiciones** solo en satélite de banda estrecha |
 | 4 | R-114 / R-115 / R-116 — modo mensaje, ARM64 + determinismo, validación de mercado | si la vía 3 es un producto | PROPUESTAS (pendientes de decisión) |
-| — | R-104 F2 + goldens en CI, despliegue real de R-102 | higiene de producto | CONDICIONADAS a que R-112 o R-113 den un caso viable |
+| — | R-104 F2 + goldens en CI, despliegue real de R-102 | higiene de producto | F2 ✅ HECHA (2026-11-14, x86; ARM sin medir); goldens en CI y R-102 CONDICIONADAS a la vía 3 |
 
 **Deprecado en esta repriorización** (no cierran la brecha; el detalle queda en cada tarea como registro):
 R-101 (Q6), pendientes de R-107 (FMA por defecto), R-110 (pipeline de host GPU) y kernels GPU cuBLAS,
@@ -2813,7 +2813,8 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     - tok/s y $/GB medidos en GCE, documentados
 
 - R-104: Determinismo cross-máquina — BLOQUEANTE de producto
-  - **Estado**: EN CURSO (F1 ✅ 2026-11-10; F2 y F3 PENDIENTES)
+  - **Estado**: EN CURSO (F1 ✅ 2026-11-10; F2 ✅ 2026-11-14 en x86, Δ tok/s y ARM sin medir; F3 lint ✅, goldens
+    PENDIENTES)
   - **Prioridad**: P0 — ningún cliente externo antes de cerrarlo
   - **Dependencia**: ninguna; condiciona el diseño de R-098/R-099/R-100 y la entrega de R-102/R-103
   - **Archivos**: `src/domain/tensor.rs`, `src/infrastructure/mamba/model.rs`, `src/domain/mixer.rs`,
@@ -2836,8 +2837,20 @@ ahorro de almacenamiento acumulado; b = fracción que deja brotli, S = ahorro ad
     modelo), bits 6-7 reservados. El encoder escribe SIEMPRE v5 (F32 -> 0x10, Q8 -> 0x11); v2-v4 y v5 tempranos
     (bits 4-5 = 0) decodifican por la rama legacy. Streams idénticos antes/después en 6/6 casos; solo cambia el header
     (F32 pasa de v4 a v5, +1 B): enwik8 F32 10 KB = 0.9641 BPB (0.9633 en v4). Cross-OS Windows<->Linux OK.
-  - **F2 PENDIENTE**: nivel escalar con el orden de lanes de AVX2 (mismo `.azth` sin AVX2/FMA). Criterio: sha256 idéntico
-    entre ruta escalar y AVX2 en enwik8/facturae/apache, F32 y Q8, con Δ tok/s medido.
+  - **F2 ✅ HECHA** (2026-11-14; evidencia `docs/internal/research/strata-backbone/07-legacy-fixes.md` §2): nivel escalar
+    con el orden de lanes de AVX2 (mismo `.azth` sin AVX2/FMA). Criterio: sha256 idéntico entre ruta escalar y AVX2 en
+    enwik8/facturae/apache, F32 y Q8, con Δ tok/s medido.
+    Causa medida: con el binario de 692d985, Mamba Q8 enwik8 10 KB daba `d550671b…` con SIMD y `9f763850…` con
+    `REDUKT_NO_SIMD=1`, y el escalar no decodificaba el archivo SIMD. Los kernels AVX2 no se tocaron; los escalares
+    ejecutan ahora su orden: GEMV f32 (8 lanes + árbol `hsum`), scan SSM d16, 7 element-wise con `lane_expf`
+    (clamp de NaN de `fast_exp_ps`), y el contrato 2 con una FMA en Rust puro (`gemv_fma::fma_f32`, redondeo único
+    vía f64 + TwoSum + round-to-odd en la frontera) en lugar de `f32::mul_add` (que sin el target FMA es `fmaf` de
+    libm; el lint ahora prohíbe `mul_add`). Resultado: 12/12 celdas (Mamba Q8/F32, RWKV Q8/F32 × 3 ficheros) con el
+    mismo sha256 en ambos niveles y decodificación cruzada en las dos direcciones; contrato 2 Q8/F32 idéntico sin FMA
+    hardware; 33/33 archivos de referencia idénticos antes/después (T6). **Δ tok/s NO medido** (la máquina estaba
+    compartida durante las corridas): esa parte del criterio queda pendiente. Los archivos escritos en el nivel
+    escalar por builds anteriores ya no decodifican (no hay campo en la cabecera que los distinga; documentado en
+    `FORMAT-SPEC.md`). ARM no ejecutado: R-115 sigue necesitando una corrida ARM medida.
   - **F3 EN CURSO** (lint ✅ 2026-11-11, e93b72e; goldens PENDIENTES): `tests/libm_lint.rs` recorre el código no-test
     y falla ante cualquier transcendental de plataforma (`exp`, `ln`, `powf`, `tanh`, `powi`, ...) fuera de las
     excepciones auditadas (`sqrt`, el despacho `NumericContract`, la telemetría `ce_bits`, marcas `libm-ok:`); corre
@@ -3035,7 +3048,7 @@ optimizados (R-103) y/o segmentos con bytes caros siguen siendo necesarios.
 
 **Estado de la fase**: EN CURSO — R-098, R-099, R-100 ✅; R-102 ✅ (verificado en local, no desplegado en GCP real);
 R-103 ✅ (validado en Kaggle T4: roundtrip, BPB == CPU, batch 1,117 tok/s); R-107 ✅ (FMA +12-22% en lote);
-R-104 EN CURSO (F1 ✅, F3 lint ✅, F2 y goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
+R-104 EN CURSO (F1 ✅, F2 ✅ 2026-11-14 en x86, F3 lint ✅, goldens de F3 pendientes); R-109 ✅ (medido N=12..128 por la CLI);
 R-105 CERRADA sin tier rápido (paso 1 ✅: ningún backbone preentrenado más pequeño conserva el ratio; paso 2 ✅
 = R-112, NO-GO al especialista por dominio). R-110 y R-101 DEPRECADAS. La continuación es la Fase 20.
 
@@ -3121,7 +3134,8 @@ R-105 CERRADA sin tier rápido (paso 1 ✅: ningún backbone preentrenado más p
   - **Estado**: PROPUESTA (pendiente de decisión sobre la vía 3)
   - **Qué**: el emisor en un enlace por satélite es un terminal ARM. Medir tok/s, memoria y energía por mensaje,
     y verificar que un `.azth` de ARM descomprime en x86 y viceversa. Reactiva R-104 F2 (ruta escalar con el
-    orden de AVX2), que deja de ser higiene y pasa a ser requisito
+    orden de AVX2), que deja de ser higiene y pasa a ser requisito (F2 hecha en x86 el 2026-11-14; falta medirla en
+    ARM)
   - **Criterio**: mismo sha256 ARM64 == x86-64 en enwik8/facturae/apache y en un lote de mensajes cortos
 - R-116: Validación de mercado de la vía 3
   - **Estado**: PROPUESTA (no es ingeniería)

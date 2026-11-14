@@ -11,10 +11,11 @@
 //! - Q8: int8 -> f32 conversion is exact; the row is `sum = fma(dot_g, scale_g, sum)`
 //!   folded over the groups in order from +0.
 //!
-//! The scalar kernels reproduce that order with `f32::mul_add` (IEEE 754
-//! fusedMultiplyAdd, correctly rounded: `vfmadd` when the build targets FMA,
-//! otherwise the libm `fmaf`). Unlike contract 1, the F32 GEMV is therefore
-//! SIMD/scalar tier-invariant as well; both are unit-tested bit for bit.
+//! The scalar kernels reproduce that order with [`fma_f32`], a pure-Rust IEEE 754
+//! fusedMultiplyAdd (exact product in f64, one correctly rounded sum; no platform
+//! `fmaf`, so a CPU or a build without FMA decodes contract 2 bit for bit — R-104 F2).
+//! `f32::mul_add` appears only inside the `#[target_feature(enable = "fma")]` kernels,
+//! where it is one `vfmadd` instruction. Both tiers are unit-tested bit for bit.
 //!
 //! Register tiling only changes which (row, stream) pairs run side by side,
 //! never the per-pair order, so every result is independent of the thread
@@ -59,6 +60,39 @@ pub fn simd_fma() -> bool {
 
 // ---- Scalar reference (bit-exact emulation of the SIMD kernels) ----
 
+/// IEEE 754 `fusedMultiplyAdd(a, b, c)` for f32 in pure Rust: `a * b + c` with a single
+/// rounding, bit-identical to `vfmadd` / a correct `fmaf` on every input, with no
+/// platform libm call (R-104 F2: `f32::mul_add` lowers to `fmaf` when the build has no
+/// FMA target feature).
+///
+/// The product of two f32 is exact in f64 (48 significant bits, exponent in range), so
+/// only the sum is rounded, to 53 bits. Rounding that f64 again to f32 can differ from
+/// the single rounding only when the f64 lands exactly on an f32 rounding boundary:
+/// every such boundary is a 25-bit dyadic, i.e. an f64 whose low 28 significand bits are
+/// zero, and round-to-nearest is monotonic, so any other f64 lies strictly on the same
+/// side of every boundary as the exact sum. On a possible boundary the rounding error of
+/// the sum is recovered exactly (TwoSum) and the f64 is moved one ulp towards the exact
+/// value (round to odd) before the final rounding.
+#[inline]
+pub(crate) fn fma_f32(a: f32, b: f32, c: f32) -> f32 {
+    let p = a as f64 * b as f64;
+    let c = c as f64;
+    let s = p + c;
+    let bits = s.to_bits();
+    if bits & 0x0FFF_FFFF != 0 || !s.is_finite() {
+        return s as f32;
+    }
+    let t = s - p;
+    let err = (p - (s - t)) + (c - t);
+    if err == 0.0 {
+        return s as f32;
+    }
+    // Inexact sum on a possible boundary: `s` has an even significand; its neighbour
+    // towards the exact value is odd and rounds to f32 like the exact value does.
+    let away_from_zero = (err > 0.0) == (s > 0.0);
+    f64::from_bits(if away_from_zero { bits + 1 } else { bits - 1 }) as f32
+}
+
 /// One dot product in contract-2 order: 8-lane fma body, hsum, fma tail.
 #[inline]
 fn dot_fma_scalar<W: Copy + Into<f32>>(w: &[W], v: &[f32]) -> f32 {
@@ -67,14 +101,12 @@ fn dot_fma_scalar<W: Copy + Into<f32>>(w: &[W], v: &[f32]) -> f32 {
     for ch in 0..chunks {
         let off = ch * 8;
         for l in 0..8 {
-            let wl: f32 = w[off + l].into();
-            acc[l] = wl.mul_add(v[off + l], acc[l]);
+            acc[l] = fma_f32(w[off + l].into(), v[off + l], acc[l]);
         }
     }
     let mut s = hsum8_scalar(&acc);
     for c in chunks * 8..w.len() {
-        let wc: f32 = w[c].into();
-        s = wc.mul_add(v[c], s);
+        s = fma_f32(w[c].into(), v[c], s);
     }
     s
 }
@@ -95,7 +127,7 @@ pub(crate) fn q8w_rows_fma_scalar(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
         for g in 0..gpr {
             let c0 = r * cols + g * group;
             let dot = dot_fma_scalar(&m.q[c0..c0 + group], &v[g * group..(g + 1) * group]);
-            sum = dot.mul_add(m.scales[r * gpr + g], sum);
+            sum = fma_f32(dot, m.scales[r * gpr + g], sum);
         }
         *o = sum;
     }
@@ -103,7 +135,7 @@ pub(crate) fn q8w_rows_fma_scalar(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
 
 // ---- Dispatch ----
 
-/// F32 rows, single stream (AVX2+FMA > scalar `mul_add`).
+/// F32 rows, single stream (AVX2+FMA > scalar `fma_f32`).
 pub(crate) fn f32_rows_fma(out: &mut [f32], m: &[f32], v: &[f32], cols: usize) {
     #[cfg(target_arch = "x86_64")]
     if simd_fma() {
@@ -138,7 +170,7 @@ pub(crate) fn f32_rows_multi_fma(
     }
 }
 
-/// Q8 rows, single stream (AVX2+FMA > scalar `mul_add`).
+/// Q8 rows, single stream (AVX2+FMA > scalar `fma_f32`).
 pub(crate) fn q8w_rows_fma(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
     #[cfg(target_arch = "x86_64")]
     if simd_fma() {
@@ -170,6 +202,9 @@ pub(crate) fn q8w_rows_multi_fma(outs: &mut [&mut [f32]], m: &Q8Rows, xs: &[&[f3
 }
 
 // ---- AVX2 + FMA kernels ----
+// Every `mul_add` below sits in a function that enables the `fma` target feature, so it
+// is one `vfmadd` instruction and never the platform `fmaf`; the lines carry the
+// `libm-ok: vfmadd` marker for tests/libm_lint.rs, which bans `mul_add` anywhere else.
 
 /// hsum of the 8-lane body, then the sequential fma tail over `from..len`.
 #[cfg(target_arch = "x86_64")]
@@ -178,7 +213,7 @@ pub(crate) fn q8w_rows_multi_fma(outs: &mut [&mut [f32]], m: &Q8Rows, xs: &[&[f3
 unsafe fn finish_f32(acc: __m256, w: *const f32, x: *const f32, from: usize, len: usize) -> f32 {
     let mut s = hsum8_avx(acc);
     for c in from..len {
-        s = (*w.add(c)).mul_add(*x.add(c), s);
+        s = (*w.add(c)).mul_add(*x.add(c), s); // libm-ok: vfmadd
     }
     s
 }
@@ -297,7 +332,7 @@ unsafe fn group_dot4_fma(qp: *const i8, base: [usize; 4], vp: *const f32, len: u
     for c in chunks * 8..len {
         let vc = *vp.add(c);
         for k in 0..4 {
-            s[k] = (*qp.add(base[k] + c) as f32).mul_add(vc, s[k]);
+            s[k] = (*qp.add(base[k] + c) as f32).mul_add(vc, s[k]); // libm-ok: vfmadd
         }
     }
     s
@@ -316,7 +351,7 @@ unsafe fn group_dot1_fma(qp: *const i8, vp: *const f32, len: usize) -> f32 {
     }
     let mut s = hsum8_avx(acc);
     for c in chunks * 8..len {
-        s = (*qp.add(c) as f32).mul_add(*vp.add(c), s);
+        s = (*qp.add(c) as f32).mul_add(*vp.add(c), s); // libm-ok: vfmadd
     }
     s
 }
@@ -337,7 +372,7 @@ unsafe fn q8w_rows_fma_avx2(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
             let base = [r * cols + c0, (r + 1) * cols + c0, (r + 2) * cols + c0, (r + 3) * cols + c0];
             let d = group_dot4_fma(qp, base, vp.add(c0), group);
             for k in 0..4 {
-                sum[k] = d[k].mul_add(*m.scales.get_unchecked((r + k) * gpr + g), sum[k]);
+                sum[k] = d[k].mul_add(*m.scales.get_unchecked((r + k) * gpr + g), sum[k]); // libm-ok: vfmadd
             }
         }
         out[r..r + 4].copy_from_slice(&sum);
@@ -347,7 +382,7 @@ unsafe fn q8w_rows_fma_avx2(out: &mut [f32], m: &Q8Rows, v: &[f32]) {
         for g in 0..gpr {
             let c0 = g * group;
             let d = group_dot1_fma(qp.add(r * cols + c0), vp.add(c0), group);
-            sum = d.mul_add(*m.scales.get_unchecked(r * gpr + g), sum);
+            sum = d.mul_add(*m.scales.get_unchecked(r * gpr + g), sum); // libm-ok: vfmadd
         }
         out[r] = sum;
     }
@@ -399,9 +434,9 @@ unsafe fn q8w_rows_fused_fma_n<const S: usize>(outs: &mut [&mut [f32]], m: &Q8Ro
             for s in 0..S {
                 let mut d = hsum8_avx(acc[s]);
                 for c in chunks * 8..group {
-                    d = (*qrow.add(c) as f32).mul_add(*xp[s].add(c0 + c), d);
+                    d = (*qrow.add(c) as f32).mul_add(*xp[s].add(c0 + c), d); // libm-ok: vfmadd
                 }
-                sum[s] = d.mul_add(scale, sum[s]);
+                sum[s] = d.mul_add(scale, sum[s]); // libm-ok: vfmadd
             }
         }
         for s in 0..S {
@@ -491,6 +526,109 @@ mod tests {
         }
         // The sample really exercises the hard cases.
         assert!(subnormal_out > 1000 && cancel > 10_000, "subnormal={} cancel={}", subnormal_out, cancel);
+    }
+
+    // ---- R-104 F2: `fma_f32` (pure Rust) is a correctly rounded fusedMultiplyAdd ----
+
+    /// 2^e as f32 (normal range).
+    fn pow2(e: i32) -> f32 {
+        f32::from_bits(((e + 127) as u32) << 23)
+    }
+
+    /// Exact sums just below / just above an f32 rounding midpoint, the case where
+    /// rounding the f64 sum to f32 (double rounding) is wrong. The expected result follows
+    /// from the construction, so this runs on every architecture:
+    /// (1 + a)(1 - a) = 1 - a^2 with a = i * 2^-23, hence
+    ///   below: m + 1/2 - a^2/2      -> m      (the naive result is m + 1 for odd m)
+    ///   above: (m + 1) - 1/2 + a^2/2 -> m + 1  (the naive result is m for even m)
+    #[test]
+    fn soft_fma_rounds_once_next_to_a_midpoint() {
+        let mut rng = Rng(0x243f_6a88_85a3_08d3);
+        let (mut naive_wrong, mut cases) = (0usize, 0usize);
+        for n in 0..40_000 {
+            let i = (rng.next() % 255 + 1) as f32;
+            let alpha = i * pow2(-23);
+            let subnormal = n % 4 == 3;
+            // Normal results: m in [2^23, 2^24) scaled by 2^e. Subnormal results: m * 2^-149.
+            let e = (rng.next() % 201) as i32 - 100;
+            let m = if subnormal { rng.bits32() % (7 << 20) + (1 << 20) } else { rng.bits32() % (1 << 23) + (1 << 23) };
+            let value = |k: u32| if subnormal { f32::from_bits(k) } else { k as f32 * pow2(e) };
+            let (a, b) = if subnormal {
+                ((1.0 + alpha) * pow2(-75), (1.0 - alpha) * pow2(-75))
+            } else {
+                (1.0 + alpha, (1.0 - alpha) * pow2(e - 1))
+            };
+            for (a, c, expected) in [(a, value(m), value(m)), (-a, value(m + 1), value(m + 1))] {
+                let got = fma_f32(a, b, c);
+                assert_eq!(got.to_bits(), expected.to_bits(),
+                    "fma({:e}, {:e}, {:e}) = {:e}, expected {:e}", a, b, c, got, expected);
+                let naive = (a as f64 * b as f64 + c as f64) as f32;
+                naive_wrong += (naive.to_bits() != expected.to_bits()) as usize;
+                cases += 1;
+            }
+        }
+        // Half of the cases defeat double rounding (ties-to-even picks the wrong neighbour).
+        assert!(naive_wrong * 3 > cases, "fixture too easy: naive wrong in {} of {}", naive_wrong, cases);
+    }
+
+    #[test]
+    fn soft_fma_special_values_and_exact_cancellation() {
+        let bits = |x: f32| x.to_bits();
+        assert_eq!(bits(fma_f32(1.0, 1.0, -1.0)), bits(0.0));
+        assert_eq!(bits(fma_f32(0.0, 5.0, -0.0)), bits(0.0));
+        assert_eq!(bits(fma_f32(-0.0, 5.0, -0.0)), bits(-0.0));
+        assert_eq!(bits(fma_f32(3.0, 0.0, 7.5)), bits(7.5));
+        assert_eq!(fma_f32(f32::MAX, 2.0, 0.0), f32::INFINITY);
+        assert_eq!(fma_f32(f32::MAX, 2.0, -f32::MAX), f32::MAX);
+        assert_eq!(fma_f32(1e30, 1e30, f32::NEG_INFINITY), f32::NEG_INFINITY);
+        assert_eq!(fma_f32(f32::INFINITY, 2.0, 1.0), f32::INFINITY);
+        assert!(fma_f32(f32::INFINITY, 0.0, 1.0).is_nan());
+        assert!(fma_f32(f32::INFINITY, 1.0, f32::NEG_INFINITY).is_nan());
+        assert!(fma_f32(f32::NAN, 1.0, 1.0).is_nan());
+        // fma(a, b, -round(a*b)) is the rounding error of a*b: exact in f64, one rounding to f32.
+        let mut rng = Rng(0x1319_8a2e_0370_7344);
+        for _ in 0..100_000 {
+            let (a, b) = (rng.mixed(), rng.mixed());
+            let prod = a * b;
+            if !prod.is_finite() { continue; }
+            let expected = (a as f64 * b as f64 - prod as f64) as f32;
+            assert!(same(fma_f32(a, b, -prod), expected), "fma({:e}, {:e}, -{:e})", a, b, prod);
+        }
+    }
+
+    /// `fma_f32` against the hardware instruction on 4e6 triples (same hard regimes as the
+    /// `mul_add` check above: subnormals, +-0, extreme exponents, exact and near cancellation).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn soft_fma_matches_simd_fmadd_on_4e6_triples() {
+        if !simd_fma() {
+            eprintln!("SKIP: AVX2+FMA unavailable or REDUKT_NO_SIMD=1");
+            return;
+        }
+        let mut rng = Rng(0xa409_3822_299f_31d0);
+        let (mut a, mut b, mut c) = ([0.0f32; 8], [0.0f32; 8], [0.0f32; 8]);
+        let mut simd = [0.0f32; 8];
+        let mut slow_path = 0usize;
+        for i in 0..500_000 {
+            for l in 0..8 {
+                a[l] = rng.mixed();
+                b[l] = rng.mixed();
+                c[l] = match (i + l) % 4 {
+                    0 => -(a[l] * b[l]),
+                    1 => -(a[l] * b[l]) * (1.0 + f32::EPSILON),
+                    _ => rng.mixed(),
+                };
+            }
+            unsafe { fmadd8(&a, &b, &c, &mut simd) };
+            for l in 0..8 {
+                let s = fma_f32(a[l], b[l], c[l]);
+                assert!(same(s, simd[l]), "fma({:e}, {:e}, {:e}): soft {:e} (0x{:08x}) simd {:e} (0x{:08x})",
+                    a[l], b[l], c[l], s, s.to_bits(), simd[l], simd[l].to_bits());
+                let sum = a[l] as f64 * b[l] as f64 + c[l] as f64;
+                slow_path += (sum.is_finite() && sum.to_bits() & 0x0FFF_FFFF == 0) as usize;
+            }
+        }
+        assert!(slow_path > 10_000, "the sample must reach the boundary path ({})", slow_path);
     }
 
     #[test]

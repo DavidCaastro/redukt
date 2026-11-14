@@ -56,7 +56,7 @@ weights path
                   ├─ SafeTensorsFile::open()
                   ├─ Key detect: model.embeddings→HF, else BlinkDL
                   ├─ Embedding: get_tensor + LayerNorm pre-bake (V×D)
-                  ├─ QuantPolicy::auto_detect() bench F32/Q8/Q4 → selects Q8
+                  ├─ Quant policy: --quant, else fixed Q8 (Rwkv7Model::AUTO_QUANT; never timed)
                   ├─ Head: quantize_matrix(Q8)
                   └─ Layers: hf | blink loader × N (with transpose)
 ```

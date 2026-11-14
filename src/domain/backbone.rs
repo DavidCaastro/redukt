@@ -37,8 +37,9 @@ impl BackboneChoice {
         }
     }
 
-    /// Parse CLI string ("rwkv", "mamba", "mambabyte", "plugin", "auto").
-    /// Returns None for "auto" (caller decides).
+    /// Parse a backbone name ("rwkv", "mamba", "mambabyte", "plugin"), case-insensitive.
+    /// Returns None for anything else, "auto" included: callers that take user input
+    /// must use `from_cli`, which tells "auto" apart from a misspelled name.
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "rwkv" => Some(Self::Rwkv),
@@ -47,6 +48,18 @@ impl BackboneChoice {
             "plugin" => Some(Self::Plugin),
             _ => None,
         }
+    }
+
+    /// Parse a `--backbone` value. `Ok(None)` = "" / "auto" (the caller routes by
+    /// content); `Err` = unknown name, with the valid values. A misspelled name must
+    /// never fall back to the default route silently.
+    pub fn from_cli(s: &str) -> Result<Option<Self>, String> {
+        if s.is_empty() || s.eq_ignore_ascii_case("auto") {
+            return Ok(None);
+        }
+        Self::from_str_opt(s)
+            .map(Some)
+            .ok_or_else(|| format!("{} (valid values: rwkv, mamba, mambabyte, plugin, auto)", s))
     }
 }
 

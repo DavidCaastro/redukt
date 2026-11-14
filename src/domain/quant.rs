@@ -1,22 +1,19 @@
-//! Quantization module — reusable, empirically auto-selecting.
+//! Quantization module.
 //!
 //! Provides a unified `QuantMatrix` enum that wraps f32, Q8, and Q4 weight
-//! matrices behind a single interface. At load time, benchmarks ALL available
-//! quantization levels on the actual data and picks the best balance of
-//! quality, speed, and memory.
+//! matrices behind a single interface.
 //!
-//! Supports two quantization policies:
-//! - `Uniform(level)`: same level for all matrices (fast, good for small models)
-//! - `PerMatrix`: each matrix independently benchmarked and auto-selected
+//! Quantization policies:
+//! - `Uniform(level)`: same level for all matrices. The only policy the codec
+//!   uses: the level comes from `--quant` or from the fixed default
+//!   (`Rwkv7Model::AUTO_QUANT`), never from a measurement.
+//! - `PerMatrix`: each matrix benchmarks every level (`select_best`: quality
+//!   gate, then a wall-clock score) and keeps the best one. Experimental and not
+//!   reachable from the CLI: its result depends on timing, and the level is not
+//!   recorded in the AZTH header, so it must never feed a coded stream.
 //!
 //! Usage:
-//!   // Uniform: benchmark once, apply everywhere
-//!   let (policy, results) = QuantPolicy::auto_detect(&sample_matrix);
-//!   let qm = quantize_matrix(&tensor, &policy);
-//!
-//!   // Per-matrix: each matrix finds its own optimal level
-//!   let policy = QuantPolicy::PerMatrix;
-//!   let qm = quantize_matrix(&tensor, &policy);
+//!   let qm = quantize_matrix(&tensor, &QuantPolicy::Uniform(QuantLevel::Q8));
 
 use crate::domain::tensor::*;
 
@@ -417,15 +414,6 @@ pub enum QuantPolicy {
     PerMatrix,
 }
 
-impl QuantPolicy {
-    /// Auto-detect the best uniform policy by benchmarking a sample matrix.
-    /// Returns the policy and benchmark results for reporting.
-    pub fn auto_detect(sample_matrix: &Tensor) -> (Self, Vec<BenchResult>) {
-        let (level, results) = select_best(sample_matrix);
-        (QuantPolicy::Uniform(level), results)
-    }
-}
-
 /// Quantize a matrix according to the given policy.
 /// Returns the quantized matrix and the level that was selected.
 pub fn quantize_matrix(tensor: &Tensor, policy: &QuantPolicy) -> (QuantMatrix, QuantLevel) {
@@ -474,6 +462,10 @@ impl std::fmt::Display for BenchResult {
 ///
 /// Score = speed_factor * memory_factor (higher is better, only among passing levels).
 /// Returns the best level and all benchmark results for reporting.
+///
+/// The score is wall-clock time, so the winner can change between machines, builds and
+/// runs (on RWKV-7 0.1B all three levels pass the quality gate). Never use the result on a
+/// codec path: the level is not recorded in the AZTH header (`Rwkv7Model::AUTO_QUANT`).
 pub fn select_best(sample_matrix: &Tensor) -> (QuantLevel, Vec<BenchResult>) {
     let cols = sample_matrix.shape[1];
     let test_vec = make_test_vector(sample_matrix, cols);

@@ -235,8 +235,17 @@ impl Scratch {
 }
 
 impl Rwkv7Model {
-    /// Load model from a SafeTensors file with optional quantization override.
-    /// Expects HuggingFace-format keys (model.layers.N.att.xxx).
+    /// Quantization that `--quant auto` (or no `--quant`) selects for SafeTensors weights.
+    /// A constant, like `model_loader::AUTO_MAMBA_PROFILE`: the level changes the logits,
+    /// hence the coded stream, and the AZTH header does not record it for RWKV. Until
+    /// 2026-11-12 "auto" timed F32/Q8/Q4 at load and kept the best score, so the same input
+    /// could compress to different bytes on another machine and a decoder could pick a level
+    /// the encoder did not use. Q8 is what that benchmark selected on the reference machines,
+    /// so archives written with the old default decode unchanged.
+    pub const AUTO_QUANT: QuantLevel = QuantLevel::Q8;
+
+    /// Load model from a SafeTensors file with optional quantization override
+    /// (`None` = `AUTO_QUANT`). Expects HuggingFace-format keys (model.layers.N.att.xxx).
     pub fn load(path: &Path, config: Rwkv7Config, quant_override: Option<QuantPolicy>) -> Self {
         eprintln!("[rwkv7] loading weights from {} ...", path.display());
         let st = SafeTensorsFile::open(path)
@@ -285,27 +294,15 @@ impl Rwkv7Model {
             ln_out_b = st.get_tensor("ln_out.bias");
         }
 
-        // Determine quantization policy: use override if provided, else auto-detect
-        let policy = if let Some(override_policy) = quant_override {
-            let policy_name = match &override_policy {
-                QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
-                QuantPolicy::PerMatrix => "PerMatrix".to_string(),
-            };
-            eprintln!("[rwkv7] quantization: {} (forced)", policy_name);
-            override_policy
-        } else {
-            eprintln!("[rwkv7] benchmarking quantization levels ...");
-            let (policy, bench_results) = QuantPolicy::auto_detect(&head_w_f32);
-            for r in &bench_results {
-                eprintln!("[rwkv7]   {}", r);
-            }
-            let policy_name = match &policy {
-                QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
-                QuantPolicy::PerMatrix => "PerMatrix".to_string(),
-            };
-            eprintln!("[rwkv7] policy: {}", policy_name);
-            policy
+        // Quantization policy: the explicit `--quant`, else the fixed default. Never a
+        // load-time benchmark: the level changes the logits and is not in the AZTH header.
+        let source = if quant_override.is_some() { "forced" } else { "auto: fixed default, not timed" };
+        let policy = quant_override.unwrap_or(QuantPolicy::Uniform(Self::AUTO_QUANT));
+        let policy_name = match &policy {
+            QuantPolicy::Uniform(l) => format!("Uniform({})", l.name()),
+            QuantPolicy::PerMatrix => "PerMatrix".to_string(),
         };
+        eprintln!("[rwkv7] quantization: {} ({})", policy_name, source);
 
         // Head goes through the same policy
         let (head_w, _) = quantize_matrix(&head_w_f32, &policy);

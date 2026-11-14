@@ -7,6 +7,11 @@
 //! the AZTH header). This test keeps it that way: it scans the non-test source and fails on any
 //! new libm call outside the audited exceptions below.
 //!
+//! `mul_add` is banned too (R-104 F2): it is one `vfmadd` instruction only inside a function that
+//! enables the `fma` target feature; anywhere else a build without FMA lowers it to the platform
+//! `fmaf`. Portable code uses `gemv_fma::fma_f32` (pure Rust); the AVX2+FMA kernels mark their
+//! lines `libm-ok: vfmadd`.
+//!
 //! Allowed without a marker:
 //! - `.sqrt(` — IEEE 754 requires correct rounding, so it is identical everywhere.
 //! - `contract.exp(` / `contract.ln(` — the `NumericContract` dispatch (fmath, or libm only when
@@ -19,10 +24,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Methods that resolve to the platform libm (or, for `powi`, to an unspecified-precision intrinsic).
+/// Methods that resolve to the platform libm (or, for `powi`, to an unspecified-precision intrinsic;
+/// for `mul_add`, to `fmaf` whenever the enclosing function does not enable the `fma` target feature).
 const BANNED: &[&str] = &[
     "exp", "exp2", "exp_m1", "ln", "ln_1p", "log", "log2", "log10", "powf", "powi", "cbrt", "hypot",
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "mul_add",
 ];
 
 /// Files outside the coded-stream path (path suffix, reason).
@@ -128,6 +135,9 @@ fn lint_detects_what_it_must() {
     assert!(violations("let s = (var + eps).sqrt();").is_empty());
     assert!(violations("// x.exp() in a comment").is_empty());
     assert!(violations("let y = fmath::exp_f64(x);").is_empty());
+    assert_eq!(violations("acc = w.mul_add(x, acc);"), vec!["mul_add"]);
+    assert_eq!(violations("let y = f32::mul_add(a, b, c);"), vec!["mul_add"]);
+    assert!(violations("acc = fma_f32(w, x, acc);").is_empty());
 }
 
 #[test]

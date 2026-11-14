@@ -860,6 +860,42 @@ pub fn portable_softplus(x: f32) -> f32 {
     if x > 20.0 { x } else { portable_lnf(1.0 + portable_expf(x)) }
 }
 
+// ---- Scalar twins of the AVX2 lanes (R-104 F2) ----
+// The AVX2 kernels below process the first `len / 8 * 8` elements of a slice in 8-wide
+// lanes (`fast_exp_ps` and friends) and the remaining `len % 8` with the `portable_*`
+// functions. The scalar tier makes the same split with these lane functions, so both
+// tiers produce the same bits for every input, NaN included.
+
+/// Lower clamp of `fast_exp_ps` (`exp_lo`): what a NaN lane becomes, because
+/// `_mm256_max_ps(x, exp_lo)` returns its second operand when `x` is NaN.
+const SIMD_EXP_LO: f32 = -87.3365447505531;
+
+/// exp(x) exactly as one lane of `fast_exp_ps` computes it. Equal to `portable_expf`
+/// for every non-NaN input (same clamp, same polynomial); a NaN lane is clamped to
+/// `SIMD_EXP_LO` instead of propagating.
+#[inline]
+fn lane_expf(x: f32) -> f32 {
+    portable_expf(if x.is_nan() { SIMD_EXP_LO } else { x })
+}
+
+/// One lane of `fast_sigmoid_ps`: 1 / (1 + exp(0 - x)).
+#[inline]
+fn lane_sigmoidf(x: f32) -> f32 {
+    1.0 / (1.0 + lane_expf(0.0 - x))
+}
+
+/// One lane of `fast_tanh_ps`: sigmoid(x * 2) * 2 - 1.
+#[inline]
+fn lane_tanhf(x: f32) -> f32 {
+    lane_sigmoidf(x * 2.0) * 2.0 - 1.0
+}
+
+/// Elements of an `n`-long slice that the AVX2 kernels process in 8-wide lanes.
+#[inline]
+fn simd_body_len(n: usize) -> usize {
+    n / 8 * 8
+}
+
 /// RMSNorm in-place: x[i] = x[i] / sqrt(mean(x²) + eps) * weight[i].
 pub fn rms_norm_into(x: &mut [f32], weight: &[f32], eps: f32) {
     let n = x.len();
@@ -974,7 +1010,14 @@ pub fn tanh_inplace(x: &mut [f32]) {
         unsafe { tanh_inplace_avx2(x) };
         return;
     }
-    for v in x.iter_mut() { *v = portable_tanhf(*v); }
+    tanh_inplace_scalar(x);
+}
+
+/// Scalar twin of `tanh_inplace_avx2`: lane function on the 8-aligned body, portable tail.
+fn tanh_inplace_scalar(x: &mut [f32]) {
+    let body = simd_body_len(x.len());
+    for v in x[..body].iter_mut() { *v = lane_tanhf(*v); }
+    for v in x[body..].iter_mut() { *v = portable_tanhf(*v); }
 }
 
 pub fn sigmoid_inplace(x: &mut [f32]) {
@@ -983,7 +1026,14 @@ pub fn sigmoid_inplace(x: &mut [f32]) {
         unsafe { sigmoid_inplace_avx2(x) };
         return;
     }
-    for v in x.iter_mut() { *v = portable_sigmoidf(*v); }
+    sigmoid_inplace_scalar(x);
+}
+
+/// Scalar twin of `sigmoid_inplace_avx2`.
+fn sigmoid_inplace_scalar(x: &mut [f32]) {
+    let body = simd_body_len(x.len());
+    for v in x[..body].iter_mut() { *v = lane_sigmoidf(*v); }
+    for v in x[body..].iter_mut() { *v = portable_sigmoidf(*v); }
 }
 
 /// out[i] = sigmoid(base[i] + offset[i]). Used by model Steps 4, 8.
@@ -993,7 +1043,16 @@ pub fn sigmoid_add_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
         unsafe { sigmoid_add_into_avx2(out, base, offset) };
         return;
     }
-    for i in 0..out.len() {
+    sigmoid_add_into_scalar(out, base, offset);
+}
+
+/// Scalar twin of `sigmoid_add_into_avx2`.
+fn sigmoid_add_into_scalar(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    let body = simd_body_len(out.len());
+    for i in 0..body {
+        out[i] = lane_sigmoidf(base[i] + offset[i]);
+    }
+    for i in body..out.len() {
         out[i] = portable_sigmoidf(base[i] + offset[i]);
     }
 }
@@ -1026,7 +1085,16 @@ pub fn decay_sigmoid_into(out: &mut [f32], base: &[f32], offset: &[f32]) {
         unsafe { decay_sigmoid_into_avx2(out, base, offset) };
         return;
     }
-    for i in 0..out.len() {
+    decay_sigmoid_into_scalar(out, base, offset);
+}
+
+/// Scalar twin of `decay_sigmoid_into_avx2`.
+fn decay_sigmoid_into_scalar(out: &mut [f32], base: &[f32], offset: &[f32]) {
+    let body = simd_body_len(out.len());
+    for i in 0..body {
+        out[i] = lane_expf(-0.606531f32 * lane_sigmoidf(base[i] + offset[i]));
+    }
+    for i in body..out.len() {
         let val = base[i] + offset[i];
         out[i] = portable_expf(-0.606531f32 * portable_sigmoidf(val));
     }
@@ -1065,8 +1133,17 @@ pub fn sigmoid_mix_inplace(
         unsafe { sigmoid_mix_inplace_avx2(v_out, v_first, base, offset) };
         return;
     }
+    sigmoid_mix_inplace_scalar(v_out, v_first, base, offset);
+}
+
+/// Scalar twin of `sigmoid_mix_inplace_avx2`.
+fn sigmoid_mix_inplace_scalar(
+    v_out: &mut [f32], v_first: &[f32], base: &[f32], offset: &[f32],
+) {
+    let body = simd_body_len(v_out.len());
     for i in 0..v_out.len() {
-        let mix = portable_sigmoidf(base[i] + offset[i]);
+        let x = base[i] + offset[i];
+        let mix = if i < body { lane_sigmoidf(x) } else { portable_sigmoidf(x) };
         v_out[i] += (v_first[i] - v_out[i]) * mix;
     }
 }
@@ -1123,7 +1200,14 @@ pub fn silu_inplace(buf: &mut [f32]) {
         unsafe { silu_inplace_avx2(buf) };
         return;
     }
-    for v in buf.iter_mut() { *v = portable_silu(*v); }
+    silu_inplace_scalar(buf);
+}
+
+/// Scalar twin of `silu_inplace_avx2`: x * sigmoid-lane(x) on the body, portable tail.
+fn silu_inplace_scalar(buf: &mut [f32]) {
+    let body = simd_body_len(buf.len());
+    for v in buf[..body].iter_mut() { *v *= lane_sigmoidf(*v); }
+    for v in buf[body..].iter_mut() { *v = portable_silu(*v); }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1148,7 +1232,14 @@ pub fn gated_silu_mul(out: &mut [f32], y_buf: &[f32], z: &[f32]) {
         unsafe { gated_silu_mul_avx2(out, y_buf, z) };
         return;
     }
-    for i in 0..out.len() { out[i] = y_buf[i] * portable_silu(z[i]); }
+    gated_silu_mul_scalar(out, y_buf, z);
+}
+
+/// Scalar twin of `gated_silu_mul_avx2`: y * (z * sigmoid-lane(z)) on the body, portable tail.
+fn gated_silu_mul_scalar(out: &mut [f32], y_buf: &[f32], z: &[f32]) {
+    let body = simd_body_len(out.len());
+    for i in 0..body { out[i] = y_buf[i] * (z[i] * lane_sigmoidf(z[i])); }
+    for i in body..out.len() { out[i] = y_buf[i] * portable_silu(z[i]); }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1191,33 +1282,45 @@ pub fn ssm_recurrence_d16(
 /// State is unchanged (da≈1, dt*x*b≈0), saving exp() calls.
 const DT_SPARSE_EPS: f32 = 1e-6;
 
+/// Horizontal sum of 8 lanes in the exact order of `hsum_avx2`:
+/// ((l0+l4)+(l1+l5)) + ((l2+l6)+(l3+l7)).
+#[inline]
+fn hsum_ssm_scalar(a: &[f32; 8]) -> f32 {
+    let s0 = a[0] + a[4];
+    let s1 = a[1] + a[5];
+    let s2 = a[2] + a[6];
+    let s3 = a[3] + a[7];
+    (s0 + s1) + (s2 + s3)
+}
+
+/// Scalar SSM step in the operation order of `ssm_recurrence_d16_avx2` (R-104 F2), so
+/// both tiers give the same state and the same `y`: per channel the 16 state elements
+/// are two 8-lane halves, every `exp` is a `fast_exp_ps` lane (`lane_expf`), the decay
+/// argument is `0 - dt * exp(a_log)`, and `y` reduces `lo[l]*c[l] + hi[l]*c[l+8]` over
+/// the 8 lanes with the `hsum_avx2` tree before adding `d * x`.
 fn ssm_recurrence_d16_scalar(
     y_out: &mut [f32], ss: &mut [f32], dt: &[f32], conv_out: &[f32],
     a_log: &[f32], b: &[f32], c: &[f32], d_vec: &[f32], d_inner: usize,
 ) {
     for j in 0..d_inner {
-        let dt_j = dt[j];
-        let x_j = conv_out[j];
-
-        if dt_j.abs() < DT_SPARSE_EPS {
-            // R-057: dt ≈ 0 → state unchanged, just compute output from existing state
-            let base = j * 16;
-            let mut y_val = 0.0f32;
+        let base = j * 16;
+        let st = &mut ss[base..base + 16];
+        // R-057: |dt| < eps leaves the state untouched (same test as the AVX2 kernel,
+        // so a NaN dt takes the update path on both tiers).
+        let skip = dt[j].abs() < DT_SPARSE_EPS;
+        if !skip {
+            let dtx = dt[j] * conv_out[j];
             for n in 0..16 {
-                y_val += ss[base + n] * c[n];
+                let a = lane_expf(a_log[base + n]);
+                let da = lane_expf(0.0 - dt[j] * a);
+                st[n] = da * st[n] + dtx * b[n];
             }
-            y_out[j] = y_val + d_vec[j] * x_j;
-        } else {
-            let mut y_val = 0.0f32;
-            for n in 0..16 {
-                let a_val = -portable_expf(a_log[j * 16 + n]);
-                let da = portable_expf(dt_j * a_val);
-                let idx = j * 16 + n;
-                ss[idx] = da * ss[idx] + dt_j * x_j * b[n];
-                y_val += ss[idx] * c[n];
-            }
-            y_out[j] = y_val + d_vec[j] * x_j;
         }
+        let mut lanes = [0.0f32; 8];
+        for l in 0..8 {
+            lanes[l] = st[l] * c[l] + st[l + 8] * c[l + 8];
+        }
+        y_out[j] = hsum_ssm_scalar(&lanes) + d_vec[j] * conv_out[j];
     }
 }
 
@@ -1321,9 +1424,9 @@ pub fn l2_normalize_per_head_inplace(x: &mut [f32], num_heads: usize, head_size:
 }
 
 /// AVX2 kernel for f32 mat-vec WITHOUT FMA: vmulps + vaddps, 8-wide, 4-row ILP.
-/// Separate mul+add matches scalar per-element rounding, but accumulation order
-/// differs (8 parallel lanes vs sequential) — NOT bit-exact with scalar but
-/// much closer than FMA. Deterministic across runs on same SIMD tier.
+/// Per row: 8 lanes (lane `l` = columns `c ≡ l mod 8`), `hsum_f32_avx`, sequential
+/// tail. This order is the numeric reference of contracts 0/1; the scalar kernel
+/// (`mat_vec_mul_scalar_raw`) reproduces it bit for bit (R-104 F2).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn mat_vec_mul_avx2_nofma_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
@@ -1493,10 +1596,9 @@ fn parallel_matmul_threads() -> usize {
 /// f32 mat-vec into pre-allocated output: out = mat @ vec.
 /// Dispatches: AVX2 (no FMA) > scalar.
 /// For large matrices (rows > 4096), splits rows across threads (R-054).
-/// AVX2 uses vmulps+vaddps (no fmadd) — per-element rounding matches scalar,
-/// but accumulation order differs (8-lane parallel vs sequential).
-/// Deterministic on same SIMD tier; cross-tier may differ slightly.
-/// Set REDUKT_NO_SIMD=1 to force scalar (cross-path roundtrip testing).
+/// AVX2 uses vmulps+vaddps (no fmadd); the scalar kernel follows the same
+/// per-row operation order, so both tiers give identical bits (R-104 F2).
+/// Set REDUKT_NO_SIMD=1 to force scalar (cross-tier roundtrip testing).
 pub fn mat_vec_mul_into(out: &mut [f32], mat: &Tensor, vec: &[f32]) {
     let rows = mat.shape[0];
     let num_threads = parallel_matmul_threads();
@@ -1558,29 +1660,47 @@ fn mat_vec_mul_parallel_into(
     });
 }
 
-/// Scalar f32 mat-vec on raw slice: 4-row ILP. Used by parallel dispatch.
+/// Horizontal sum of 8 lanes in the exact order of `hsum_f32_avx`:
+/// ((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7)).
+#[inline]
+fn hsum_f32_scalar(a: &[f32; 8]) -> f32 {
+    let s0 = a[0] + a[4];
+    let s1 = a[1] + a[5];
+    let s2 = a[2] + a[6];
+    let s3 = a[3] + a[7];
+    (s0 + s2) + (s1 + s3)
+}
+
+/// One GEMV row in the operation order of the AVX2 no-FMA kernels
+/// (`mat_vec_mul_avx2_nofma_raw` / `mat_vec_mul_avx2_nofma_into`), R-104 F2:
+/// 8 lanes, lane `l` accumulating the columns `c ≡ l (mod 8)` of the 8-aligned
+/// body from +0 with one multiply and one add per element, the `hsum_f32_avx`
+/// reduction, then the remaining `cols % 8` columns added sequentially.
+#[inline]
+fn dot_avx2_order(w: &[f32], v: &[f32]) -> f32 {
+    let body = w.len() / 8 * 8;
+    let mut acc = [0.0f32; 8];
+    for (wc, vc) in w[..body].chunks_exact(8).zip(v[..body].chunks_exact(8)) {
+        for l in 0..8 {
+            acc[l] += wc[l] * vc[l];
+        }
+    }
+    let mut s = hsum_f32_scalar(&acc);
+    for c in body..w.len() {
+        s += w[c] * v[c];
+    }
+    s
+}
+
+/// Scalar f32 mat-vec on raw slices. Every row follows the AVX2 kernel's
+/// operation order (`dot_avx2_order`), so the scalar tier and the AVX2 tier
+/// produce the same bits (R-104 F2; unit-tested against the AVX2 kernels).
 pub(crate) fn mat_vec_mul_scalar_raw(
     out: &mut [f32], m: &[f32], v: &[f32], rows: usize, cols: usize,
 ) {
-    let rows_4 = rows / 4 * 4;
-    for r in (0..rows_4).step_by(4) {
-        let row0 = &m[r * cols..(r + 1) * cols];
-        let row1 = &m[(r + 1) * cols..(r + 2) * cols];
-        let row2 = &m[(r + 2) * cols..(r + 3) * cols];
-        let row3 = &m[(r + 3) * cols..(r + 4) * cols];
-        let (mut s0, mut s1, mut s2, mut s3) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for c in 0..cols {
-            let vc = v[c];
-            s0 += row0[c] * vc; s1 += row1[c] * vc;
-            s2 += row2[c] * vc; s3 += row3[c] * vc;
-        }
-        out[r] = s0; out[r + 1] = s1; out[r + 2] = s2; out[r + 3] = s3;
-    }
-    for r in rows_4..rows {
-        let row = &m[r * cols..(r + 1) * cols];
-        let mut sum = 0.0f32;
-        for c in 0..cols { sum += row[c] * v[c]; }
-        out[r] = sum;
+    let v = &v[..cols];
+    for (r, o) in out[..rows].iter_mut().enumerate() {
+        *o = dot_avx2_order(&m[r * cols..(r + 1) * cols], v);
     }
 }
 
@@ -2805,6 +2925,270 @@ mod tests {
             let tol = if expected.abs() > 1.0 { expected.abs() * 1e-6 } else { 1e-6 };
             assert!(abs_err < tol, "portable_lnf({}) = {}, expected {}, err {:e}",
                 x, got, expected, abs_err);
+        }
+    }
+
+    // ---- R-104 F2: the scalar tier reproduces the AVX2 tier bit for bit ----
+    // Oracle = the AVX2 kernels (the reference: every existing archive was written with them).
+
+    /// xorshift32 stream for the F2 tests that compare against the AVX2 kernels.
+    #[cfg(target_arch = "x86_64")]
+    struct F2Rng(u32);
+
+    #[cfg(target_arch = "x86_64")]
+    impl F2Rng {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0
+        }
+
+        /// Uniform in [-amp, amp).
+        fn uniform(&mut self, amp: f32) -> f32 {
+            ((self.next() as f32 / u32::MAX as f32) * 2.0 - 1.0) * amp
+        }
+
+        /// Activation-like values mixed with NaN, +-inf, +-0, subnormals and raw bit patterns.
+        fn hard(&mut self) -> f32 {
+            let b = self.next();
+            match self.next() % 16 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => f32::NEG_INFINITY,
+                3 => 0.0,
+                4 => -0.0,
+                5 => f32::from_bits(b & 0x807f_ffff),
+                6 | 7 => f32::from_bits(b),
+                8 | 9 => self.uniform(100.0),
+                _ => self.uniform(8.0),
+            }
+        }
+
+        fn uniform_vec(&mut self, n: usize, amp: f32) -> Vec<f32> {
+            (0..n).map(|_| self.uniform(amp)).collect()
+        }
+
+        fn hard_vec(&mut self, n: usize) -> Vec<f32> {
+            (0..n).map(|_| self.hard()).collect()
+        }
+    }
+
+    /// Same bits, or both NaN (a NaN payload never reaches the coded stream).
+    #[cfg(target_arch = "x86_64")]
+    fn assert_same_bits(scalar: &[f32], avx2: &[f32], what: &str) {
+        assert_eq!(scalar.len(), avx2.len(), "{}", what);
+        for i in 0..scalar.len() {
+            let (s, a) = (scalar[i], avx2[i]);
+            assert!(s.to_bits() == a.to_bits() || (s.is_nan() && a.is_nan()),
+                "{} [{}]: scalar {:e} (0x{:08x}) vs avx2 {:e} (0x{:08x})", what, i, s, s.to_bits(), a, a.to_bits());
+        }
+    }
+
+    /// The scalar GEMV order is the documented AVX2 order, not a sequential sum. Runs on
+    /// every architecture: the expected value follows from the order alone.
+    #[test]
+    fn f2_scalar_gemv_follows_the_avx2_order() {
+        // 8-lane body: lanes [1e8, 1, -1e8, 1, 1, 1, 1, 1] (v = 1), then a 3-column tail.
+        // AVX2 order: s0 = 1e8 + 1 = 1e8, s2 = -1e8 + 1 = -1e8, s1 = s3 = 2,
+        // (s0 + s2) + (s1 + s3) = 4, tail 4 + 0.5 + 0.25 + 0.125 = 4.875.
+        // A sequential sum gives ((1e8 + 1) - 1e8) + 5 + 0.875 = 5.875.
+        let w = [1e8f32, 1.0, -1e8, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.25, 0.125];
+        let v = [1.0f32; 11];
+        let mut out = [f32::NAN; 1];
+        mat_vec_mul_scalar_raw(&mut out, &w, &v, 1, 11);
+        assert_eq!(out[0], 4.875);
+        let sequential = w.iter().zip(&v).fold(0.0f32, |s, (a, b)| s + a * b);
+        assert_eq!(sequential, 5.875, "the fixture must separate the two orders");
+    }
+
+    /// The scalar SSM `y` reduction is the `hsum_avx2` tree, which differs from the GEMV tree.
+    #[test]
+    fn f2_scalar_ssm_follows_the_avx2_order() {
+        // dt = 0 -> state untouched; c = 1; state lanes [1e8, 1, -1e8, 1, 1, 1, 1, 1 | 0 x 8].
+        // hsum_avx2: s0 = 1e8 + 1 = 1e8, s1 = 2, s2 = -1e8 + 1 = -1e8, s3 = 2,
+        // (s0 + s1) + (s2 + s3) = 1e8 + (-1e8) = 0. The GEMV tree would give 4, a sequential sum 5.
+        let mut ss = [0.0f32; 16];
+        ss[..8].copy_from_slice(&[1e8, 1.0, -1e8, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        let before = ss;
+        let (c, b, a_log) = ([1.0f32; 16], [0.5f32; 16], [0.1f32; 16]);
+        let mut y = [f32::NAN; 1];
+        ssm_recurrence_d16_scalar(&mut y, &mut ss, &[0.0], &[3.0], &a_log, &b, &c, &[0.25], 1);
+        assert_eq!(y[0], 0.75, "y = hsum (0) + d * x (0.25 * 3)");
+        assert_eq!(ss, before, "dt below the sparse threshold must not touch the state");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_f32_gemv_scalar_bit_identical_to_avx2() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0x9e37_79b9);
+        let shapes = [(384usize, 768usize), (80, 1536), (1536, 48), (1003, 771), (37, 13), (9, 5), (1, 7),
+                      (5, 8), (66, 200), (4, 1), (3, 0)];
+        for (rows, cols) in shapes {
+            for hard in [false, true] {
+                let m = if hard { rng.hard_vec(rows * cols) } else { rng.uniform_vec(rows * cols, 1.0) };
+                let v = if hard { rng.hard_vec(cols) } else { rng.uniform_vec(cols, 40.0) };
+                let mut scalar = vec![f32::NAN; rows];
+                mat_vec_mul_scalar_raw(&mut scalar, &m, &v, rows, cols);
+                let mut raw = vec![f32::NAN; rows];
+                unsafe { mat_vec_mul_avx2_nofma_raw(&mut raw, &m, &v, rows, cols) };
+                let what = format!("gemv {}x{} hard={}", rows, cols, hard);
+                assert_same_bits(&scalar, &raw, &what);
+                let mat = Tensor::from_data(m, vec![rows, cols]);
+                let mut into = vec![f32::NAN; rows];
+                unsafe { mat_vec_mul_avx2_nofma_into(&mut into, &mat, &v) };
+                assert_same_bits(&scalar, &into, &what);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_ssm_scalar_bit_identical_to_avx2() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0x1234_5678);
+        let d_inner = 37;
+        for hard in [false, true] {
+            let a_log = if hard { rng.hard_vec(d_inner * 16) } else { rng.uniform_vec(d_inner * 16, 3.0) };
+            let d_vec = rng.uniform_vec(d_inner, 1.0);
+            let mut ss_scalar = rng.uniform_vec(d_inner * 16, 2.0);
+            let mut ss_avx2 = ss_scalar.clone();
+            for step in 0..4 {
+                let (b, c) = (rng.uniform_vec(16, 1.0), rng.uniform_vec(16, 1.0));
+                let mut dt = if hard { rng.hard_vec(d_inner) } else { rng.uniform_vec(d_inner, 2.0) };
+                let conv = if hard { rng.hard_vec(d_inner) } else { rng.uniform_vec(d_inner, 4.0) };
+                // Sparse branch (|dt| < 1e-6) on some channels, both signs.
+                dt[step] = 1e-7;
+                dt[step + 8] = -3e-7;
+                dt[step + 16] = 0.0;
+                let (mut y_scalar, mut y_avx2) = (vec![f32::NAN; d_inner], vec![f32::NAN; d_inner]);
+                ssm_recurrence_d16_scalar(
+                    &mut y_scalar, &mut ss_scalar, &dt, &conv, &a_log, &b, &c, &d_vec, d_inner,
+                );
+                unsafe {
+                    ssm_recurrence_d16_avx2(&mut y_avx2, &mut ss_avx2, &dt, &conv, &a_log, &b, &c, &d_vec, d_inner);
+                }
+                let what = format!("ssm hard={} step={}", hard, step);
+                assert_same_bits(&y_scalar, &y_avx2, &what);
+                assert_same_bits(&ss_scalar, &ss_avx2, &what);
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_elementwise_scalar_bit_identical_to_avx2() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0xdead_beef);
+        for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 64, 100, 1539] {
+            for round in 0..4 {
+                let hard = round % 2 == 1;
+                let make = |rng: &mut F2Rng| if hard { rng.hard_vec(n) } else { rng.uniform_vec(n, 12.0) };
+                let (x, base, offset, first) = (make(&mut rng), make(&mut rng), make(&mut rng), make(&mut rng));
+                let what = |op: &str| format!("{} n={} hard={}", op, n, hard);
+
+                let (mut s, mut a) = (x.clone(), x.clone());
+                tanh_inplace_scalar(&mut s);
+                unsafe { tanh_inplace_avx2(&mut a) };
+                assert_same_bits(&s, &a, &what("tanh"));
+
+                let (mut s, mut a) = (x.clone(), x.clone());
+                sigmoid_inplace_scalar(&mut s);
+                unsafe { sigmoid_inplace_avx2(&mut a) };
+                assert_same_bits(&s, &a, &what("sigmoid"));
+
+                let (mut s, mut a) = (x.clone(), x.clone());
+                silu_inplace_scalar(&mut s);
+                unsafe { silu_inplace_avx2(&mut a) };
+                assert_same_bits(&s, &a, &what("silu"));
+
+                let (mut s, mut a) = (vec![f32::NAN; n], vec![f32::NAN; n]);
+                sigmoid_add_into_scalar(&mut s, &base, &offset);
+                unsafe { sigmoid_add_into_avx2(&mut a, &base, &offset) };
+                assert_same_bits(&s, &a, &what("sigmoid_add"));
+
+                decay_sigmoid_into_scalar(&mut s, &base, &offset);
+                unsafe { decay_sigmoid_into_avx2(&mut a, &base, &offset) };
+                assert_same_bits(&s, &a, &what("decay_sigmoid"));
+
+                gated_silu_mul_scalar(&mut s, &base, &x);
+                unsafe { gated_silu_mul_avx2(&mut a, &base, &x) };
+                assert_same_bits(&s, &a, &what("gated_silu_mul"));
+
+                let (mut s, mut a) = (x.clone(), x.clone());
+                sigmoid_mix_inplace_scalar(&mut s, &first, &base, &offset);
+                unsafe { sigmoid_mix_inplace_avx2(&mut a, &first, &base, &offset) };
+                assert_same_bits(&s, &a, &what("sigmoid_mix"));
+            }
+        }
+    }
+
+    /// The lane functions equal the portable ones on every non-NaN input and clamp NaN the
+    /// way `_mm256_max_ps` does; `fast_exp_ps` itself is the oracle.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_lane_exp_matches_fast_exp_ps_on_every_bit_class() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0x0bad_cafe);
+        let mut nan_lanes = 0usize;
+        for _ in 0..20_000 {
+            let x: Vec<f32> = (0..8).map(|_| rng.hard()).collect();
+            let mut simd = [0.0f32; 8];
+            unsafe { _mm256_storeu_ps(simd.as_mut_ptr(), fast_exp_ps(_mm256_loadu_ps(x.as_ptr()))) };
+            let lane: Vec<f32> = x.iter().map(|&v| lane_expf(v)).collect();
+            assert_same_bits(&lane, &simd, "lane_expf");
+            for (i, &v) in x.iter().enumerate() {
+                nan_lanes += v.is_nan() as usize;
+                assert!(v.is_nan() || lane[i].to_bits() == portable_expf(v).to_bits(), "portable_expf({:e})", v);
+                assert!(!simd[i].is_nan(), "fast_exp_ps never returns NaN (input {:e})", v);
+            }
+        }
+        assert!(nan_lanes > 1000, "the sample must exercise NaN lanes ({})", nan_lanes);
+    }
+
+    /// RWKV W8A8 (integer accumulation): AVX2 / AVX-VNNI / scalar agree bit for bit on
+    /// shapes with row and column remainders.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_q8_w8a8_scalar_bit_identical_to_simd() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0x5151_5151);
+        for (rows, cols) in [(37usize, 100usize), (64, 768), (5, 96), (9, 31), (130, 3072)] {
+            let mat = Q8Tensor::from_f32(&Tensor::from_data(rng.uniform_vec(rows * cols, 1.5), vec![rows, cols]));
+            let v = rng.uniform_vec(cols, 30.0);
+            let mut v_q = vec![0i8; cols];
+            let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+            let mut scalar = vec![f32::NAN; rows];
+            q8_mat_vec_mul_scalar_into(&mut scalar, &mat, &v_q, v_scale);
+            let mut avx2 = vec![f32::NAN; rows];
+            unsafe { q8_mat_vec_mul_avx2_into(&mut avx2, &mat, &v_q, v_scale) };
+            assert_same_bits(&scalar, &avx2, &format!("w8a8 avx2 {}x{}", rows, cols));
+            if is_x86_feature_detected!("avxvnni") && cols % 32 == 0 {
+                let mut vnni = vec![f32::NAN; rows];
+                unsafe { q8_mat_vec_mul_vnni_into(&mut vnni, &mat, &v_q, v_scale) };
+                assert_same_bits(&scalar, &vnni, &format!("w8a8 vnni {}x{}", rows, cols));
+            }
+        }
+    }
+
+    /// RWKV Q4 with 32-column groups (the only shape with an AVX2 kernel): integer dot per
+    /// group, f32 fold over the groups in the same order on both tiers.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn f2_q4_scalar_bit_identical_to_avx2() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        let mut rng = F2Rng(0x4444_0004);
+        for (rows, cols) in [(37usize, 768usize), (4, 64), (9, 96)] {
+            let mat = Q4Tensor::from_f32(&Tensor::from_data(rng.uniform_vec(rows * cols, 1.5), vec![rows, cols]), 32);
+            let v = rng.uniform_vec(cols, 30.0);
+            let mut v_q = vec![0i8; cols];
+            let v_scale = quantize_vec_i8_into(&v, &mut v_q);
+            let mut scalar = vec![f32::NAN; rows];
+            q4_mat_vec_mul_scalar_into(&mut scalar, &mat, &v_q, v_scale);
+            let mut avx2 = vec![f32::NAN; rows];
+            unsafe { q4_mat_vec_mul_avx2_into(&mut avx2, &mat, &v_q, v_scale) };
+            assert_same_bits(&scalar, &avx2, &format!("q4 {}x{}", rows, cols));
         }
     }
 }

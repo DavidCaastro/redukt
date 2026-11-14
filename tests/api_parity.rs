@@ -122,3 +122,59 @@ fn api_compress_matches_cli_bytes_and_roundtrips() {
     assert_eq!(code, 400, "{}", String::from_utf8_lossy(&msg));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `/v1/decompress` decodes an archive whose numeric contract is not the server's default:
+/// contract 2 (`compress --numeric fma`, FMA GEMV kernels), like `decompress --input` does.
+/// The server then keeps writing its own contract: `/v1/compress` stays byte-identical to the
+/// default CLI archive, and that archive still decodes.
+#[test]
+#[ignore] // requires weights/mamba-130m
+fn api_decompresses_a_non_default_numeric_contract() {
+    if !Path::new("weights/mamba-130m").exists() {
+        eprintln!("SKIP: no mamba weights");
+        return;
+    }
+    let bin = redukt_bin();
+    assert!(bin.exists(), "binary not found at {:?} — run `cargo build --release`", bin);
+    let dir = std::env::temp_dir().join(format!("redukt-api-contract-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let input = dir.join("in.log");
+    let data = sample_4kb();
+    std::fs::write(&input, &data).expect("write input");
+
+    let cli = |name: &str, extra: &[&str]| -> Vec<u8> {
+        let out = dir.join(name);
+        let st = Command::new(&bin)
+            .args(["compress", "--input"]).arg(&input).arg("--output").arg(&out)
+            .args(["--backbone", "mamba", "--quant", "q8"]).args(extra)
+            .stderr(Stdio::null()).status().expect("run cli");
+        assert!(st.success(), "cli compress {:?} failed", extra);
+        std::fs::read(&out).expect("cli output")
+    };
+    let plain = cli("plain.azth", &[]);
+    let fma = cli("fma.azth", &["--numeric", "fma"]);
+    // docs/api/FORMAT-SPEC.md, PROFILE byte (offset 13): bits 4-5 = NUMERIC_CONTRACT,
+    // 1 = fmath-v1 (default), 2 = fma-v1.
+    assert_eq!((plain[13] >> 4) & 3, 1, "the default archive must declare contract 1");
+    assert_eq!((fma[13] >> 4) & 3, 2, "--numeric fma must declare contract 2");
+
+    let port = free_port();
+    let child = Command::new(&bin)
+        .args(["api", "--bind", "127.0.0.1", "--port", &port.to_string()])
+        .args(["--backbone", "mamba", "--quant", "q8"])
+        .stderr(Stdio::null()).spawn().expect("spawn api");
+    let mut server = Server(child);
+    wait_ready(&mut server, port);
+
+    let (code, restored) = http(port, "POST", "/v1/decompress", &fma);
+    assert_eq!(code, 200, "contract-2 archive: {}", String::from_utf8_lossy(&restored));
+    assert_eq!(restored, data, "API decompress of a contract-2 archive differs from the input");
+
+    let (code, api_bytes) = http(port, "POST", "/v1/compress", &data);
+    assert_eq!(code, 200);
+    assert_eq!(api_bytes, plain, "API archive after a contract-2 decode differs from the CLI archive");
+    let (code, restored) = http(port, "POST", "/v1/decompress", &plain);
+    assert_eq!(code, 200, "contract-1 archive: {}", String::from_utf8_lossy(&restored));
+    assert_eq!(restored, data, "API decompress of the default archive differs from the input");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -954,12 +954,14 @@ impl MambaModel {
 
     /// Select the GEMV/GEMM kernel family (R-107): `Kernel::Fma` implements
     /// numeric contract 2. Without AVX2+FMA (or with `REDUKT_NO_SIMD=1`) the
-    /// FMA family runs its scalar `f32::mul_add` kernels: bit-identical, slower.
+    /// FMA family runs its scalar kernels, whose fused multiply-add is the
+    /// pure-Rust `gemv_fma::fma_f32` (no platform `fmaf`): bit-identical on
+    /// every CPU, slower (R-104 F2).
     pub fn set_kernel(&mut self, k: Kernel) {
         if k == Kernel::Fma && !simd_fma() {
             eprintln!(
                 "[mamba] WARNING: numeric contract fma-v1 without AVX2+FMA (or REDUKT_NO_SIMD=1): \
-                 using the scalar mul_add kernels (bit-exact, much slower)"
+                 using the scalar mul_add kernels (pure-Rust fused multiply-add: bit-exact, much slower)"
             );
         }
         self.kernel = k;
@@ -1022,6 +1024,10 @@ impl Backbone for MambaModel {
     }
 }
 
+/// Weight-free Mamba for the unit tests of other modules (e.g. the API decoder).
+#[cfg(test)]
+pub(crate) use tests::synthetic_model;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,7 +1048,7 @@ mod tests {
     }
 
     /// Small random Mamba with the real layer structure (no weights file).
-    fn synthetic_model(d_model: usize, n_layer: usize, vocab: usize, profile: WeightProfile) -> MambaModel {
+    pub(crate) fn synthetic_model(d_model: usize, n_layer: usize, vocab: usize, profile: WeightProfile) -> MambaModel {
         let config = MambaConfig::from_d_model(d_model, n_layer, vocab);
         let (di, ds, dr, dc) = (config.d_inner, config.d_state, config.dt_rank, config.d_conv);
         let mut seed = 1000u32;

@@ -440,13 +440,16 @@ pub fn load_dyn_model(
     }
 }
 
-/// Parse a quantization level string ("f32", "q8", "q4", "auto") into a policy.
-pub fn parse_quant_flag(s: &str) -> Option<QuantPolicy> {
+/// Parse a `--quant` value into an RWKV quantization override. `Ok(None)` = "" / "auto"
+/// (the loader's fixed default, `Rwkv7Model::AUTO_QUANT`); `Err` = unknown level, with
+/// the valid values. An unknown value must never mean "auto" silently.
+pub fn parse_quant_flag(s: &str) -> Result<Option<QuantPolicy>, String> {
     match s.to_lowercase().as_str() {
-        "f32" => Some(QuantPolicy::Uniform(QuantLevel::F32)),
-        "q8" => Some(QuantPolicy::Uniform(QuantLevel::Q8)),
-        "q4" => Some(QuantPolicy::Uniform(QuantLevel::Q4 { group_size: 64 })),
-        _ => None,
+        "" | "auto" => Ok(None),
+        "f32" => Ok(Some(QuantPolicy::Uniform(QuantLevel::F32))),
+        "q8" => Ok(Some(QuantPolicy::Uniform(QuantLevel::Q8))),
+        "q4" => Ok(Some(QuantPolicy::Uniform(QuantLevel::Q4 { group_size: 64 }))),
+        _ => Err(format!("{} (valid values: f32, q8, q4, auto)", s)),
     }
 }
 

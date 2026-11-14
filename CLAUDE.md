@@ -140,8 +140,9 @@ PROFILE:     1B  (bits 0-3 QUANT: 0=F32, 1=Q8, 2=Q6 reserved;
 [optional blocks as v4]  STREAM  CRC32 (4B)
 ```
 Header: 14B up to 36B. R-108 (2026-11-10): PROFILE bit 6 = RESET_PERIOD, followed by 1 B RESET_LOG2 (8..=20); the
-Mamba family writes it by default (12 = 4096 forwards: PROFILE 0x50 F32 / 0x51 Q8), `--reset-every 0` omits it,
-RWKV/plugin never. Decoder applies the period from the header; pre-R-108 decoders reject it up front.
+Mamba family and the GPU plugin (same Mamba-130M) write it by default (12 = 4096 forwards: PROFILE 0x50 F32 /
+0x51 Q8; plugin 0x50), `--reset-every 0` omits it, RWKV never. Decoder applies the period from the header;
+pre-R-108 decoders reject it up front.
 Since R-104 F1 (51dafd9) the encoder ALWAYS writes v5: F32 -> PROFILE 0x10, Q8 -> 0x11
 (contract 1 = pure-Rust `fmath` exp/log, `src/domain/fmath.rs`). The coded stream is identical to v4/libm (6/6 cases);
 only the header changes (+1 B for F32). v2-v4 and early v5 (bits 4-5 = 0) decode via the legacy libm branch.
@@ -247,6 +248,8 @@ Provenance documented in `weights/MANIFEST.md`.
 2. `cargo test` — all pass (especially coder roundtrip tests)
 3. Roundtrip: compress -> decompress -> diff (byte-identical)
 3b. If lockstep/GEMM/threading code changed: batch `.azth` sha256 == single-file `.azth` sha256 on all reference files
+3c. If a SIMD or scalar kernel changed: the same `.azth` sha256 with and without `REDUKT_NO_SIMD=1` on the reference
+    files, and both cross-tier decodes (R-104 F2, `docs/api/FORMAT-SPEC.md` "SIMD tier")
 4. No new `unwrap()`/`panic!()` in codec or coder paths (see ROADMAP R-006)
 
 ### Before Any Release
@@ -271,8 +274,10 @@ Provenance documented in `weights/MANIFEST.md`.
 Primary metric: BPB (bits per byte) = `compressed_size × 8 / original_size`. Lower = better.
 All Redukt BPB are actual AZTH file output, NOT cross-entropy estimates.
 Dual backbone: Mamba-130M (default) + RWKV-7 0.1B (GenericBinary only).
-Quantization: `--quant auto` = Q8 for Mamba since R-098 (ae7297a, `model_loader::AUTO_MAMBA_PROFILE`); RWKV keeps its
-own auto Q8 (F32 vs Q8 difference: <2.5% on all files). `--quant f32` is recommended for batches >= 16 (~1% better BPB,
+Quantization: `--quant auto` = Q8 for Mamba since R-098 (ae7297a, `model_loader::AUTO_MAMBA_PROFILE`); RWKV `auto` =
+fixed Q8 (`Rwkv7Model::AUTO_QUANT`, never timed since 2026-11-14; F32 vs Q8 difference: <2.5% on all files). RWKV
+records no quant level in the header: an explicit `--quant f32|q4` must be repeated on decompress (owner decision
+pending, `docs/internal/research/strata-backbone/07-legacy-fixes.md` section 7). `--quant f32` is recommended for batches >= 16 (~1% better BPB,
 same aggregate throughput).
 Use `--quant f32|q8|q4|auto` to force quantization, `--backbone rwkv|mamba|auto`.
 
@@ -380,14 +385,15 @@ Aggregate gain ~9x per machine over the 34 tok/s start, but per-vCPU efficiency 
 See "Commercial Target". Next lever: host pipeline of the plugin lockstep (R-110), then GPU batch kernels.
 The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) and an independent review confirmed the BPB
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
-(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests: 304 unit + 3 lint +
-5 integration.
+(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests (2026-11-14): 318 unit + 3 lint +
+5 integration (+ 6 / 15 ignored; all ignored integration tests pass with real weights, 07-legacy-fixes §11).
 Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
 validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
 ceiling, headroom 15-25x); R-109 measured through the CLI at N=12..128 (flat ~550 tok/s, $33-38/GB) -> R-110 (host
 pipeline of the plugin lockstep) is the next GPU lever, before kernels; R-104 F1 done (libm replaced by `fmath`),
-F3 lint done (golden `.azth` in CI pending), F2 (scalar order = AVX2) pending — required by R-115 if path 3 is
-pursued; R-105 closed (steps 1 and 2 NO-GO); R-101, R-110, R-107 follow-ups, R-084..R-086, R-089 and Fase 18
+F3 lint done (golden `.azth` in CI pending), F2 done 2026-11-14 (scalar kernels follow the AVX2 operation order:
+same `.azth` with and without `REDUKT_NO_SIMD=1`, 12/12 Mamba/RWKV x F32/Q8 cells, cross-tier decodes OK; contract 2
+decodes without FMA hardware through a pure-Rust FMA; ARM not measured yet — required by R-115 if path 3 is pursued); R-105 closed (steps 1 and 2 NO-GO); R-101, R-110, R-107 follow-ups, R-084..R-086, R-089 and Fase 18
 DEPRECATED (ROADMAP "Prioridad vigente"). Fase 20 done: R-111, R-112, R-113; R-114/R-115/R-116 proposed.
 Plan and gates: ROADMAP Fase 19.
 
@@ -397,7 +403,10 @@ Plan and gates: ROADMAP Fase 19.
 - `taskkill //F //IM redukt.exe` kills all instances
 - Use `--bytes N` not `--limit N` (silently ignored)
 - `cargo build --profile maxperf` for benchmarks
-- `--numeric fma` on batches with N >= 8 (+12-22%); default stays contract 1 until api.rs supports contract 2
+- `--numeric fma` on batches with N >= 8 (+12-22%); default stays contract 1. `redukt api` decodes every contract
+  (2026-11-14) but still writes contract 1
+- Misspelled values of `--backbone`, `--quant`, `--e8e9`, `--shuffle`, `--delta` are errors (2026-11-14; they used to
+  fall back to a default silently). Unknown flag NAMES are still ignored silently by `compress`/`decompress`
 - Agents/sessions that build Docker images MUST clean up: `docker rm -f` test containers, `docker rmi` test tags,
   `docker builder prune -af` at the end. Keep only base images (rust, nvidia/cuda) if a rebuild is expected.
 - Claude Code hooks (.claude/settings.json): SessionEnd runs .claude/hooks/docker-cleanup.sh (redukt:* images,

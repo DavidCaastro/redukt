@@ -11,6 +11,7 @@ use crate::application::model_loader;
 use crate::application::telemetry::{JsonLogger, LogSnapshot, PhaseTimer};
 use crate::domain::backbone::{Backbone, BackboneState, BackendTokenizer, BackboneChoice, WeightProfile};
 use crate::domain::fmath::NumericContract;
+use crate::domain::quant::QuantPolicy;
 
 /// v3 magic — kept for backward-compat parsing and tests.
 #[cfg(test)]
@@ -454,6 +455,31 @@ pub fn parse_numeric_flag(s: &str) -> AzResult<NumericContract> {
     }
 }
 
+/// `--backbone` (R-039): `None` = "" / "auto" (route by content). A name that is not a
+/// backbone is an error listing the valid values, never a silent fallback to the default route.
+pub fn parse_backbone_flag(s: &str) -> AzResult<Option<BackboneChoice>> {
+    BackboneChoice::from_cli(s).map_err(|e| AzError::Parse { context: "--backbone".into(), value: e })
+}
+
+/// `--quant` as the RWKV quantization override: `None` = "" / "auto". An unknown level is an
+/// error (for RWKV it used to mean "auto" silently). The Mamba family additionally goes
+/// through `resolve_compress_profile` / `resolve_decompress_profile`.
+pub fn parse_quant_override(s: &str) -> AzResult<Option<QuantPolicy>> {
+    model_loader::parse_quant_flag(s).map_err(|e| AzError::Parse { context: "--quant".into(), value: e })
+}
+
+/// Validate a preprocessing mode (`--e8e9`, `--shuffle`, `--delta`): "" / "auto", "on", "off"
+/// and, when `strides`, "on:N" with N in 0..=255. Any other value used to mean "auto" (or the
+/// default stride) silently; now it is an error listing the valid values.
+pub fn check_mode_flag(flag: &str, value: &str, strides: bool) -> AzResult<()> {
+    let stride_ok = strides && value.strip_prefix("on:").is_some_and(|n| n.parse::<u8>().is_ok());
+    if matches!(value, "" | "auto" | "on" | "off") || stride_ok {
+        return Ok(());
+    }
+    let valid = if strides { "auto, on, on:N (N = 0..255), off" } else { "auto, on, off" };
+    Err(AzError::Parse { context: flag.into(), value: format!("{} (valid values: {})", value, valid) })
+}
+
 /// Header of one archive file, read from its first bytes (None if unreadable).
 fn read_header_prefix(p: &std::path::Path) -> Option<HeaderInfo> {
     use std::io::Read;
@@ -512,7 +538,8 @@ pub fn extract_stream_and_crc_v(
 
 /// Every encoded token covers >= 1 input byte, so a valid v4 stream has at most `total_bytes`
 /// tokens. Stops a corrupt stream that keeps decoding zero-length ids from looping forever.
-fn check_token_budget(tokens: usize, written: usize, total_bytes: usize) -> AzResult<()> {
+/// Shared by `cmd_decompress` and the API decoder (`api::decompress_bytes`).
+pub fn check_token_budget(tokens: usize, written: usize, total_bytes: usize) -> AzResult<()> {
     if tokens >= total_bytes {
         return Err(AzError::Decode {
             token_idx: tokens,
@@ -983,6 +1010,14 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
         i += 1;
     }
 
+    // Flags with enumerated values: a misspelled value is an error before any work,
+    // never a silent default (`--backbone rwkvv` used to compress with Mamba).
+    let backbone_cli = parse_backbone_flag(&backbone_str)?;
+    let quant_override = parse_quant_override(&quant_str)?;
+    check_mode_flag("--e8e9", &e8e9_mode, false)?;
+    check_mode_flag("--shuffle", &shuffle_mode, true)?;
+    check_mode_flag("--delta", &delta_mode, true)?;
+
     // Numeric contract (R-107): fixed for the whole process before any model load;
     // Mamba-family models get its kernels and every Mamba archive records it.
     let numeric = parse_numeric_flag(&numeric_str)?;
@@ -1051,15 +1086,11 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     let (e8e9_applied, shuffle_applied, delta_applied) = (prep.e8e9, prep.shuffle, prep.delta);
     let compress_slice: &[u8] = &prep.data;
 
-    // Backbone routing (R-039)
-    let backbone_choice = if let Some(bc) = BackboneChoice::from_str_opt(&backbone_str) {
-        bc
-    } else {
-        crate::domain::backbone::route_backbone(&content_type)
-    };
+    // Backbone routing (R-039): explicit `--backbone`, else by content type.
+    let backbone_choice = backbone_cli
+        .unwrap_or_else(|| crate::domain::backbone::route_backbone(&content_type));
     eprintln!("[compress] backbone: {} ({})",
-        backbone_choice,
-        if backbone_str.is_empty() || backbone_str == "auto" { "auto" } else { "manual" });
+        backbone_choice, if backbone_cli.is_none() { "auto" } else { "manual" });
 
     // Weight profile (R-099): recorded in the header (v5) when != F32.
     let mamba_profile = resolve_compress_profile(&quant_str, backbone_choice)?;
@@ -1071,7 +1102,6 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     }
 
     timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_dyn_model(
         backbone_choice, &weights_dir, quant_override, mamba_profile,
     );
@@ -1390,6 +1420,9 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
         i += 1;
     }
 
+    // An unknown `--quant` value is an error up front (for RWKV it used to mean "auto").
+    let quant_override = parse_quant_override(&quant_str)?;
+
     // Hardware governor (R-HW1)
     let governor = crate::infrastructure::governor::HardwareGovernor::new(!no_governor);
     governor.preflight().map_err(|e| AzError::Format(format!("governor: {}", e)))?;
@@ -1489,7 +1522,6 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     }
 
     timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
     let (mut model, tokenizer) = model_loader::load_dyn_model(
         hdr.backbone, &weights_dir, quant_override, mamba_profile,
     );
@@ -1813,7 +1845,7 @@ pub fn cmd_hybrid_eval(args: &[String]) -> AzResult<()> {
     eprintln!("[hybrid-eval] input: {} ({} bytes)", input_path, total_bytes);
 
     timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
+    let quant_override = parse_quant_override(&quant_str)?;
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
     let v = model.vocab_size();
 
@@ -1951,7 +1983,7 @@ pub fn cmd_baseline(args: &[String]) -> AzResult<()> {
     eprintln!("[baseline] input: {} ({} bytes)", input_path, total_bytes);
 
     timer.start("model_load");
-    let quant_override = if quant_str.is_empty() { None } else { model_loader::parse_quant_flag(&quant_str) };
+    let quant_override = parse_quant_override(&quant_str)?;
     let (mut model, tokenizer) = model_loader::load_model_and_tokenizer_with_quant(&weights_dir, quant_override);
     let v = model.vocab_size();
 
@@ -2970,6 +3002,55 @@ mod tests {
         }
         for s in ["0", "3", "legacy", "fmadd"] {
             assert!(parse_numeric_flag(s).is_err(), "{}", s);
+        }
+    }
+
+    /// A misspelled value of an enumerated flag is an error that lists the valid values;
+    /// it never selects the default silently (`--backbone rwkvv` used to mean Mamba, an
+    /// unknown `--quant` meant "auto" for RWKV, an unknown `--e8e9/--shuffle/--delta` "auto").
+    #[test]
+    fn enumerated_flags_reject_misspelled_values() {
+        use crate::domain::quant::QuantLevel;
+        for auto in ["", "auto", "AUTO"] {
+            assert_eq!(parse_backbone_flag(auto).unwrap(), None, "{:?}", auto);
+            assert!(parse_quant_override(auto).unwrap().is_none(), "{:?}", auto);
+        }
+        let names = [("rwkv", BackboneChoice::Rwkv), ("Mamba", BackboneChoice::Mamba),
+                     ("mambabyte", BackboneChoice::MambaByte), ("PLUGIN", BackboneChoice::Plugin)];
+        for (name, choice) in names {
+            assert_eq!(parse_backbone_flag(name).unwrap(), Some(choice), "{}", name);
+        }
+        for bad in ["rwkvv", "mamba ", "mamba,rwkv", "gpt", "0"] {
+            let err = parse_backbone_flag(bad).unwrap_err().to_string();
+            assert!(err.contains("--backbone") && err.contains(bad), "{}", err);
+            assert!(err.contains("rwkv, mamba, mambabyte, plugin, auto"), "{}", err);
+        }
+
+        let level = |s: &str| match parse_quant_override(s) {
+            Ok(Some(QuantPolicy::Uniform(l))) => Some(l),
+            _ => None,
+        };
+        assert_eq!(level("f32"), Some(QuantLevel::F32));
+        assert_eq!(level("Q8"), Some(QuantLevel::Q8));
+        assert_eq!(level("q4"), Some(QuantLevel::Q4 { group_size: 64 }));
+        for bad in ["q88", "q6", "f16", "int8", "on"] {
+            let err = parse_quant_override(bad).unwrap_err().to_string();
+            assert!(err.contains("--quant") && err.contains(bad), "{}", err);
+            assert!(err.contains("f32, q8, q4, auto"), "{}", err);
+        }
+
+        for ok in ["", "auto", "on", "off"] {
+            for flag in ["--e8e9", "--shuffle", "--delta"] {
+                assert!(check_mode_flag(flag, ok, flag != "--e8e9").is_ok(), "{} {:?}", flag, ok);
+            }
+        }
+        for ok in ["on:4", "on:1", "on:0", "on:255"] {
+            assert!(check_mode_flag("--shuffle", ok, true).is_ok(), "{}", ok);
+            assert!(check_mode_flag("--e8e9", ok, false).is_err(), "--e8e9 takes no stride: {}", ok);
+        }
+        for bad in ["ON", "yes", "onn", "on:", "on:abc", "on:256", "4", "of"] {
+            let err = check_mode_flag("--delta", bad, true).unwrap_err().to_string();
+            assert!(err.contains("--delta") && err.contains("auto, on, on:N"), "{}", err);
         }
     }
 

@@ -26,9 +26,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::application::codec::{
-    build_header, cdf_from_logits, cdf_from_logits_with, extract_stream_and_crc_v, parse_header, preprocess_input,
-    reset_every_from_log2, resolve_compress_profile, resolve_decompress_profile, resolve_reset_log2, validate_magic,
-    HeaderInfo, CRC_SIZE,
+    build_header, cdf_from_logits, cdf_from_logits_with, extract_stream_and_crc_v, parse_backbone_flag,
+    parse_header, parse_quant_override, preprocess_input, reset_every_from_log2, resolve_compress_profile,
+    resolve_decompress_profile, resolve_reset_log2, validate_magic, HeaderInfo, CRC_SIZE,
 };
 use crate::application::model_loader::{self, DynModel, DynTokenizer};
 use crate::domain::backbone::{
@@ -521,7 +521,8 @@ pub fn group_by_key(items: Vec<(GroupKey, PathBuf)>) -> Vec<(GroupKey, Vec<PathB
 /// Decide backbone + profile for one input exactly like `cmd_compress`.
 fn compress_key(input: &[u8], opts: &BatchOptions) -> AzResult<GroupKey> {
     let (content_type, _) = crate::domain::content_detect::detect_content_type(input);
-    let backbone = BackboneChoice::from_str_opt(&opts.backbone)
+    // A misspelled `--backbone` is an error, never the default route (same as `cmd_compress`).
+    let backbone = parse_backbone_flag(&opts.backbone)?
         .unwrap_or_else(|| crate::domain::backbone::route_backbone(&content_type));
     let profile = resolve_compress_profile(&opts.quant, backbone)?;
     Ok(GroupKey { backbone, profile, emb_surgery: opts.emb_surgery.clone() })
@@ -562,7 +563,7 @@ fn load_group_model(key: &GroupKey, opts: &BatchOptions, slots: usize) -> AzResu
     // R-109: with FFI v2 every lockstep stream gets its own device slot (`prepare_streams`);
     // a v1-only plugin (one global state) is rejected there for slots > 1 — never silently
     // interleaved (2026-11-10 Kaggle: 1.949 bpb vs 0.750 on CPU for the same 12 files).
-    let quant_override = if opts.quant.is_empty() { None } else { model_loader::parse_quant_flag(&opts.quant) };
+    let quant_override = parse_quant_override(&opts.quant)?;
     let t_load = Instant::now();
     let (mut model, tokenizer) = model_loader::load_dyn_model(
         key.backbone, &opts.weights_dir, quant_override, key.profile,
