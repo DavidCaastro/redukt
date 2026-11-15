@@ -442,9 +442,17 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
   **On identical bytes (171 KB - 1 MiB) paq8px v217 `-8` (11 KB/s on one thread) is 34-41 % smaller than Mamba-130M
   on logs, 27 % on JSON / `nci`, 39 % on synthetic invoices; paq8l and, on 1 MiB logs, zpaq `-m5` also beat Mamba.
   Mamba-130M keeps only prose (paq8px is 43-58 % larger there).** Never present the brotli / gzip margins on logs or
-  XML as "better than the best CPU compressor"; the 10 KB headline windows and the path-3 short messages have not
-  been compared with this family yet. No compressor measured, at any speed, nets more than about $0.02 per raw GB
+  XML as "better than the best CPU compressor"; the 10 KB headline windows have not been compared with this family yet (short messages: check E3 below). No compressor measured, at any speed, nets more than about $0.02 per raw GB
   over 7 years for storage: the prize is small and free tools already take it.
+- **Check E3, MEASURED 2026-11-15** (amendment 7, `docs/internal/research/strata-backbone/11-short-message-cm-check.md`): the 480 R-113
+  short messages against PRIMED public CM compressors (payload = difference of two archives; lpaq1, paq8l, paq8px;
+  110 KB primer). Mamba-130M payload / best primed CM: text 0.75 (same-source primer) / 0.52 (foreign) -> KEEPS;
+  logs 2.63 / 0.63 -> depends on the primer; JSON 1.46 / 1.32 -> LOST. lpaq1 with 9 MB of memory matches 1.5 GB.
+  The path-3 claim that survives: short natural-language messages, and message types with no same-source sample on
+  the terminal; repetitive machine traffic with a sample is 2.4-3x smaller with a primed CM coder. Never quote the
+  R-113 margins (brotli, zstd + dictionary) without this. Mamba was not primed (symmetric arm, not measured).
+  Owner, 2026-11-15: leaving CPU / edge is acceptable if viability needs it; CPU work so far counts as a functional
+  demonstration.
 - AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
   (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).
