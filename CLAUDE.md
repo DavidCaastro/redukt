@@ -417,15 +417,26 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
 - Storage economics, DERIVED: the saving per GB is linear in time and already counted over 7 years ($0.335/GB for
   text); break-even at today's cost is 690-1,250 years. A model can cost at most 14K-115K MAC/byte on logs and
   138K-1.1M on text even at Mamba's ratio (Mamba: ~35.7M). Strata's tiers (208 / 27,752 / 113,912) fit the cost;
-  they lack the ratio. Measured slope: 4x compute bought 0.3-2.3 %. Reviewer re-check of the review fixes is pending; a reopened blocker
-  withdraws the freeze.
+  they lack the ratio. Measured slope: 4x compute bought 0.3-2.3 %. Reviewer re-check of the review fixes is pending;
+  a reopened blocker withdraws the freeze.
 - Every change to the frozen spec or to a gate needs a dated amendment in `05-gate-amendments.md` (rule T1).
   Amendment 3 (2026-11-14) reserves the accelerator path: trunk only, exact and undeclared in the header, deferred
   gate C12, reserved ABI `docs/api/PLUGIN-FFI-STRATA.md`. Amendment 4 (2026-11-14): PPMd in the classical set, gate
   V7 pre-registered (compute rungs up to 2M MAC/byte and general primers; cost, 10 % materiality, parity <= 1.10 x
-  Mamba). Next V7 step: arm P (general primer, CPU only, existing weights), then the trainer port (stage 4c).
+  Mamba). Amendment 5 (2026-11-14): PPMd through stdin with 1 GB, extended decision slices, arm P / P-s primary points.
+- **Gate V7 verdict, MEASURED 2026-11-15** (`docs/internal/research/strata-backbone/09-capacity-ladder-results.md`;
+  `python -I tools/strata/viability/ladder_verdict.py`): the objective is NOT met. `text` O3 and `structured` O3 on
+  both decision sets with every arm: the ladder retrained on 1.44 GB (widths 88 / 208 / 456) still loses to PPMd by
+  2-6 % on text and 17 % on JSON / `nci`; Mamba-130M is 1.7-2.0x smaller on text. 43x more training bytes changed
+  logs by -1.0 % to -2.8 % and text by +0.6 % (worse); 18x more compute (width 88 -> 456) bought 1-3 %; a general
+  primer lowers the log saving. `logs` is O2 by the letter (width 88: saving 22-26 %, parity 1.05-1.17, cost passes
+  only at the 10 G MAC/s hypothesis), but tier `cm` without a trunk has the larger net value ($0.008-0.014 against
+  $0.003-0.005 per raw GB over 7 years): the trunk does not pay on the margin. What survives: `cm` (208 MAC/byte,
+  ~34 KB, integer) codes unseen logs 15-23 % smaller than the best of PPMd / xz and within 8-28 % of Mamba-130M —
+  a classical-class context mixer, in ideal code lengths, not yet a Rust codec. Do not start further capacity work
+  (R4, wider trunks, more training data) without new evidence; whether the logs O2 is a product is the owner's call.
 - AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
-  (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 0 used. "Strata" is a working name (ROADMAP R-087
+  (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).
 
 ## Process Safety (Windows)

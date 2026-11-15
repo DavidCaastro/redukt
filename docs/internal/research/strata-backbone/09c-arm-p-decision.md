@@ -6,6 +6,7 @@
 > Strata bytes are ideal code lengths of the integer simulation / 8 (no range coder, no header, no `PRIMER_ID`).
 > Labels: MEASURED (command given), DERIVED, INFERENCE. Parity against Mamba-130M is left blank: Mamba is run
 > afterwards by the orchestrator, so no outcome O1 / O2 can be closed here.
+> Added 2026-11-15: the parity column and the outcomes are in `09-capacity-ladder-results.md` (sections 3 and 4).
 
 ## 0. Result first — weak points before anything else
 

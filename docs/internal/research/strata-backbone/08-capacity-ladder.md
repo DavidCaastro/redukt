@@ -5,6 +5,8 @@
 > Labels: MEASURED (with its command), DERIVED (arithmetic on stated inputs), HYPOTHESIS, INFERENCE.
 > Sections 6.2 and 6.3 were registered on 2026-11-14 (charter ledger) before any ladder model was evaluated on a
 > decision file.
+> **Result (2026-11-15): `09-capacity-ladder-results.md` — text and structured O3, logs O2 by the letter with the
+> trunk not paying on the margin. Everything below is the plan as registered and is kept unchanged.**
 
 ## 0. Result first
 
