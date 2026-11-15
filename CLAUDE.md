@@ -74,6 +74,11 @@ commercial neural lossless compressor exists for text/XML/logs (the category is 
 Nacrith 0.9389 bpb on full enwik8 (GPU, CPU fallback, binaries via LZMA); cmix v21 1.170 bpb at ~$3/GB; Hutter 2026
 lineage 0.73-0.78 bpb enwik9 at 4.5-9 KB/s single core (~$0.65-1.07/GB); xz/zstd $0.002-0.007/GB. Redukt is unique only
 in packaging (single zero-dep binary, CPU-decodable 130M backbone) and in the header-declared numeric contract.
+Market update 2026-11-15 (`docs/internal/research/market-position-2026-11-15.md`, web search, third-party figures
+REPORTED and not reproduced): the category is still empty; ts_zip (RWKV 169M) 1.084 bpb enwik9 at up to 1 MB/s on
+an RTX 4090; CLP (open source, Uber) ~2.2x zstd on logs with search; OpenZL (Meta) beats xz / zstd on structured
+data at hundreds of MB/s; no language-model compressor found for narrowband satellite messaging. Redukt is level
+with the neural text compressors in ratio and has no product advantage outside natural-language text.
 
 ## Portability Principle (hardware-agnostic by design)
 
