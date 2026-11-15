@@ -334,3 +334,43 @@ the dictionary file; (d) Wikipedia and English prose are almost certainly in Mam
 
 Expectation written before the measurement (INFERENCE): `text` KEEPS in both pairings; `logs` LOST with the
 same-source primer and KEEPS with the foreign one (DEPENDS ON THE PRIMER); `json` LOST or MARGINAL in both.
+
+## Amendment 8 (2026-11-15): checks E3b (primed Mamba-130M) and E4 (10 KB headline windows), V3 reporting duty — registered before measuring
+
+Written after check E3 (`11-short-message-cm-check.md`). The owner asked to proceed with what is pertinent; these are
+the two comparisons E2 and E3 named as missing, plus a stricter reporting duty for V3. No threshold is changed.
+
+Seen before this amendment: every E3 result. The tool `shortmsg_mamba_primed.py` was run on one neutral file only
+(`docs/ROADMAP.md`: primer 1,978 B, +128 B message 21 B, +512 B message 78 B). Not seen: any primed Mamba size on an
+R-113 message; any public CM size on a 10 KB headline window; any 8,192-byte-primer CM size.
+
+### E3b — the symmetric arm of E3
+
+| Item | Registered value |
+|---|---|
+| Primed Mamba payload | size(azth(D + m)) - size(azth(D)), real archives of the CPU product path (Mamba-130M Q8 + CM, `--reset-every 0`), same method as the CM side of E3 |
+| Primer D | 8,192 bytes: the last 8,192 bytes of the first half of the message source (`same8k`) or of the foreign source (`foreign8k`). The model cannot use 110,000 bytes (state drift beyond ~16K tokens, cost per token); this is its usable context and the asymmetry is stated |
+| Arms | the class-pairings E3 did not give to Mamba: `logs` same, `json` same, `json` foreign (400 archives + primers). `text` and `logs` foreign already KEEP unprimed and are not re-run |
+| Rule | the E3 rule with the primed payload in place of the unprimed one, against the same B_cm of E3 (CM with 110,000 bytes, its best case): KEEPS <= 0.90, LOST >= 1.00, else MARGINAL |
+| Reported, no vote | lpaq1 `0` and paq8px with the same 8,192-byte primers (equal-primer comparison); gain of priming for Mamba per size |
+
+Expectation (INFERENCE): priming helps Mamba much on logs and JSON, but not enough against 110 KB of sample:
+`logs` same stays LOST (ratio 1.3-2.0); `json` MARGINAL or LOST. At equal 8 KB primers Mamba is ahead on both.
+
+### E4 — the 10 KB headline windows
+
+| Item | Registered value |
+|---|---|
+| Files | the first 10,240 bytes of the twelve files of the headline table of `CLAUDE.md` |
+| Redukt | real `.azth` of the current binary, defaults (`--backbone auto --quant auto`) |
+| Public compressors | lpaq1 `9`, paq8l `-8`, paq8px v217 `-8`, unprimed, whole archive as written; also archive minus the tool's empty-input size against `.azth` minus 20 bytes |
+| Reported | per file the sizes and the margin against the best of the three; count of files (of 12) where the `.azth` is smaller. No threshold: the result replaces "wins 8 of 12 against brotli" as the honest headline |
+
+Expectation (INFERENCE): Redukt stays ahead on the text-like and log / XML windows (a pretrained prior against a
+cold online coder on 10 KB), by less than against brotli; loses the binary files by more.
+
+### V3 — reporting duty (stricter, no threshold changed)
+
+From this amendment on, any V3 result is reported next to lpaq1 level `0` primed by difference with the same primer
+bytes as Strata, in both pairings, and a V3 pass may not be described as an advantage over classical compression
+without that row. Reason: E3 showed `msg88` behind a 9 MB public context mixer with a same-source primer.

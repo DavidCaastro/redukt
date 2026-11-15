@@ -35,6 +35,9 @@ ARMS = [("lpaq1-9", "none"), ("lpaq1-9", "same110k"), ("lpaq1-9", "foreign110k")
         ("lpaq1-9", "zdict"), ("lpaq1-0", "same110k"), ("lpaq1-0", "foreign110k"),
         ("paq8l-8", "same110k"), ("paq8l-8", "foreign110k"),
         ("paq8px217-8", "same110k"), ("paq8px217-8", "foreign110k")]
+# amendment 8 (check E3b): the public coders with the 8,192-byte primer given to Mamba-130M, same arms as there
+ARMS_8K = [(c, k, srcs) for c in ("lpaq1-0", "paq8px217-8") for k, srcs in
+           (("same8k", ("log-apache", "log-linux", "log-openssh", "json-events")), ("foreign8k", ("json-events",)))]
 LOCK = threading.Lock()
 
 
@@ -66,6 +69,10 @@ def primer_bytes(kind, blob, fblob):
         return b""
     if kind == "same110k":
         return blob[max(0, half - PRIMER):half]
+    if kind == "same8k":
+        return blob[half - 8192:half]
+    if kind == "foreign8k":
+        return fblob[fhalf - 8192:fhalf]
     if kind == "foreign110k":
         return fblob[max(0, fhalf - PRIMER):fhalf]
     if kind == "samehalf":
@@ -111,9 +118,9 @@ def main():
     else:
         with open(OUT, "w", newline="") as f:
             csv.writer(f).writerow(["source", "size", "index", "tool", "bytes"])
-    for codec, kind in ARMS:
+    for codec, kind, sources in [(c, k, R113) for c, k in ARMS] + ARMS_8K:
         tool = f"{codec}+{kind}"
-        for src in R113:
+        for src in sources:
             if (src, tool) in done or (args.only and codec != args.only):
                 continue
             blob, fblob = read_source(PATHS[src]), read_source(FOREIGN[src])
