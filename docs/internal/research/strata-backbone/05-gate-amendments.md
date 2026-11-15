@@ -272,3 +272,31 @@ Strata result on the extended set; any primed or retrained Strata result on the 
 Expectation written before the measurement (INFERENCE from the selection set): arm P ends O3 on text (about -2 %
 against PPMd at best, and the gain is front-loaded: 47 % on the first 10 KB, 1.4 % on the last 200 KB of a 300 KB
 input) and lowers the unprimed saving on logs.
+
+## Amendment 6 (2026-11-15): check E2 — public context-mixing compressors against tier `cm`, registered before measuring
+
+Written after the V7 verdict (`09-capacity-ladder-results.md`) and after the speed proxy of tier `cm` was run
+(`tools/strata/viability/cm_speed_proxy.rs`: 0.53-0.63 us per byte on one thread, 1.45 us with 12 threads loaded).
+V7 is closed and is not reopened: this amendment adds a separate, labelled check and changes no threshold.
+
+Why: the classical set of amendment 4 has the LZ, BWT and PPM families but no context-mixing (CM) compressor, and
+tier `cm` is one. The claim "`cm` codes unseen logs 15-23 % smaller than the best classical codec" is therefore
+untested against its own family. Owner authorized downloading the public binaries on 2026-11-15.
+
+Seen before this amendment: every V7 result; the size of the untrained speed proxy on the decision files (it is
+within 2-5 % of `cm`). The CM binaries were run on one neutral file only (the repository `README.md`, to learn their
+command lines). Not seen: any size or time of a public CM compressor on a selection or decision file.
+
+| Item | Registered value |
+|---|---|
+| Compressors (set S) | zpaq 7.15 `-m5 -t1`; lpaq1 level `9`; paq8l `-8`; paq8px v217 `-8` (no LSTM, no pre-training flags); bsc 3.4.0 `-e2` (a BWT coder, added because the set had only bz2 for that family). One setting each; no other level is tried. cmix is not run (32 GB of memory and hours per file on this machine) and is named as missing |
+| Files | the 13 decision files of V7, the identical bytes given to Mamba-130M (`data/strata/runs/mamba-h2h/in`); classes and sets as in amendment 5 |
+| Measured | output bytes (whole file as written by the tool: archive headers count, which hurts zpaq on the two small invoice files and is said so); wall seconds of the compression on this laptop, one compressor at a time, machine otherwise idle. Speed of a compressor = total bytes / total seconds over the seven 1 MiB files |
+| Tier `cm` side | R0 of V7 (G0 weights, ideal code lengths, `arm-p-decision.csv`); speed 0.53-1.45 us per byte from the proxy |
+| Fast class | a compressor is "cost-comparable" if its measured speed is at least 200 KB/s (within about 8x of the proxy's single-thread speed). The codecs of the existing classical set count as fast |
+| Rule, per set, class `logs` | F = sum over the files of the smallest output among the fast compressors (existing classical set and fast members of S). `cm` is an **ASSET** if B_cm <= 0.95 F on both sets; **NO ASSET** if B_cm > 1.05 F on either set; otherwise **TIE** |
+| Reported, no vote | the same comparison for `text` and `structured`; for every member of S its saving against the old B_cl, its cost per raw GB at $0.014 per vCPU-hour from the measured speed, and value minus cost; whether a slow member of S has a larger value minus cost than `cm` |
+
+Expectation written before the measurement (INFERENCE from published benchmarks of these programs on text):
+paq8px and paq8l are smaller than `cm` on every class but far below 200 KB/s; lpaq1 and zpaq `-m5` are smaller than
+`cm` on text; on logs lpaq1 is close to `cm`, so the likely outcome is TIE, and NO ASSET would not be a surprise.
