@@ -261,7 +261,8 @@ Mamba's payload is smaller than every member of S in 25 of 30 cells
 
 ## 3. What is still open
 
-1. **A primed Mamba** (state snapshot after a same-source sample) was never measured; it is the symmetric arm and
+1. **A primed Mamba** — measured the same day, see section 4 (E3b: still LOST, at 1.12-1.24 instead of 1.32-2.63).
+   Original text: a primed Mamba (state snapshot after a same-source sample) was never measured; it is the symmetric arm and
    the only thing that could change `logs` same-source and `json`. Cost: CPU, a change to the encoder start state.
 2. **Which case is the market's**: does a terminal's traffic repeat (telemetry: primed CM wins) or is it free text
    (Mamba wins)? This is R-116, still unverified; it now decides the technical choice as well as the size.
@@ -269,3 +270,93 @@ Mamba's payload is smaller than every member of S in 25 of 30 cells
    the model has to sit on the terminal either way; an accelerator changes the cost of the text case, not the
    ratio table above.
 4. Whether V3 should name this family as a comparator (owner's call; see section 0).
+
+## 4. Addendum of the same day — checks E3b and E4 (amendment 8, registered in commit 8ce1f31 before measuring)
+
+### 4.0 Result first
+
+1. **E3b (MEASURED): priming halves the bytes of Mamba-130M on logs and still leaves it behind the best primed CM
+   coder: LOST on the three arms**, by a much smaller margin than unprimed.
+
+   | Arm | Mamba unprimed / B_cm | Mamba primed (8 KB) / B_cm | Verdict |
+   |---|---|---|---|
+   | `logs`, same-source | 2.626 | 1.237 | LOST |
+   | `json`, same-source | 1.462 | 1.217 | LOST |
+   | `json`, foreign (same feed, other hour) | 1.319 | 1.120 | LOST |
+
+   B_cm is paq8px with 110,000 bytes of sample, its best case, as registered. The registered expectation (logs
+   LOST at 1.3-2.0, JSON LOST or MARGINAL, Mamba ahead at equal primers) held; logs came out slightly better for
+   Mamba than the expected range.
+2. **At equal 8 KB primers Mamba is ahead** of paq8px (logs 8,437 against 8,879 bytes, -5 %; JSON 7,544 against
+   10,235, -26 %) and of lpaq1 (-34 %, -42 %). **Primed Mamba with 8 KB also beats lpaq1 level 0 with 110 KB**
+   (logs 8,437 against 10,179, -17 %; JSON 7,544 against 8,685, -13 %). It loses only to the paq8 class with the
+   large sample (paq8l 7,968, paq8px 6,818 on logs).
+3. **So the short-message picture for machine traffic with a sample is a near tie between very different
+   machines**: paq8px + 110 KB sample (gigabytes of working memory as run here, seconds per message) is 11-19 %
+   smaller than Mamba-130M + 8 KB sample (130 MB of weights), which is 13-17 % smaller than lpaq1 + 110 KB sample
+   (9 MB, milliseconds). None of these gaps is the 41-53 % of R-113. A pretrained model is not what makes short
+   log or JSON messages small; the sample is.
+4. **E4 (MEASURED): on the 10 KB headline windows Redukt is smaller than the best public CM compressor on 6 of 12
+   files** (against brotli the table of `CLAUDE.md` says 8 of 12). Margins against paq8px: `dickens` -75 %,
+   `enwik8` -56 %, `samba` -87 %, the two invoice XML files -30 % / -32 %, Apache log -11 % (it was -54 % against
+   brotli); `nci` +44 %, `mozilla` +33 %, `mr` +51 %, `x-ray` +64 %, `sao` +87 %, `ooffice` +117 %. The registered
+   expectation held. On a cold 10 KB window the pretrained prior is worth a lot on natural language and markup and
+   little on logs; E2 showed the log and markup margins reverse once the input is 171 KB or more.
+5. Limits. (a) Primed payloads are differences of two real archives on both sides. (b) The Mamba primer is 8,192
+   bytes because of the context the model can use; a longer primer (up to the ~16K-token drift limit) was not
+   tried. (c) `text` and `logs` foreign were not re-run primed (they already KEEP). (d) paq8px and paq8l memory was
+   not reduced; whether a small-memory paq8 keeps its ratio on 110 KB of sample is not measured (lpaq1 does).
+   (e) E4 uses the current binary with defaults; some sizes differ from the 2026-10-31 table because routing and
+   format changed since (e.g. `mr` now 3,191 B). (f) One cut, 16 messages per cell.
+
+**Reading for path 3 (DERIVED).** The claim that survives both checks: Mamba-130M is 25-48 % smaller than any
+primed public compressor on short natural-language messages, and 37 % or more smaller on logs when no same-source
+sample exists. For traffic that repeats and can be sampled, the advantage over a 9 MB public coder is 13-17 % with
+priming (a feature that does not exist in the product) and negative against paq8px. Whether a 130 MB model on the
+terminal is worth 13-17 % is a market question (R-116), not a compression one.
+
+### 4.1 What was run (MEASURED)
+
+| Item | Value |
+|---|---|
+| Primed Mamba | `python -I tools/strata/viability/shortmsg_mamba_primed.py`: `target/maxperf/redukt.exe compress --input-dir ... --jobs 32 --backbone mamba --quant q8 --reset-every 0`, 81 archives per arm (primer + 80 primed messages), 825-923 s per arm on the laptop; rows `mamba130m+same8k` / `+foreign8k` in `data/strata/runs/shortmsg-cm.csv`. Every difference is positive (400 of 400). The archives were not decoded in this check |
+| CM, 8 KB primer | `shortmsg_cm.py` (arms `ARMS_8K`): lpaq1 `0` and paq8px with the same primer bytes |
+| E4 | `python -I tools/strata/viability/window10k_cm.py` -> `data/strata/runs/window10k-cm.csv` |
+
+### 4.2 E3b, output of `shortmsg_cm_report.py` (MEASURED)
+
+| Class, pairing | Mamba unprimed | Mamba primed | B_cm of E3 (110 KB) | primed / B_cm | Verdict | lpaq1-0, 8 KB primer | paq8px, 8 KB primer |
+|---|---|---|---|---|---|---|---|
+| logs, same | 17,904 | 8,437 | 6,818 | 1.237 | LOST | 12,713 | 8,879 |
+  - log-apache, mean bytes unprimed -> primed (paq8px with 110 KB): 128: 34.8 -> 12.8 (13.6), 256: 49.9 -> 15.4 (16.2), 512: 70.0 -> 21.8 (20.9), 1024: 87.1 -> 32.6 (28.7), 2048: 114.1 -> 55.9 (41.4)
+  - log-linux, mean bytes unprimed -> primed (paq8px with 110 KB): 128: 39.3 -> 22.1 (19.6), 256: 48.5 -> 26.9 (20.9), 512: 56.1 -> 31.9 (27.4), 1024: 79.8 -> 51.1 (48.6), 2048: 114.3 -> 77.4 (67.5)
+  - log-openssh, mean bytes unprimed -> primed (paq8px with 110 KB): 128: 39.0 -> 15.9 (13.1), 256: 62.1 -> 23.4 (17.4), 512: 87.6 -> 32.5 (22.0), 1024: 107.4 -> 44.9 (29.7), 2048: 129.1 -> 62.7 (39.2)
+| json, same | 9,062 | 7,544 | 6,199 | 1.217 | LOST | 13,010 | 10,235 |
+  - json-events, mean bytes unprimed -> primed (paq8px with 110 KB): 128: 33.9 -> 21.2 (16.7), 256: 48.4 -> 32.2 (28.2), 512: 92.2 -> 72.9 (55.8), 1024: 149.2 -> 125.1 (98.1), 2048: 242.7 -> 220.2 (188.8)
+| json, foreign | 9,062 | 7,696 | 6,871 | 1.120 | LOST | 12,402 | 9,469 |
+  - json-events, mean bytes unprimed -> primed (paq8px with 110 KB): 128: 33.9 -> 24.7 (19.4), 256: 48.4 -> 35.2 (32.3), 512: 92.2 -> 74.4 (62.4), 1024: 149.2 -> 126.0 (110.0), 2048: 242.7 -> 220.6 (205.4)
+
+Totals per source, bytes over 80 messages (Apache / Linux / OpenSSH / JSON): Mamba primed 8 KB 2,216 / 3,351 /
+2,870 / 7,544; paq8px 8 KB 2,503 / 3,876 / 2,500 / 10,235; lpaq1 `0` 8 KB 3,304 / 5,281 / 4,128 / 13,010; lpaq1 `0`
+110 KB 2,486 / 4,270 / 3,423 / 8,685; paq8l 110 KB 2,142 / 3,393 / 2,433 / 7,039; paq8px 110 KB 1,932 / 2,943 /
+1,943 / 6,199.
+
+### 4.3 E4, output of `window10k_cm.py` (MEASURED; bytes, first 10,240 bytes of each file)
+
+empty-input archive bytes: {'lpaq1-9': 9, 'paq8l-8': 22, 'paq8px217-8': 10}
+| File | redukt-azth | brotli-11 | xz-9e | gzip-9 | lpaq1-9 | paq8l-8 | paq8px217-8 | best CM | Redukt vs best CM | Redukt payload vs CM payload |
+|---|---|---|---|---|---|---|---|---|---|---|
+| apache-access.log | 281 | 595 | 692 | 698 | 506 | 372 | 315 | paq8px217-8 | -10.8% | -14.4% |
+| facturae-batch.xml | 521 | 1,111 | 1,288 | 1,356 | 1,132 | 903 | 765 | paq8px217-8 | -31.9% | -33.6% |
+| ubl-invoice-batch.xml | 592 | 1,116 | 1,324 | 1,379 | 1,139 | 967 | 842 | paq8px217-8 | -29.7% | -31.2% |
+| nci | 806 | 925 | 1,012 | 1,184 | 891 | 650 | 561 | paq8px217-8 | +43.7% | +42.6% |
+| dickens | 840 | 3,551 | 4,544 | 4,622 | 3,761 | 3,543 | 3,321 | paq8px217-8 | -74.7% | -75.2% |
+| enwik8 | 1,241 | 3,024 | 3,752 | 3,814 | 3,232 | 3,017 | 2,793 | paq8px217-8 | -55.6% | -56.1% |
+| samba | 350 | 2,838 | 3,632 | 3,687 | 2,957 | 2,767 | 2,623 | paq8px217-8 | -86.7% | -87.4% |
+| mozilla | 2,518 | 2,522 | 2,600 | 2,992 | 2,695 | 2,139 | 1,889 | paq8px217-8 | +33.3% | +32.9% |
+| mr | 3,191 | 2,942 | 2,864 | 3,477 | 2,767 | 2,235 | 2,117 | paq8px217-8 | +50.7% | +50.5% |
+| ooffice | 5,284 | 3,574 | 3,588 | 3,793 | 3,587 | 2,740 | 2,432 | paq8px217-8 | +117.3% | +117.3% |
+| x-ray | 7,575 | 5,837 | 5,944 | 7,534 | 5,659 | 4,861 | 4,613 | paq8px217-8 | +64.2% | +64.1% |
+| sao | 11,718 | 7,651 | 7,624 | 8,176 | 7,836 | 6,546 | 6,282 | paq8px217-8 | +86.5% | +86.5% |
+
+Redukt archive smaller than the best public CM archive: 6 of 12; payload against payload: 6 of 12

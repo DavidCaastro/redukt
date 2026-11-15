@@ -72,7 +72,7 @@ def main():
         print("|---|---|---|---|")
         order = (["Mamba-130M payload", "Mamba-130M archive", "brotli-11", "zstd-19-dict", "zstd-19-fdict"]
                  + sorted(t for t in data if t.startswith("strata"))
-                 + sorted(t for t in data if "+" in t))
+                 + sorted(t for t in data if "+" in t and not t.endswith("8k")))
         for tool in order:
             if tool not in data:
                 continue
@@ -115,9 +115,34 @@ def main():
         print(f"\nMamba's payload is smaller than every member of S in {smallest} of {cells} cells")
     print("\n### lpaq1: memory and primer (total bytes over the 480 messages)")
     every = [s for v in CLASSES.values() for s in v]
-    for tool in sorted(t for t in data if t.startswith("lpaq1")):
+    for tool in sorted(t for t in data if t.startswith("lpaq1") and not t.endswith("8k")):
         print(f"- {tool}: {total(data[tool], every)[0]:,d}")
     print(f"- Mamba-130M payload: {total(mamba, every)[0]:,d}")
+    e3b(data)
+
+
+def e3b(data):
+    """Amendment 8: Mamba-130M primed by difference (8,192 bytes) on the arms it did not keep in E3."""
+    mamba = data["Mamba-130M payload"]
+    print("\n### check E3b: Mamba-130M primed with 8,192 bytes (payload by difference)")
+    print("| Class, pairing | Mamba unprimed | Mamba primed | B_cm of E3 (110 KB) | primed / B_cm | Verdict | "
+          "lpaq1-0, 8 KB primer | paq8px, 8 KB primer |")
+    print("|---|---|---|---|---|---|---|---|")
+    for cls, kind in (("logs", "same"), ("json", "same"), ("json", "foreign")):
+        sources = CLASSES[cls]
+        primed = data.get(f"mamba130m+{kind}8k", {})
+        got, n = total(primed, sources)
+        if n != total(mamba, sources)[1]:
+            print(f"| {cls}, {kind} | not measured |")
+            continue
+        b_cm = min(total(data[f"{c}+{kind}110k"], sources)[0] for c in S)
+        eq = [total(data[f"{c}+{kind}8k"], sources)[0] for c in ("lpaq1-0", "paq8px217-8")]
+        print(f"| {cls}, {kind} | {total(mamba, sources)[0]:,d} | {got:,d} | {b_cm:,d} | {got / b_cm:.3f} | "
+              f"{verdict(got, b_cm)} | {eq[0]:,d} | {eq[1]:,d} |")
+        for src in sources:
+            cells = ", ".join(f"{s}: {total(mamba, [src], s)[0] / 16:.1f} -> {total(primed, [src], s)[0] / 16:.1f}"
+                              f" ({total(data[f'paq8px217-8+{kind}110k'], [src], s)[0] / 16:.1f})" for s in SIZES)
+            print(f"  - {src}, mean bytes unprimed -> primed (paq8px with 110 KB): {cells}")
 
 
 if __name__ == "__main__":

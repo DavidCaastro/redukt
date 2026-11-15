@@ -450,7 +450,13 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
   logs 2.63 / 0.63 -> depends on the primer; JSON 1.46 / 1.32 -> LOST. lpaq1 with 9 MB of memory matches 1.5 GB.
   The path-3 claim that survives: short natural-language messages, and message types with no same-source sample on
   the terminal; repetitive machine traffic with a sample is 2.4-3x smaller with a primed CM coder. Never quote the
-  R-113 margins (brotli, zstd + dictionary) without this. Mamba was not primed (symmetric arm, not measured).
+  R-113 margins (brotli, zstd + dictionary) without this. **E3b (amendment 8): Mamba primed by difference with
+  8 KB halves its log bytes and is still LOST against paq8px + 110 KB (logs 1.24, JSON 1.22 / 1.12); it beats
+  paq8px at equal 8 KB primers (-5 % logs, -26 % JSON) and lpaq1 level 0 with 110 KB (-17 %, -13 %).** Priming is
+  not a product feature. **E4: on the 10 KB headline windows Redukt beats the best public CM compressor on 6 of
+  12 files** (dickens -75 %, enwik8 -56 %, samba -87 %, invoice XML -30 / -32 %, apache -11 %; loses nci +44 % and
+  the binaries) — quote this next to "8 of 12 against brotli". V3 results must be reported next to lpaq1
+  level 0 primed (amendment 8).
   Owner, 2026-11-15: leaving CPU / edge is acceptable if viability needs it; CPU work so far counts as a functional
   demonstration.
 - AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
