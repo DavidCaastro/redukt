@@ -64,6 +64,14 @@ Admitted paths to close it (every new phase must justify itself against one of t
    and loses on short log/JSON messages because of the 19-byte header (payload alone wins 24/30, -26..-42%).
    Viable WITH CONDITIONS: compact message framing (R-114), the sender terminal must run a 130 MB model and
    ARM <-> x86 determinism (R-115, reactivates R-104 F2), unverified market size (R-116), text-like traffic.
+   R-116 desk research 2026-11-15 (`docs/internal/research/r116-path3-market-2026-11-15.md`, third-party figures
+   REPORTED): NOT validated and pointing against. Iridium IoT: 2.16M subscribers at $7.63 per month ARPU (falling),
+   about $198M per year of airtime in total; a typical device moves kilobytes per month of hand-packed binary
+   telemetry. Direct-to-cell (T-Satellite ~$10 per month, Apple free) makes human off-grid texting flat-rate: the
+   free-text traffic where Mamba wins leaves the byte-priced links; NB-IoT NTN is $0.01-0.05 per KB, still far
+   above compute, but it is machine traffic (no advantage, E3 / E3b). Illustrative prize: a few $M per year at
+   100 % adoption. Sailing e-mail compression (XGate, OCENS, PredictMail) is a paying but occupied niche. Corpus
+   and integrator conversation still undone. Do not write path-3 code (R-114, R-115) without that conversation.
 **Verdict of Fase 20 (2026-11-11): Redukt is NOT viable as a storage-saving product** (cost 100-170x the value;
 paths 1 and 2 closed by measurement). The only candidate segment is narrowband satellite messaging. Do not
 start storage-oriented optimization work (kernels, quantization, fast tier) without new evidence.
