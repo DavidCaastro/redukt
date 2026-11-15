@@ -241,6 +241,8 @@ Negative = fewer bytes. The last column is the effect of the larger training set
   facts behind that O2 are in section 0.3; the decision "is a cheaper and weaker log compressor a product" belongs
   to the owner. Recommendation: no further capacity work (no R4, no larger trunk, no more training data) — the
   three levers V7 tested are measured flat.
+- **Withdrawn on 2026-11-15 by `10-strong-cm-check.md`** (check E2, amendment 6): against public context-mixing
+  compressors (lpaq1, zpaq) tier `cm` is 9-20 % larger on logs, so the next item no longer holds as written.
 - What survives as an asset: tier `cm` — 208 MAC/byte, about 34 KB of weights, integer, bit-identical by
   construction — compresses unseen logs 15-23 % better than the best of PPMd / xz and within 8-28 % of Mamba-130M.
   It is a classical-class context mixer, not a neural backbone, and it loses to PPMd on text and to PPMd / brotli

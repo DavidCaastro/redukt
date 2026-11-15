@@ -435,6 +435,16 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
   ~34 KB, integer) codes unseen logs 15-23 % smaller than the best of PPMd / xz and within 8-28 % of Mamba-130M —
   a classical-class context mixer, in ideal code lengths, not yet a Rust codec. Do not start further capacity work
   (R4, wider trunks, more training data) without new evidence; whether the logs O2 is a product is the owner's call.
+- **Check E2, MEASURED 2026-11-15** (amendment 6, `docs/internal/research/strata-backbone/10-strong-cm-check.md`):
+  the classical set had no context-mixing compressor. Against that family `cm` is NO ASSET: 9-20 % larger on logs
+  than lpaq1 (2007, 1.2 MB/s) / zpaq `-m5` (0.6 MB/s), 11-12 % larger on text; the "what survives" sentence above
+  is withdrawn. `cm` speed (proxy, not the specified arithmetic): 0.53-1.45 us per byte = $0.002-0.006 per GB.
+  **On identical bytes (171 KB - 1 MiB) paq8px v217 `-8` (11 KB/s on one thread) is 34-41 % smaller than Mamba-130M
+  on logs, 27 % on JSON / `nci`, 39 % on synthetic invoices; paq8l and, on 1 MiB logs, zpaq `-m5` also beat Mamba.
+  Mamba-130M keeps only prose (paq8px is 43-58 % larger there).** Never present the brotli / gzip margins on logs or
+  XML as "better than the best CPU compressor"; the 10 KB headline windows and the path-3 short messages have not
+  been compared with this family yet. No compressor measured, at any speed, nets more than about $0.02 per raw GB
+  over 7 years for storage: the prize is small and free tools already take it.
 - AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
   (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).
