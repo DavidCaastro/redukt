@@ -300,3 +300,37 @@ command lines). Not seen: any size or time of a public CM compressor on a select
 Expectation written before the measurement (INFERENCE from published benchmarks of these programs on text):
 paq8px and paq8l are smaller than `cm` on every class but far below 200 KB/s; lpaq1 and zpaq `-m5` are smaller than
 `cm` on text; on logs lpaq1 is close to `cm`, so the likely outcome is TIE, and NO ASSET would not be a surprise.
+
+## Amendment 7 (2026-11-15): check E3 — primed public context-mixing compressors against `.azth` on the R-113 short messages, registered before measuring
+
+Written after check E2 (`10-strong-cm-check.md`), on the owner's request of 2026-11-15 to run the comparison that
+E2 left open. No gate is changed; V3 (Strata `msg88` against zstd + dictionary) keeps its registered comparator, and
+whether this family should be added to it is reported as a question for the owner.
+
+Why: R-113 compared the Mamba-130M archive with brotli, xz, gzip and zstd with a same-source dictionary. No
+context-mixing compressor was in that set, primed or not. E2 found the same omission decisive on long inputs.
+
+Seen before this amendment: every R-113 size (`short-message-results.csv`), the Strata short-message results of
+`03-bakeoff.md`, every E2 result. The tool `tools/strata/viability/shortmsg_cm.py` was run on one neutral file only
+(`docs/ROADMAP.md`, to check that an empty message costs 0 bytes by difference). Not seen: any size of a public CM
+compressor on an R-113 message.
+
+| Item | Registered value |
+|---|---|
+| Messages | the 480 messages of R-113 (6 sources x 5 sizes x 16), cut by `shortmsg.py`; alignment with the R-113 file is checked on the classical sizes, message by message |
+| Compressors (set S) | lpaq1 level `9`, lpaq1 level `0` (9 MB of memory, the terminal-sized setting), paq8l `-8`, paq8px v217 `-8`. zpaq is left out: its journaling archive adds fragment tables that do not cancel by difference |
+| Primed payload | size(C(D + m)) - size(C(D)), same file names in every run: the bytes an adaptive coder emits for m after reading D. No framing, no checksum. It is a difference of two real archives, not a shipped codec |
+| Primers D | `same110k`: last 110,000 bytes of the first half of the message source (the budget of the R-113 zstd dictionary; the whole first half for the three small logs). `foreign110k`: the same position in the foreign source fixed in G0 amendment 1 (`webster` for Wikipedia and prose, Zookeeper for the three logs, another hour of the same event archive for JSON — labelled same source). Report only, lpaq1 `9`: no primer; the whole first half; the content of the trained zstd dictionary |
+| Mamba-130M side | the R-113 archives (Q8, no primer): payload = archive - 20 bytes of framing; the real archive is reported next to it |
+| Classes | `text` = Wikipedia + prose; `logs` = Apache + Linux + OpenSSH; `json` = GitHub events |
+| Rule, per class and pairing | B_cm = the smallest total over the class's messages among the members of S (one compressor for the whole class; compute cost is not charged, since a byte on these links is worth $0.3-3 per KB). Mamba **KEEPS** if its payload total <= 0.90 B_cm; **LOST** if >= 1.00 B_cm; otherwise **MARGINAL** |
+| Class verdict | KEEPS if KEEPS in both pairings; LOST if LOST in both; otherwise DEPENDS ON THE PRIMER, with both figures |
+| Reported, no vote | per source and size the mean bytes of every arm, zstd-19 with dictionary, brotli-11; cells (of 30) where Mamba's payload is the smallest; lpaq1 `0` against lpaq1 `9` (does the result need gigabytes of memory); the same comparison with the real `.azth` archive and the CM payload + 4 bytes of framing |
+
+Asymmetries, stated before measuring: (a) Mamba is not primed (a primed Mamba was never built; this favours the CM
+side); (b) choosing the best member of S per class after the fact favours the CM side; (c) the same-source primer
+is the best case for an online coder — the foreign pairing is the one closer to a fleet whose next message is not in
+the dictionary file; (d) Wikipedia and English prose are almost certainly in Mamba's pre-training data.
+
+Expectation written before the measurement (INFERENCE): `text` KEEPS in both pairings; `logs` LOST with the
+same-source primer and KEEPS with the foreign one (DEPENDS ON THE PRIMER); `json` LOST or MARGINAL in both.
