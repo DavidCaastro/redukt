@@ -491,5 +491,13 @@ bisected). No test reads this fixture: `tests/roundtrip.rs` writes its own `gold
 item for the owner: regenerate the fixture or bisect the drift (it supports the case for golden `.azth` files in CI,
 R-104 F3).
 
+Resolved 2026-11-16 (owner asked to fix the fixture): regenerated, not bisected. `data/test-fixtures/golden.rdkt`
+is now the RDKT v5 archive of `golden-input.bin` (`--quant f32`, Mamba-130M, 33 bytes, sha256 `be14e088...`) and
+`golden.azth` the same archive under the legacy magic (sha256 `b8719bf8...`, the value the golden test pinned from
+2026-11-10 until the rename). Two tests read them: `golden_fixtures_are_pinned` (no weights) and
+`golden_reference_determinism` (fresh compress == fixture; both fixtures decode to the input). The RWKV v4
+archive of 2026-10-29 stays in the git history (commit 112728b); why it stopped decoding remains an INFERENCE.
+There is still no RWKV golden archive: the RWKV level is not in the header (section 7, owner decision pending).
+
 Not run: the literal gate 2c (enwik8 10 KB through `redukt api`). It needs a server running in the background, which
 the process rules forbid. API == CLI byte parity is covered only by the two `api_parity` tests on synthetic input.

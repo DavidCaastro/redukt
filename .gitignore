@@ -1,6 +1,8 @@
 /target
 *.azth
 *.rdkt
+!data/test-fixtures/golden.azth
+!data/test-fixtures/golden.rdkt
 weights/**/*.safetensors
 weights/**/*.gguf
 weights/**/*.bin

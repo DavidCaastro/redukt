@@ -396,7 +396,7 @@ Measured on i5-1235U, maxperf, 10 KB (thermally limited laptop):
 | Fase 20 R-113 path 3 + short messages (`short-message-bench/`) | narrowband satellite $3.5K-3.15M/GB; `.azth` -41..-53% vs brotli, 16/30 vs zstd + dictionary (24/30 without the 19 B header) | viable with conditions |
 | R-105 step 1: pretrained small-backbone probe (`small-backbone-probe/`, 2026-11-11) | backbone-only bpb, enwik8 500 KB: Mamba-130M 0.938, SmolLM2-135M 0.834, Pythia-160M/70M/31M/14M 1.026/1.193/1.283/1.448, L3TC-12M/3.2M/200K 0.850/1.039/1.318 (training file) but 1.467/1.455/1.628 on unseen enwik9 and 4.3-7.3 on XML/logs | NO-GO for published models; next = own domain specialist |
 | R-109 CLI batch scaling on T4 (`run-e-batch`, 2026-11-11) | N=12/32/64/128 = 530/573/582/559 tok/s engine (1.8-2.1 KB/s, $33-38/GB spot); 128 x 50 KB 1.049 bpb at 552 tok/s; batch == single 3/3 at N=12 and N=128, batch roundtrip 32/32; saturated from N=12, half the FFI harness | measured -> R-110 |
-| R-104 F3 libm lint (`tests/libm_lint.rs`, e93b72e) | fails on any platform transcendental on the codec path; found and fixed `log2` in content detection and 3 `powi`; output identical 6/6 | done (goldens pending) |
+| R-104 F3 libm lint (`tests/libm_lint.rs`, e93b72e) | fails on any platform transcendental on the codec path; found and fixed `log2` in content detection and 3 `powi`; output identical 6/6 | done (Mamba goldens tracked 2026-11-16) |
 | R-109 plugin lockstep over FFI v2 slots | `prepare_streams` -> `batch_init(n)`, one slot per stream, `forward_multi` -> `forward_batch`; T4 jobs=12: bpb 0.7481 (was 1.949), batch == single 3/3, 1,401 B/s aggregate incl. load (CPU 4 vCPU 283 B/s) | done, validated on T4 |
 
 R-100 is compute-bound from N~8 (130-190 GFLOPS, no FMA), ~4.9 MB per stream; 192/192 batch `.azth` are identical
@@ -406,13 +406,13 @@ Aggregate gain ~9x per machine over the 34 tok/s start, but per-vCPU efficiency 
 See "Commercial Target". Next lever: host pipeline of the plugin lockstep (R-110), then GPU batch kernels.
 The idle re-measurement (12 files = 75,398 tokens; 32 files = 198,844 tokens) and an independent review confirmed the BPB
 gates exactly and batch-vs-single identity (N=1,2,3, both directions). `redukt api` has byte-for-byte parity with the CLI
-(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests (2026-11-14): 318 unit + 3 lint +
+(sha256 API == CLI on enwik8 10 KB Q8); it is single-threaded (one request at a time). Tests (2026-11-16: 319 unit + 3 lint + 6 integration; before, 2026-11-14): 318 unit + 3 lint +
 5 integration (+ 6 / 15 ignored; all ignored integration tests pass with real weights, 07-legacy-fixes §11).
 Status: R-098/R-099/R-100 done; R-102 GCP verified locally in a container (not deployed on real GCP); R-103 CUDA FFI v2
 validated on Kaggle T4 (3a2e8be: roundtrip, BPB == CPU, batch 1,117 tok/s, ~2% of the state-bandwidth
 ceiling, headroom 15-25x); R-109 measured through the CLI at N=12..128 (flat ~550 tok/s, $33-38/GB) -> R-110 (host
 pipeline of the plugin lockstep) is the next GPU lever, before kernels; R-104 F1 done (libm replaced by `fmath`),
-F3 lint done (golden `.azth` in CI pending), F2 done 2026-11-14 (scalar kernels follow the AVX2 operation order:
+F3 lint done (golden fixtures `data/test-fixtures/golden.rdkt` / `.azth` read by the tests since 2026-11-16; no RWKV golden), F2 done 2026-11-14 (scalar kernels follow the AVX2 operation order:
 same `.azth` with and without `REDUKT_NO_SIMD=1`, 12/12 Mamba/RWKV x F32/Q8 cells, cross-tier decodes OK; contract 2
 decodes without FMA hardware through a pure-Rust FMA; ARM not measured yet — required by R-115 if path 3 is pursued); R-105 closed (steps 1 and 2 NO-GO); R-101, R-110, R-107 follow-ups, R-084..R-086, R-089 and Fase 18
 DEPRECATED (ROADMAP "Prioridad vigente"). Fase 20 done: R-111, R-112, R-113; R-114/R-115/R-116 proposed.

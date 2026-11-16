@@ -254,6 +254,28 @@ fn decompress_rejects_corrupted_crc() {
 // R-013: Cross-platform determinism tests
 // ---------------------------------------------------------------------------
 
+const GOLDEN_RDKT_SHA256: &str = "be14e088b992407280fdde8435801f50fc29595590922da961c775fc124d5cf2";
+const GOLDEN_LEGACY_SHA256: &str = "b8719bf8d1ac6a7ed3426981ccb859f53f195023af7d869000fbb294bdb8fc0d";
+
+fn fixture(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join("test-fixtures").join(name)
+}
+
+/// The tracked golden archives are the ones the tests pin (no weights needed). `golden.azth` is the
+/// same archive under the legacy magic; see `data/test-fixtures/README.md`.
+#[test]
+fn golden_fixtures_are_pinned() {
+    let rdkt = std::fs::read(fixture("golden.rdkt")).unwrap();
+    let legacy = std::fs::read(fixture("golden.azth")).unwrap();
+    assert_eq!(std::fs::read(fixture("golden-input.bin")).unwrap().len(), 39);
+    assert_eq!(sha256_hex(&rdkt), GOLDEN_RDKT_SHA256, "golden.rdkt changed");
+    assert_eq!(sha256_hex(&legacy), GOLDEN_LEGACY_SHA256, "golden.azth changed");
+    assert_eq!(&rdkt[..8], b"RDKT\x05\x00\x00\x00");
+    assert_eq!(&legacy[..8], b"AZTH\x05\x00\x00\x00");
+    assert_eq!(rdkt[4..], legacy[4..], "the fixtures must differ only in the magic");
+    assert_eq!(u32::from_le_bytes([rdkt[8], rdkt[9], rdkt[10], rdkt[11]]), 39, "TOTAL_BYTES");
+}
+
 /// Golden reference: compress a known 40-byte input and verify the output
 /// matches the expected SHA-256 hash. This detects any change in the
 /// compression pipeline (model, quantization, coder, format).
@@ -299,7 +321,7 @@ fn golden_reference_determinism() {
     // 2026-11-16: magic renamed AZTH -> RDKT; bytes 4.. unchanged (with the old magic the hash is
     // b8719bf8..., verified).
     // F32 is the golden profile; update if the pipeline changes.
-    let expected = "be14e088b992407280fdde8435801f50fc29595590922da961c775fc124d5cf2";
+    let expected = GOLDEN_RDKT_SHA256;
     assert_eq!(hash, expected,
         "golden hash mismatch — platform or pipeline changed?\n  got:      {}\n  expected: {}",
         hash, expected);
@@ -309,6 +331,15 @@ fn golden_reference_determinism() {
     let original = std::fs::read(&input).unwrap();
     let recovered = std::fs::read(&restored).unwrap();
     assert_eq!(original, recovered, "golden roundtrip FAILED: bytes differ");
+
+    // The tracked fixtures: same bytes as a fresh compress, and both magics decode to the input.
+    assert_eq!(azth_bytes, std::fs::read(fixture("golden.rdkt")).unwrap(), "fresh archive != tracked fixture");
+    assert_eq!(original, std::fs::read(fixture("golden-input.bin")).unwrap());
+    for name in ["golden.rdkt", "golden.azth"] {
+        let out = tmp.join(format!("{}.out", name));
+        assert!(decompress(&bin, &fixture(name), &out), "{}: fixture does not decode", name);
+        assert_eq!(std::fs::read(&out).unwrap(), original, "{}: fixture decodes to other bytes", name);
+    }
 
     std::fs::remove_dir_all(&tmp).ok();
     eprintln!("golden reference OK: {} bytes, hash={}", azth_bytes.len(), &hash[..16]);
