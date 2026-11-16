@@ -75,7 +75,7 @@ impl fmt::Display for BackboneChoice {
 }
 
 /// Numeric weight profile of the Mamba-family backbone (R-099).
-/// Stored in the AZTH v5 PROFILE byte (bits 0-3). Decompression requires the
+/// Stored in the RDKT v5 PROFILE byte (bits 0-3). Decompression requires the
 /// identical profile: it changes the logits, hence the coded stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightProfile {
@@ -140,7 +140,7 @@ pub trait BackboneState: Send {
     /// Reset all state to zeros (for batch reuse without reallocation).
     fn reset(&mut self);
     /// R-108: zero the recurrent state every `every` forwards (0 = never). Recorded in the
-    /// AZTH header; backbones without length drift ignore it (default no-op).
+    /// RDKT header; backbones without length drift ignore it (default no-op).
     fn set_reset_every(&mut self, _every: u64) {}
 }
 

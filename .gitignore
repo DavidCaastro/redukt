@@ -1,5 +1,6 @@
 /target
 *.azth
+*.rdkt
 weights/**/*.safetensors
 weights/**/*.gguf
 weights/**/*.bin

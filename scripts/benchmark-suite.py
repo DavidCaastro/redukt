@@ -151,7 +151,7 @@ def bench_redukt(data, redukt_bin):
     """Compress with redukt, verify roundtrip, return results."""
     with tempfile.TemporaryDirectory() as td:
         inp = os.path.join(td, "input.bin")
-        out = os.path.join(td, "output.azth")
+        out = os.path.join(td, "output.rdkt")
         restored = os.path.join(td, "restored.bin")
 
         with open(inp, "wb") as f:
@@ -344,7 +344,7 @@ def write_markdown(results, context, window_bytes, output_dir):
     lines.append("## Methodology\n")
     lines.append(f"- Window: first {w:,} bytes of each file")
     lines.append("- SHA-256 computed on the windowed input (not full file)")
-    lines.append("- Redukt: `compress --input FILE --output FILE.azth` (actual file size)")
+    lines.append("- Redukt: `compress --input FILE --output FILE.rdkt` (actual file size)")
     lines.append("- Roundtrip: decompress output and compare SHA-256 with original")
     lines.append("- Competitors: Python stdlib/pip libraries, in-memory compression")
     lines.append("- BPB = (compressed_size * 8) / original_size")

@@ -638,11 +638,11 @@ fn report(tag: &str, rows: &[Row], groups: usize, wall: f64, engine_tokens: usiz
 }
 
 /// `compress --input-dir DIR --output-dir DIR --jobs N`: every file becomes
-/// `<name>.azth`, byte-identical to `compress --input <file>`.
+/// `<name>.rdkt`, byte-identical to `compress --input <file>`.
 pub fn compress_dir(
     input_dir: &str, output_dir: &str, opts: &BatchOptions, governor: Option<&HardwareGovernor>,
 ) -> AzResult<()> {
-    let files = list_files(input_dir, &|p| p.extension().map_or(true, |e| e != "azth"))?;
+    let files = list_files(input_dir, &|p| !crate::application::codec::has_archive_ext(p))?;
     std::fs::create_dir_all(output_dir)
         .map_err(|e| AzError::Io { path: output_dir.to_string(), source: e })?;
     let slots = opts.slots.clamp(1, MAX_SLOTS);
@@ -673,7 +673,7 @@ pub fn compress_dir(
         let mut it = paths.iter();
         let mut source = || it.next().map(|p| compress_admission(p, opts, key, &tokenizer).map_err(|e| named(p, e)));
         let mut on_result = |mut r: StreamResult| {
-            let out_name = format!("{}.azth", r.name);
+            let out_name = format!("{}.rdkt", r.name);
             let output = std::mem::replace(&mut r.output, Ok(Vec::new()));
             let written = output.and_then(|bytes| write_output(output_dir, &out_name, &bytes));
             match written {
@@ -707,7 +707,7 @@ fn decompress_key(data: &[u8], quant: &str, emb_surgery_cli: &str) -> AzResult<(
     let hdr = parse_header(data)?;
     if hdr.token_count.is_some() {
         return Err(AzError::Format(format!(
-            "AZTH v{} (token-count driven) is not supported in batch mode; use `decompress --input`",
+            "RDKT v{} (token-count driven) is not supported in batch mode; use `decompress --input`",
             hdr.version
         )));
     }
@@ -730,12 +730,12 @@ fn decompress_admission(path: &Path, quant: &str, emb_surgery_cli: &str) -> AzRe
     Ok(Admission::Decode { name: file_name(path), stream: stream.to_vec(), expected_crc, hdr })
 }
 
-/// `decompress --input-dir DIR --output-dir DIR --jobs N`: every `<name>.azth`
+/// `decompress --input-dir DIR --output-dir DIR --jobs N`: every `<name>.rdkt`
 /// is restored to `<name>` (CRC-32 verified), grouped by header backbone/profile.
 pub fn decompress_dir(
     input_dir: &str, output_dir: &str, opts: &BatchOptions, governor: Option<&HardwareGovernor>,
 ) -> AzResult<()> {
-    let files = list_files(input_dir, &|p| p.extension().map_or(false, |e| e == "azth"))?;
+    let files = list_files(input_dir, &|p| crate::application::codec::has_archive_ext(p))?;
     std::fs::create_dir_all(output_dir)
         .map_err(|e| AzError::Io { path: output_dir.to_string(), source: e })?;
     let slots = opts.slots.clamp(1, MAX_SLOTS);
@@ -768,7 +768,7 @@ pub fn decompress_dir(
             it.next().map(|p| decompress_admission(p, &opts.quant, &opts.emb_surgery).map_err(|e| named(p, e)))
         };
         let mut on_result = |mut r: StreamResult| {
-            let out_name = r.name.strip_suffix(".azth").unwrap_or(&r.name).to_string();
+            let out_name = crate::application::codec::strip_archive_ext(&r.name).to_string();
             let output = std::mem::replace(&mut r.output, Ok(Vec::new()));
             let written = output.and_then(|bytes| write_output(output_dir, &out_name, &bytes));
             match written {
@@ -891,7 +891,7 @@ mod tests {
                 let hdr = parse_header(a).unwrap();
                 let (stream, crc) = extract_stream_and_crc_v(a, hdr.header_size, hdr.version).unwrap();
                 Some(Ok(Admission::Decode {
-                    name: format!("f{}.azth", idx), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
+                    name: format!("f{}.rdkt", idx), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
                 }))
             };
             let mut outs: Vec<(String, Vec<u8>)> = Vec::new();
@@ -961,7 +961,7 @@ mod tests {
         let total = hdr.total_bytes;
         let (stream, crc) = extract_stream_and_crc_v(&a, hdr.header_size, hdr.version).unwrap();
         let mut adm = Some(Admission::Decode {
-            name: "z.azth".into(), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
+            name: "z.rdkt".into(), stream: stream.to_vec(), expected_crc: crc.unwrap(), hdr,
         });
         let mut source = || adm.take().map(Ok);
         let mut res: Vec<(usize, bool)> = Vec::new();
@@ -976,9 +976,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("redukt_lockstep_wo_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let d = dir.to_string_lossy().to_string();
-        assert_eq!(write_output(&d, "a b ñ.azth", b"xyz").unwrap(), 3);
-        assert_eq!(std::fs::read(dir.join("a b ñ.azth")).unwrap(), b"xyz");
-        assert!(!dir.join("a b ñ.azth.part").exists());
+        assert_eq!(write_output(&d, "a b ñ.rdkt", b"xyz").unwrap(), 3);
+        assert_eq!(std::fs::read(dir.join("a b ñ.rdkt")).unwrap(), b"xyz");
+        assert!(!dir.join("a b ñ.rdkt.part").exists());
         assert!(write_output(&d, "", b"x").is_err());
         let missing = dir.join("no").join("such").to_string_lossy().to_string();
         assert!(write_output(&missing, "f", b"x").is_err());

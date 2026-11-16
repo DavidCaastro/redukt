@@ -138,7 +138,7 @@ docker run --rm -v /var/lib/redukt/weights:/weights \
   --entrypoint redukt-entrypoint.sh "$IMAGE_URI" fetch-weights \
   || echo "[startup] WARNING: weights not fetched (is $GPU_SUBDIR/model.rbin in gs://$WEIGHTS_BUCKET?)"
 
-# 6. Wrapper:  redukt-gpu compress --backbone plugin --weights /weights/<subdir> --input /data/f --output /data/f.azth
+# 6. Wrapper:  redukt-gpu compress --backbone plugin --weights /weights/<subdir> --input /data/f --output /data/f.rdkt
 cat >/usr/local/bin/redukt-gpu <<WRAPPER
 #!/usr/bin/env bash
 exec docker run --rm --gpus all -v /var/lib/redukt/weights:/weights:ro -v /var/lib/redukt/data:/data \\

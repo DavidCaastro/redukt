@@ -13,13 +13,18 @@ use crate::domain::backbone::{Backbone, BackboneState, BackendTokenizer, Backbon
 use crate::domain::fmath::NumericContract;
 use crate::domain::quant::QuantPolicy;
 
-/// v3 magic — kept for backward-compat parsing and tests.
+/// Format magic (first four bytes). RDKT replaced the working name AZTH on 2026-11-16; the
+/// version numbering continues, so RDKT starts at v5 with the layout of AZTH v5.
+pub const FORMAT_MAGIC: &[u8; 4] = b"RDKT";
+/// Legacy magic: archives written before the rename (v2-v5). Read-only.
+pub const LEGACY_MAGIC: &[u8; 4] = b"AZTH";
+/// v3 magic (legacy AZTH) — kept for backward-compat parsing and tests.
 #[cfg(test)]
 const MAGIC_V3: &[u8; 8] = b"AZTH\x03\x00\x00\x00";
 pub const MAGIC_V4: &[u8; 8] = b"AZTH\x04\x00\x00\x00";
 /// v5 (R-099): v4 + 1-byte PROFILE after FLAGS. Always written since R-104 F1
 /// (PROFILE carries the numeric contract); v4 is read-only (legacy contract).
-pub const MAGIC_V5: &[u8; 8] = b"AZTH\x05\x00\x00\x00";
+pub const MAGIC_V5: &[u8; 8] = b"RDKT\x05\x00\x00\x00";
 pub const HEADER_SIZE: usize = 28; // v2/v3: 8 magic + 4 total_bytes + 4 token_count + 12 hp
 pub const V4_HEADER_BASE: usize = 13; // v4: 8 magic + 4 total_bytes + 1 flags
 pub const V5_HEADER_BASE: usize = 14; // v5: v4 base + 1 profile
@@ -162,36 +167,42 @@ pub fn parse_reset_every(s: &str) -> AzResult<u8> {
 fn check_reset_log2(log2: u8) -> AzResult<u8> {
     if log2 == 0 || !(RESET_LOG2_MIN..=RESET_LOG2_MAX).contains(&log2) {
         return Err(AzError::Format(format!(
-            "AZTH v5 RESET_LOG2 out of range: {} (expected {}..={})", log2, RESET_LOG2_MIN, RESET_LOG2_MAX
+            "RDKT v5 RESET_LOG2 out of range: {} (expected {}..={})", log2, RESET_LOG2_MIN, RESET_LOG2_MAX
         )));
     }
     Ok(log2)
 }
 
-/// Validate AZTH magic bytes. Returns format version (2, 3, 4 or 5).
+/// Validate the magic bytes. Returns format version: 5 for RDKT, 2 to 5 for legacy AZTH.
 pub fn validate_magic(data: &[u8]) -> AzResult<u8> {
     if data.len() < 8 {
         return Err(AzError::Format(format!(
-            "invalid AZTH file (too short: {} bytes)", data.len()
+            "invalid RDKT file (too short: {} bytes)", data.len()
         )));
     }
-    if &data[..4] != b"AZTH" {
+    let legacy = &data[..4] == LEGACY_MAGIC;
+    if !legacy && &data[..4] != FORMAT_MAGIC {
         return Err(AzError::Format(format!(
-            "invalid AZTH file (bad magic: {:?})", &data[..4]
+            "invalid RDKT file (bad magic: {:?})", &data[..4]
         )));
     }
     let version = data[4];
+    if !legacy && version < 5 {
+        return Err(AzError::Format(format!(
+            "unsupported RDKT version {} (RDKT starts at 5; versions 2 to 4 exist only as legacy AZTH)", version
+        )));
+    }
     let min_size = match version {
         2 | 3 => HEADER_SIZE,
         4 => V4_HEADER_BASE,
         5 => V5_HEADER_BASE,
         _ => return Err(AzError::Format(format!(
-            "unsupported AZTH version {} (expected 2, 3, 4 or 5)", version
+            "unsupported RDKT version {} (expected 2, 3, 4 or 5)", version
         ))),
     };
     if data.len() < min_size {
         return Err(AzError::Format(format!(
-            "invalid AZTH v{} (too short: {} < {})", version, data.len(), min_size
+            "invalid RDKT v{} (too short: {} < {})", version, data.len(), min_size
         )));
     }
     Ok(version)
@@ -210,13 +221,13 @@ pub fn uses_default_hp(bias_lr: f32, ngram_scale: f32, mix_eta: f32) -> bool {
 pub fn parse_profile_byte(b: u8) -> AzResult<(WeightProfile, NumericContract)> {
     if b & !(V5_PROFILE_QUANT_MASK | V5_PROFILE_CONTRACT_MASK | V5_PROFILE_RESET_FLAG) != 0 {
         return Err(AzError::Format(format!(
-            "AZTH v5 PROFILE has reserved bits set: 0x{:02X}", b
+            "RDKT v5 PROFILE has reserved bits set: 0x{:02X}", b
         )));
     }
     let contract_code = (b & V5_PROFILE_CONTRACT_MASK) >> V5_PROFILE_CONTRACT_SHIFT;
     let contract = NumericContract::from_header_code(contract_code).ok_or_else(|| {
         AzError::Format(format!(
-            "AZTH v5 numeric contract {} not supported by this build (known: 0 = legacy libm, \
+            "RDKT v5 numeric contract {} not supported by this build (known: 0 = legacy libm, \
              1 = fmath-v1, 2 = fma-v1); a newer Redukt is required to decode this archive", contract_code
         ))
     })?;
@@ -224,7 +235,7 @@ pub fn parse_profile_byte(b: u8) -> AzResult<(WeightProfile, NumericContract)> {
     let profile = WeightProfile::from_header_code(code).ok_or_else(|| {
         let what = if code == V5_PROFILE_QUANT_Q6_RESERVED { "Q6 (reserved)" } else { "unknown" };
         AzError::Format(format!(
-            "AZTH v5 weight profile code {} = {} — not supported by this build", code, what
+            "RDKT v5 weight profile code {} = {} — not supported by this build", code, what
         ))
     })?;
     Ok((profile, contract))
@@ -235,7 +246,7 @@ pub fn profile_byte(profile: WeightProfile, contract: NumericContract) -> u8 {
     profile.header_code() | (contract.header_code() << V5_PROFILE_CONTRACT_SHIFT)
 }
 
-/// Parse header for any AZTH version (v2-v5). Assumes validate_magic passed.
+/// Parse header for any RDKT version (v2-v5). Assumes validate_magic passed.
 pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
     let version = data[4];
     match version {
@@ -273,7 +284,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let reserved = flags & !known;
             if reserved != 0 {
                 return Err(AzError::Format(format!(
-                    "AZTH v{} unknown flags: 0x{:02X}", version, reserved
+                    "RDKT v{} unknown flags: 0x{:02X}", version, reserved
                 )));
             }
             // v5: PROFILE byte right after FLAGS (R-099/R-104).
@@ -288,7 +299,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let reset_log2 = if version == 5 && data[13] & V5_PROFILE_RESET_FLAG != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v5 RESET_LOG2 truncated: {} < {}", data.len(), offset + 1
+                        "RDKT v5 RESET_LOG2 truncated: {} < {}", data.len(), offset + 1
                     )));
                 }
                 let l = check_reset_log2(data[offset])?;
@@ -302,7 +313,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let (bias_lr, ngram_scale, mix_eta) = if flags & V4_FLAG_CUSTOM_HP != 0 {
                 if data.len() < offset + 12 {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} custom HP truncated: {} < {}",
+                        "RDKT v{} custom HP truncated: {} < {}",
                         version, data.len(), offset + 12
                     )));
                 }
@@ -335,7 +346,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let emb_surgery = if flags & V4_FLAG_EMB_SURGERY != 0 {
                 if data.len() < offset + EMB_SURGERY_BYTES {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} emb-surgery truncated: {} < {}",
+                        "RDKT v{} emb-surgery truncated: {} < {}",
                         version, data.len(), offset + EMB_SURGERY_BYTES
                     )));
                 }
@@ -356,7 +367,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let shuffle_stride = if flags & V4_FLAG_SHUFFLE != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} shuffle truncated: {} < {}", version, data.len(), offset + 1
+                        "RDKT v{} shuffle truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -370,7 +381,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let delta_stride = if flags & V4_FLAG_DELTA != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} delta truncated: {} < {}", version, data.len(), offset + 1
+                        "RDKT v{} delta truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -384,7 +395,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let skip_threshold = if flags & V4_FLAG_ADAPTIVE_SKIP != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} adaptive-skip truncated: {} < {}", version, data.len(), offset + 1
+                        "RDKT v{} adaptive-skip truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let s = data[offset];
@@ -398,13 +409,13 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             let backbone = if flags & V4_FLAG_BACKBONE != 0 {
                 if data.len() < offset + 1 {
                     return Err(AzError::Format(format!(
-                        "AZTH v{} backbone truncated: {} < {}", version, data.len(), offset + 1
+                        "RDKT v{} backbone truncated: {} < {}", version, data.len(), offset + 1
                     )));
                 }
                 let b = data[offset];
                 offset += 1;
                 BackboneChoice::from_header_byte(b).ok_or_else(|| {
-                    AzError::Format(format!("AZTH v{} unknown backbone: {}", version, b))
+                    AzError::Format(format!("RDKT v{} unknown backbone: {}", version, b))
                 })?
             } else {
                 BackboneChoice::Rwkv
@@ -423,7 +434,7 @@ pub fn parse_header(data: &[u8]) -> AzResult<HeaderInfo> {
             })
         }
         _ => Err(AzError::Format(format!(
-            "unsupported AZTH version {}", version
+            "unsupported RDKT version {}", version
         ))),
     }
 }
@@ -438,7 +449,7 @@ fn is_mamba_family(backbone: BackboneChoice) -> bool {
 fn check_contract_backbone(contract: NumericContract, backbone: BackboneChoice) -> AzResult<()> {
     if contract.uses_fma() && !is_mamba_family(backbone) {
         return Err(AzError::Format(format!(
-            "AZTH numeric contract {} is only defined for the Mamba family, not backbone {}",
+            "RDKT numeric contract {} is only defined for the Mamba family, not backbone {}",
             contract.name(), backbone
         )));
     }
@@ -489,6 +500,16 @@ fn read_header_prefix(p: &std::path::Path) -> Option<HeaderInfo> {
     parse_header(&buf).ok()
 }
 
+/// Archive file extensions: `.rdkt`, and `.azth` for archives written before the rename.
+pub fn has_archive_ext(p: &std::path::Path) -> bool {
+    p.extension().map_or(false, |e| e == "rdkt" || e == "azth")
+}
+
+/// File name without its archive extension (`.rdkt` or legacy `.azth`).
+pub fn strip_archive_ext(name: &str) -> &str {
+    name.strip_suffix(".rdkt").or_else(|| name.strip_suffix(".azth")).unwrap_or(name)
+}
+
 /// Numeric contract of a `decompress --input-dir` batch (R-107). The process
 /// loads one kernel family, so all Mamba-family archives of the batch must agree
 /// on FMA vs plain kernels; a mixed batch fails before any model load.
@@ -497,7 +518,7 @@ fn batch_numeric_contract(dir: &str) -> AzResult<NumericContract> {
     let entries = std::fs::read_dir(dir).map_err(|e| AzError::Io { path: dir.to_string(), source: e })?;
     let (mut fma, mut plain) = (0usize, 0usize);
     for p in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
-        if !p.is_file() || p.extension().map_or(true, |e| e != "azth") {
+        if !p.is_file() || !has_archive_ext(&p) {
             continue;
         }
         match read_header_prefix(&p) {
@@ -515,19 +536,19 @@ fn batch_numeric_contract(dir: &str) -> AzResult<NumericContract> {
     Ok(if fma > 0 { NumericContract::FmaV1 } else { NumericContract::CURRENT })
 }
 
-/// Extract stream and CRC from AZTH payload given header size and version.
+/// Extract stream and CRC from RDKT payload given header size and version.
 pub fn extract_stream_and_crc_v(
     data: &[u8], header_size: usize, version: u8,
 ) -> AzResult<(&[u8], Option<u32>)> {
     let payload = data.get(header_size..).ok_or_else(|| {
-        AzError::Format(format!("truncated AZTH file: {} bytes, header needs {}", data.len(), header_size))
+        AzError::Format(format!("truncated RDKT file: {} bytes, header needs {}", data.len(), header_size))
     })?;
     if version < 3 {
         return Ok((payload, None));
     }
     if payload.len() < CRC_SIZE {
         return Err(AzError::Format(format!(
-            "truncated AZTH file: payload is {} bytes, CRC-32 needs {}", payload.len(), CRC_SIZE
+            "truncated RDKT file: payload is {} bytes, CRC-32 needs {}", payload.len(), CRC_SIZE
         )));
     }
     let split = payload.len() - CRC_SIZE;
@@ -617,7 +638,7 @@ pub fn build_v4_header(
     hdr
 }
 
-/// Build the AZTH header for a given weight profile (R-099).
+/// Build the RDKT header for a given weight profile (R-099).
 /// Always v5 since R-104 F1: v4 layout with version 5 and PROFILE inserted after
 /// FLAGS, carrying the quant code and the numeric contract. Mamba-family
 /// archives carry `model_loader::process_contract()` (the contract the loaded
@@ -702,7 +723,7 @@ pub fn resolve_decompress_profile(quant: &str, hdr: &HeaderInfo) -> AzResult<Wei
     if !mamba {
         if hdr.profile != WeightProfile::F32 {
             return Err(AzError::Format(format!(
-                "AZTH v{} declares weight profile {} for backbone {} (only Mamba supports profiles)",
+                "RDKT v{} declares weight profile {} for backbone {} (only Mamba supports profiles)",
                 hdr.version, hdr.profile, hdr.backbone
             )));
         }
@@ -735,7 +756,7 @@ pub fn parse_hyperparams(data: &[u8]) -> AzResult<(f32, f32, f32)> {
     Ok((bias_lr, ngram_scale, mix_eta))
 }
 
-/// Extract stream and CRC from v2/v3 AZTH (fixed HEADER_SIZE offset).
+/// Extract stream and CRC from v2/v3 RDKT (fixed HEADER_SIZE offset).
 /// Kept for backward-compat tests. Production code uses extract_stream_and_crc_v.
 #[cfg(test)]
 fn extract_stream_and_crc(data: &[u8], version: u8) -> (&[u8], Option<u32>) {
@@ -1373,7 +1394,7 @@ pub fn cmd_compress(args: &[String]) -> AzResult<()> {
     eprintln!("  coder overhead: {:.4} BPB", metrics.overhead_bpb());
     eprintln!("  coder efficiency: {:.2}%", metrics.efficiency_pct());
     eprintln!("  CRC-32:         {:08X}", input_crc);
-    eprintln!("  format:         AZTH v{} (profile {}, numeric contract {})", hdr[4], mamba_profile, contract.name());
+    eprintln!("  format:         RDKT v{} (profile {}, numeric contract {})", hdr[4], mamba_profile, contract.name());
     eprintln!("  time:           {:.1}s ({:.1} tok/s)", total_time, tokens.len() as f64 / total_time);
     eprintln!("  output:         {}", output_path);
 
@@ -1461,7 +1482,7 @@ pub fn cmd_decompress(args: &[String]) -> AzResult<()> {
     let hdr = parse_header(&data)?;
     let (stream, stored_crc) = extract_stream_and_crc_v(&data, hdr.header_size, hdr.version)?;
 
-    eprintln!("[decompress] format: AZTH v{}", hdr.version);
+    eprintln!("[decompress] format: RDKT v{}", hdr.version);
     if let Some(tc) = hdr.token_count {
         eprintln!("[decompress] compressed: {} bytes, original: {} bytes, {} tokens",
                   data.len(), hdr.total_bytes, tc);
@@ -2334,6 +2355,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_magic_rdkt_and_legacy() {
+        let mut data = vec![0u8; 32];
+        data[..8].copy_from_slice(MAGIC_V5);
+        assert_eq!(&data[..4], b"RDKT");
+        assert_eq!(validate_magic(&data).unwrap(), 5);
+        data[..4].copy_from_slice(LEGACY_MAGIC);
+        assert_eq!(validate_magic(&data).unwrap(), 5, "legacy AZTH v5 must still be read");
+        for v in [2u8, 3, 4] {
+            data[4] = v;
+            assert_eq!(validate_magic(&data).unwrap(), v, "legacy AZTH v{}", v);
+            data[..4].copy_from_slice(FORMAT_MAGIC);
+            assert!(validate_magic(&data).is_err(), "RDKT v{} never existed", v);
+            data[..4].copy_from_slice(LEGACY_MAGIC);
+        }
+        assert_eq!(strip_archive_ext("a.txt.rdkt"), "a.txt");
+        assert_eq!(strip_archive_ext("a.txt.azth"), "a.txt");
+        assert!(has_archive_ext(std::path::Path::new("x.azth")) && has_archive_ext(std::path::Path::new("x.rdkt")));
+        assert!(!has_archive_ext(std::path::Path::new("x.txt")));
+    }
+
+    #[test]
     fn validate_magic_rejects_bad_version() {
         let mut data = make_azth_v3(100, 10, &[0u8; 8], 0);
         data[4] = 99;
@@ -2842,7 +2884,7 @@ mod tests {
         assert_eq!(route_backbone(&ContentType::Text), BackboneChoice::Mamba);
     }
 
-    // ---- R-099: AZTH v5 PROFILE byte ----
+    // ---- R-099: RDKT v5 PROFILE byte ----
 
     /// Header with every optional v4 field present (Mamba backbone).
     fn all_fields_header(profile: WeightProfile) -> Vec<u8> {

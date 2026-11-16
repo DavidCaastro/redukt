@@ -25,5 +25,6 @@ docs/
 scripts/
 pgo-data/
 *.azth
+*.rdkt
 *.log
 *.jsonl

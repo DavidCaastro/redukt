@@ -237,7 +237,7 @@ impl Scratch {
 impl Rwkv7Model {
     /// Quantization that `--quant auto` (or no `--quant`) selects for SafeTensors weights.
     /// A constant, like `model_loader::AUTO_MAMBA_PROFILE`: the level changes the logits,
-    /// hence the coded stream, and the AZTH header does not record it for RWKV. Until
+    /// hence the coded stream, and the RDKT header does not record it for RWKV. Until
     /// 2026-11-12 "auto" timed F32/Q8/Q4 at load and kept the best score, so the same input
     /// could compress to different bytes on another machine and a decoder could pick a level
     /// the encoder did not use. Q8 is what that benchmark selected on the reference machines,
@@ -295,7 +295,7 @@ impl Rwkv7Model {
         }
 
         // Quantization policy: the explicit `--quant`, else the fixed default. Never a
-        // load-time benchmark: the level changes the logits and is not in the AZTH header.
+        // load-time benchmark: the level changes the logits and is not in the RDKT header.
         let source = if quant_override.is_some() { "forced" } else { "auto: fixed default, not timed" };
         let policy = quant_override.unwrap_or(QuantPolicy::Uniform(Self::AUTO_QUANT));
         let policy_name = match &policy {

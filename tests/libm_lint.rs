@@ -4,7 +4,7 @@
 //! musl, macOS libSystem), whose results differ by ulps between platforms. One differing ulp in a
 //! probability changes the CDF and breaks decoding on another machine. Since R-104 F1 every
 //! transcendental on the codec path goes through `domain::fmath` (pure Rust, numeric contract in
-//! the AZTH header). This test keeps it that way: it scans the non-test source and fails on any
+//! the RDKT header). This test keeps it that way: it scans the non-test source and fails on any
 //! new libm call outside the audited exceptions below.
 //!
 //! `mul_add` is banned too (R-104 F2): it is one `vfmadd` instruction only inside a function that

@@ -7,7 +7,7 @@ The model loads once at startup (~130 MB Q8 in RAM), then serves
 compress/decompress requests sequentially on port 8080.
 
 ```
-Client -> POST /v1/compress -> [redukt api] -> AZTH bytes
+Client -> POST /v1/compress -> [redukt api] -> RDKT bytes
 Client -> POST /v1/decompress -> [redukt api] -> original bytes
 Client -> GET  /v1/status -> {"status":"ok", ...}
 ```
@@ -101,10 +101,10 @@ curl http://EXTERNAL_IP:8080/v1/status
 
 # Compress a file
 curl -X POST --data-binary @myfile.txt \
-  http://EXTERNAL_IP:8080/v1/compress -o myfile.azth
+  http://EXTERNAL_IP:8080/v1/compress -o myfile.rdkt
 
 # Decompress
-curl -X POST --data-binary @myfile.azth \
+curl -X POST --data-binary @myfile.rdkt \
   http://EXTERNAL_IP:8080/v1/decompress -o restored.txt
 
 # Verify roundtrip
@@ -125,23 +125,23 @@ docker logs $(docker ps -q)
 
 ### POST /v1/compress
 
-Compress raw bytes to AZTH format.
+Compress raw bytes to RDKT format.
 
 | | |
 |---|---|
 | **Content-Type** | `application/octet-stream` |
 | **Body** | Raw bytes (max 256 MB) |
-| **Response** | AZTH v2 bytes |
+| **Response** | RDKT v5 bytes |
 | **Status** | 200 OK, 400 Bad Request |
 
 ### POST /v1/decompress
 
-Decompress AZTH bytes to original.
+Decompress RDKT bytes to original.
 
 | | |
 |---|---|
 | **Content-Type** | `application/octet-stream` |
-| **Body** | AZTH v2 bytes (min 28 bytes) |
+| **Body** | RDKT v5 bytes (legacy AZTH v2-v5 also accepted) |
 | **Response** | Original raw bytes |
 | **Status** | 200 OK, 400 Bad Request, 422 Unprocessable Entity |
 

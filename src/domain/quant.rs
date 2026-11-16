@@ -10,7 +10,7 @@
 //! - `PerMatrix`: each matrix benchmarks every level (`select_best`: quality
 //!   gate, then a wall-clock score) and keeps the best one. Experimental and not
 //!   reachable from the CLI: its result depends on timing, and the level is not
-//!   recorded in the AZTH header, so it must never feed a coded stream.
+//!   recorded in the RDKT header, so it must never feed a coded stream.
 //!
 //! Usage:
 //!   let qm = quantize_matrix(&tensor, &QuantPolicy::Uniform(QuantLevel::Q8));
@@ -465,7 +465,7 @@ impl std::fmt::Display for BenchResult {
 ///
 /// The score is wall-clock time, so the winner can change between machines, builds and
 /// runs (on RWKV-7 0.1B all three levels pass the quality gate). Never use the result on a
-/// codec path: the level is not recorded in the AZTH header (`Rwkv7Model::AUTO_QUANT`).
+/// codec path: the level is not recorded in the RDKT header (`Rwkv7Model::AUTO_QUANT`).
 pub fn select_best(sample_matrix: &Tensor) -> (QuantLevel, Vec<BenchResult>) {
     let cols = sample_matrix.shape[1];
     let test_vec = make_test_vector(sample_matrix, cols);

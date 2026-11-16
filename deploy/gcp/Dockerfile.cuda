@@ -12,7 +12,7 @@
 #   docker build -f deploy/gcp/Dockerfile.cuda -t redukt:cuda .
 # Run (host needs NVIDIA driver + NVIDIA Container Toolkit):
 #   docker run --rm --gpus all -v /srv/weights:/weights:ro -v "$PWD:/data" redukt:cuda \
-#       compress --backbone plugin --weights /weights/mambabyte-353m --input /data/f --output /data/f.azth
+#       compress --backbone plugin --weights /weights/mambabyte-353m --input /data/f --output /data/f.rdkt
 #
 # HOW THE PLUGIN IS ACTIVATED (src/infrastructure/plugin_backend/loader.rs + model_loader.rs):
 #   * loader.rs looks for `libredukt_gpu.so` in the SAME DIRECTORY AS THE REAL redukt EXECUTABLE
@@ -23,7 +23,7 @@
 #     that contains `model.rbin` (mamba_cuda.cu appends /model.rbin).  `--gpu` is a stub that
 #     returns an error in codec.rs, do not use it.
 #   * If the .so is missing/fails to init, model_loader.rs panics with "[plugin] GPU backend not found".
-#   * `decompress` picks the plugin automatically from the AZTH header (backbone byte 3) but still
+#   * `decompress` picks the plugin automatically from the RDKT header (backbone byte 3) but still
 #     needs `--weights <dir with model.rbin>` (its default is weights/rwkv7-0.1b).
 #
 # DETERMINISM: a stream produced by the plugin must be decoded by the same plugin build on the same

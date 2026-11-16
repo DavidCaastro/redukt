@@ -116,11 +116,18 @@ Commands: compress, decompress, hybrid-eval, baseline, cm-eval, api.
 `Domain <- Application <- Infrastructure` (dependency rule).
 
 ```
-Bytes -> RWKV-7(pretrained) + TokenNgram + BiasHead -> AdaptiveMixer -> RangeEncoder -> AZTH
-AZTH -> RangeDecoder + identical model -> original bytes (lossless, deterministic)
+Bytes -> RWKV-7(pretrained) + TokenNgram + BiasHead -> AdaptiveMixer -> RangeEncoder -> RDKT
+RDKT -> RangeDecoder + identical model -> original bytes (lossless, deterministic)
 ```
 
-### AZTH Format (v4 — F32 profile; v5 adds PROFILE, see below)
+### Format name (2026-11-16): RDKT, formerly AZTH
+The archive format is **RDKT** (extension `.rdkt`, magic `RDKT`); AZTH / `.azth` was the working name. Only the
+four magic bytes changed: RDKT starts at v5 with the AZTH v5 layout, the encoder always writes `RDKT\x05`, the
+decoder still reads legacy `AZTH` v2-v5 and `.azth` files. `.rdk` was avoided (commercial robot-simulation
+station files). Every archive sha256 changed with the magic; hashes and the name AZTH in sections and
+documents dated before 2026-11-16 refer to the old magic (bytes 4 onward are identical). Strata amendment 9.
+
+### Legacy AZTH Format (v4 — F32 profile; v5 adds PROFILE, see below)
 ```
 MAGIC:       8B  "AZTH\x04\x00\x00\x00"
 TOTAL_BYTES: 4B  LE (original size, validated ≤ u32::MAX)
@@ -138,13 +145,14 @@ CRC32:       4B  LE (CRC-32 IEEE of original data)
 Header: 13B (defaults) up to 34B (all flags). v3 was 28B (fixed).
 TOKEN_COUNT removed in v4 — decoder terminates by byte count.
 Decompression requires IDENTICAL model + weights.
-CRC-32 verified on decompression (v3+). Decoder accepts v2 to v5 (the encoder always writes v5, see below).
+CRC-32 verified on decompression (v3+). Decoder accepts legacy AZTH v2 to v5 and RDKT v5 (the encoder always
+writes RDKT v5, see below).
 Max file size: ~4 GB (u32 TOTAL_BYTES). Validated at compression time.
 
-### AZTH Format v5 (weight profile + numeric contract — R-098, R-104; current)
+### RDKT v5 = AZTH Format v5 (weight profile + numeric contract — R-098, R-104; current)
 v4 plus one PROFILE byte right after FLAGS. Authoritative layout: `docs/api/FORMAT-SPEC.md`.
 ```
-MAGIC:       8B  "AZTH\x05\x00\x00\x00"
+MAGIC:       8B  "RDKT\x05\x00\x00\x00" (legacy: "AZTH\x05...")
 TOTAL_BYTES: 4B  LE
 FLAGS:       1B  (same bits as v4)
 PROFILE:     1B  (bits 0-3 QUANT: 0=F32, 1=Q8, 2=Q6 reserved;
@@ -472,7 +480,7 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
   level 0 primed (amendment 8).
   Owner, 2026-11-15: leaving CPU / edge is acceptable if viability needs it; CPU work so far counts as a functional
   demonstration.
-- AZTH BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
+- RDKT (formerly AZTH) BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
   (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).
 

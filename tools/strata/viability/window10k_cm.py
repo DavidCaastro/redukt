@@ -47,7 +47,7 @@ def main():
     empty = {c: compress(c, b"") for c in CODECS}
     rows = []
     for name, blob in blobs.items():
-        row = {"file": name, "redukt-azth": os.path.getsize(os.path.join(dst, name + ".azth")),
+        row = {"file": name, "redukt-azth": os.path.getsize(os.path.join(dst, name + ".rdkt")),
                "brotli-11": len(brotli.compress(blob, quality=11)),
                "xz-9e": len(lzma.compress(blob, preset=9 | lzma.PRESET_EXTREME)),
                "gzip-9": len(gzip.compress(blob, 9))}

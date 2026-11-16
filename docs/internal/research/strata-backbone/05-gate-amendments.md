@@ -374,3 +374,25 @@ cold online coder on 10 KB), by less than against brotli; loses the binary files
 From this amendment on, any V3 result is reported next to lpaq1 level `0` primed by difference with the same primer
 bytes as Strata, in both pairings, and a V3 pass may not be described as an advantage over classical compression
 without that row. Reason: E3 showed `msg88` behind a 9 MB public context mixer with a same-source primer.
+
+## Amendment 9 (2026-11-16): container renamed AZTH -> RDKT (naming only; no arithmetic, gate or threshold changed)
+
+The owner asked for a format name that does not collide with commercially existing formats. The container of
+`docs/api/FORMAT-SPEC.md` is renamed from AZTH (extension `.azth`, magic `AZTH`) to RDKT (extension `.rdkt`, magic
+`RDKT`). Scope of this amendment for the frozen specification `docs/api/BACKBONE-STRATA-SPEC.md`:
+
+1. Wherever the specification says "AZTH v5", "the AZTH container", "the AZTH header", "the AZTH range coder" or
+   `.azth`, read RDKT v5, the RDKT container / header / range coder and `.rdkt`. In section 5.6 the declared magic
+   is `"RDKT\x05\0\0\0"`; every other byte of the declaration (TOTAL_BYTES, FLAGS = 0x40, PROFILE = 0x10,
+   BACKBONE = 0x04, the STRATA block) is unchanged. The error text of the table in 5.6 becomes
+   `RDKT v5 unknown backbone: 4`.
+2. The text of the specification is NOT edited (it stays byte-identical to the frozen version); this amendment is
+   the mapping. BACKBONE id 4 stays reserved for Strata.
+3. Nothing arithmetic changes: bytes 4 onward of an archive are identical for the same input, weights and
+   options, so the header cost used by gates V1-V3 (rule T3: real archive bytes including header and CRC) is the
+   same number of bytes. No gate, threshold, comparator or measured figure changes; measurements recorded before
+   2026-11-16 keep the name AZTH and stay valid.
+4. Gate C1b (identical sha256 of the archives between Rust and the reference) is unaffected in substance: both
+   sides write the same magic. Archive hashes recorded before this date refer to the old magic.
+5. The decoder keeps reading legacy AZTH v2-v5; a Strata archive never existed under the old magic (stage 4a has
+   not started), so no legacy Strata case exists.

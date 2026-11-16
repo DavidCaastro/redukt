@@ -17,7 +17,7 @@
 #
 # What this service really is (see api.rs, `redukt api`):
 #   * single-threaded accept loop: ONE request at a time per instance  -> containerConcurrency: 1
-#   * loads the models named by --backbone (default: Mamba-130M, Q8 -> AZTH v5) BEFORE binding the port
+#   * loads the models named by --backbone (default: Mamba-130M, Q8 -> RDKT v5) BEFORE binding the port
 #     -> startupProbe on GET /v1/status (returns backbones, profile, formats_read v2..v5, threads, max_body)
 #   * serves ONLY the backbone/profile it loaded: archives from another profile (e.g. F32/v4 vs Q8/v5) or
 #     backbone are rejected.  To accept both, run a second service (REDUKT_QUANT=f32) or load several backbones

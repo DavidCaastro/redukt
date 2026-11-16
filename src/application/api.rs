@@ -1,8 +1,8 @@
 //! Minimal HTTP/1.1 API server — zero dependencies.
 //!
 //! Endpoints:
-//!   POST /v1/compress     — raw bytes in, AZTH bytes out
-//!   POST /v1/decompress   — AZTH bytes in, raw bytes out
+//!   POST /v1/compress     — raw bytes in, RDKT bytes out
+//!   POST /v1/decompress   — RDKT bytes in, raw bytes out
 //!   GET  /v1/status       — JSON health check (backbones, profile, formats, threads)
 //!
 //! Parity with the CLI: `/v1/compress` uses the same content detection, E8E9/shuffle/delta
@@ -292,7 +292,7 @@ fn compress_request(body: &[u8], server: &Server) -> Result<Vec<u8>, ApiError> {
         return Err(api_err(400, "empty body"));
     }
     if body.len() > u32::MAX as usize {
-        return Err(api_err(413, format!("input too large: {} bytes exceeds ~4 GB AZTH limit", body.len())));
+        return Err(api_err(413, format!("input too large: {} bytes exceeds ~4 GB RDKT limit", body.len())));
     }
     let prep = preprocess_input(body, "", "", "", "api");
     let choice = server.forced.unwrap_or_else(|| route_backbone(&prep.content_type));
@@ -338,7 +338,7 @@ fn required_profile(hdr: &HeaderInfo) -> Result<WeightProfile, ApiError> {
     let mamba = matches!(hdr.backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte);
     if !mamba && hdr.profile != WeightProfile::F32 {
         return Err(api_err(400, format!(
-            "AZTH v{} declares weight profile {} for backbone {} (only Mamba supports profiles)",
+            "RDKT v{} declares weight profile {} for backbone {} (only Mamba supports profiles)",
             hdr.version, hdr.profile, hdr.backbone
         )));
     }
@@ -366,7 +366,7 @@ fn check_archive(data: &[u8], server: &Server) -> Result<(usize, HeaderInfo), Ap
 
 fn decompress_request(data: &[u8], server: &Server) -> Result<Vec<u8>, ApiError> {
     if data.len() < 8 {
-        return Err(api_err(400, "body too short for AZTH header"));
+        return Err(api_err(400, "body too short for RDKT header"));
     }
     let (idx, hdr) = check_archive(data, server)?;
     let mut engine = server.engine(idx)?;
@@ -745,8 +745,8 @@ mod tests {
         assert_eq!(call("GET", "/nope", b"", &srv).status, 404);
         assert_eq!(call("GET", "/v1/compress", b"", &srv).status, 405);
         assert_eq!(call("POST", "/v1/compress", b"", &srv).status, 400);
-        assert_eq!(call("POST", "/v1/decompress", b"AZTH", &srv).status, 400);
-        assert_eq!(call("POST", "/v1/decompress", b"NOTAZTHFILE!", &srv).status, 400);
+        assert_eq!(call("POST", "/v1/decompress", b"RDKT", &srv).status, 400);
+        assert_eq!(call("POST", "/v1/decompress", b"NOTRDKTFILE!", &srv).status, 400);
     }
 
     #[test]

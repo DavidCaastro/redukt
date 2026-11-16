@@ -90,8 +90,8 @@ python scripts/convert-weights-gpu.py \
 ```bash
 cp plugins/redukt-gpu-cuda/libredukt_gpu.so target/release/   # next to the real binary
 ./target/release/redukt compress   --backbone plugin --weights weights/mamba-130m \
-    --input f --output f.azth
-./target/release/redukt decompress --weights weights/mamba-130m --input f.azth --output f.out
+    --input f --output f.rdkt
+./target/release/redukt decompress --weights weights/mamba-130m --input f.rdkt --output f.out
 ```
 
 How the tokenizer is chosen:

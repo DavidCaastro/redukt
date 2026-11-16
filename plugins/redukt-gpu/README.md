@@ -46,7 +46,7 @@ cp target/release/libredukt_gpu.dylib /path/to/redukt/libredukt_gpu.dylib
 Redukt auto-detects the plugin at startup:
 
 ```bash
-redukt compress --backend plugin input.bin output.azth
+redukt compress --backend plugin input.bin output.rdkt
 ```
 
 If no plugin is found, Redukt falls back to CPU automatically.

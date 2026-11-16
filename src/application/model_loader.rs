@@ -336,7 +336,7 @@ impl DynModel {
     }
 
     /// Weight profile of the loaded backbone (R-099). RWKV/Plugin report F32:
-    /// their quantization is not part of the AZTH profile.
+    /// their quantization is not part of the RDKT profile.
     pub fn weight_profile(&self) -> WeightProfile {
         match self {
             Self::Mamba(m) | Self::MambaByte(m) => m.profile(),
@@ -461,7 +461,7 @@ pub const AUTO_MAMBA_PROFILE: WeightProfile = WeightProfile::Q8;
 
 /// Resolve the weight profile for COMPRESSION from `--quant` and the backbone.
 /// Mamba/MambaByte: explicit f32|q8, "auto"/empty -> `AUTO_MAMBA_PROFILE`.
-/// RWKV/Plugin: always F32 (their quantization is not part of the AZTH profile).
+/// RWKV/Plugin: always F32 (their quantization is not part of the RDKT profile).
 /// Decompression never uses this: the profile comes from the archive header.
 pub fn resolve_auto_profile(quant: &str, backbone: BackboneChoice) -> Result<WeightProfile, String> {
     if !matches!(backbone, BackboneChoice::Mamba | BackboneChoice::MambaByte) {

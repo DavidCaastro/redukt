@@ -63,7 +63,7 @@ fn compress_decompress_roundtrip() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("input.txt");
-    let compressed = tmp.join("output.azth");
+    let compressed = tmp.join("output.rdkt");
     let restored = tmp.join("restored.txt");
 
     let test_data = b"Hello, world! This is a roundtrip test for Redukt. \
@@ -96,7 +96,7 @@ fn roundtrip_single_byte() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("one.bin");
-    let compressed = tmp.join("one.azth");
+    let compressed = tmp.join("one.rdkt");
     let restored = tmp.join("one.restored");
 
     std::fs::write(&input, &[0x42]).unwrap(); // single byte: 'B'
@@ -122,8 +122,8 @@ fn roundtrip_determinism() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("input.txt");
-    let compressed1 = tmp.join("run1.azth");
-    let compressed2 = tmp.join("run2.azth");
+    let compressed1 = tmp.join("run1.rdkt");
+    let compressed2 = tmp.join("run2.rdkt");
 
     let test_data = b"Determinism test: compress this twice and compare.";
     std::fs::write(&input, test_data).unwrap();
@@ -145,7 +145,7 @@ fn decompress_rejects_empty_file() {
     let tmp = std::env::temp_dir().join("redukt_test_empty");
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let empty = tmp.join("empty.azth");
+    let empty = tmp.join("empty.rdkt");
     let output = tmp.join("empty.out");
     std::fs::write(&empty, &[]).unwrap();
 
@@ -162,7 +162,7 @@ fn decompress_rejects_short_file() {
     let tmp = std::env::temp_dir().join("redukt_test_short");
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let short = tmp.join("short.azth");
+    let short = tmp.join("short.rdkt");
     let output = tmp.join("short.out");
     // Valid magic prefix but only 16 bytes total (< 28 byte header)
     std::fs::write(&short, b"AZTH\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
@@ -179,7 +179,7 @@ fn decompress_rejects_bad_magic() {
     let tmp = std::env::temp_dir().join("redukt_test_magic");
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let bad = tmp.join("bad_magic.azth");
+    let bad = tmp.join("bad_magic.rdkt");
     let output = tmp.join("bad_magic.out");
     // Wrong magic bytes, correct size
     let mut data = vec![0u8; 32];
@@ -198,10 +198,10 @@ fn decompress_rejects_unsupported_version() {
     let tmp = std::env::temp_dir().join("redukt_test_version");
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let bad = tmp.join("v99.azth");
+    let bad = tmp.join("v99.rdkt");
     let output = tmp.join("v99.out");
     let mut data = vec![0u8; 32];
-    data[..4].copy_from_slice(b"AZTH");
+    data[..4].copy_from_slice(b"RDKT");
     data[4] = 99; // unsupported version
     std::fs::write(&bad, &data).unwrap();
 
@@ -221,7 +221,7 @@ fn decompress_rejects_corrupted_crc() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("input.txt");
-    let compressed = tmp.join("compressed.azth");
+    let compressed = tmp.join("compressed.rdkt");
     let restored = tmp.join("restored.txt");
 
     let mut seed = 0x1234_5678u32; // xorshift32 letters: incompressible enough for a long stream
@@ -271,14 +271,14 @@ fn golden_reference_determinism() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("golden-input.bin");
-    let compressed = tmp.join("golden.azth");
+    let compressed = tmp.join("golden.rdkt");
     let restored = tmp.join("golden-restored.bin");
 
     // Deterministic 40-byte input
     let golden_input = b"Determinism: the quick brown fox jumps!";
     std::fs::write(&input, golden_input).unwrap();
 
-    // Pinned to F32: the default profile is now Q8 (AZTH v5), whose size differs.
+    // Pinned to F32: the default profile is now Q8 (RDKT v5), whose size differs.
     let status = Command::new(&bin)
         .args(["compress", "--input", input.to_str().unwrap(),
                "--output", compressed.to_str().unwrap(), "--quant", "f32"])
@@ -294,10 +294,12 @@ fn golden_reference_determinism() {
         "golden: expected 33 bytes, got {}", azth_bytes.len());
 
     let hash = sha256_hex(&azth_bytes);
-    // Golden SHA-256 for Windows x86_64 AVX2, AZTH v5 F32 with R-108 RESET_LOG2 (re-measured
+    // Golden SHA-256 for Windows x86_64 AVX2, RDKT v5 F32 with R-108 RESET_LOG2 (re-measured
     // 2026-11-10; before R-108: 32 B, 5e6b876a...; the v3 Q8 golden of 2026-10-29 was 35 B).
+    // 2026-11-16: magic renamed AZTH -> RDKT; bytes 4.. unchanged (with the old magic the hash is
+    // b8719bf8..., verified).
     // F32 is the golden profile; update if the pipeline changes.
-    let expected = "b8719bf8d1ac6a7ed3426981ccb859f53f195023af7d869000fbb294bdb8fc0d";
+    let expected = "be14e088b992407280fdde8435801f50fc29595590922da961c775fc124d5cf2";
     assert_eq!(hash, expected,
         "golden hash mismatch — platform or pipeline changed?\n  got:      {}\n  expected: {}",
         hash, expected);
@@ -320,7 +322,7 @@ fn compress_empty_file_errors_without_panic() {
     let tmp = std::env::temp_dir().join("redukt_test_empty_compress");
     std::fs::create_dir_all(&tmp).unwrap();
     let input = tmp.join("empty.bin");
-    let out = tmp.join("empty.azth");
+    let out = tmp.join("empty.rdkt");
     std::fs::write(&input, b"").unwrap();
 
     let status = Command::new(&bin)
@@ -351,7 +353,7 @@ fn multi_process_determinism() {
     let runs = 5;
     let mut hashes = Vec::new();
     for i in 0..runs {
-        let out = tmp.join(format!("run{}.azth", i));
+        let out = tmp.join(format!("run{}.rdkt", i));
         assert!(compress(&bin, &input, &out), "compress run {} failed", i);
         let bytes = std::fs::read(&out).unwrap();
         hashes.push(sha256_hex(&bytes));
@@ -385,8 +387,8 @@ fn cross_tier_roundtrip_documents_divergence() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let input = tmp.join("input.txt");
-    let compressed_simd = tmp.join("simd.azth");
-    let compressed_scalar = tmp.join("scalar.azth");
+    let compressed_simd = tmp.join("simd.rdkt");
+    let compressed_scalar = tmp.join("scalar.rdkt");
     let restored_cross = tmp.join("cross.bin");
 
     let test_data = b"Cross-tier determinism test data for SIMD vs scalar.";
@@ -478,7 +480,7 @@ fn scalar_determinism() {
     let runs = 3;
     let mut hashes = Vec::new();
     for i in 0..runs {
-        let out = tmp.join(format!("scalar{}.azth", i));
+        let out = tmp.join(format!("scalar{}.rdkt", i));
         let ok = Command::new(&bin)
             .args(["compress", "--input", input.to_str().unwrap(),
                    "--output", out.to_str().unwrap()])
@@ -500,14 +502,14 @@ fn scalar_determinism() {
 }
 
 // ---------------------------------------------------------------------------
-// R-098/R-099: Mamba pooled GEMV + Q8 weight profile (AZTH v5)
+// R-098/R-099: Mamba pooled GEMV + Q8 weight profile (RDKT v5)
 // ---------------------------------------------------------------------------
 
 fn has_mamba_weights() -> bool {
     Path::new("weights/mamba-130m/model.safetensors").exists()
 }
 
-// AZTH v5 PROFILE byte (offset 13), from docs/api/FORMAT-SPEC.md, "PROFILE byte": bits 0-3 QUANT
+// RDKT v5 PROFILE byte (offset 13), from docs/api/FORMAT-SPEC.md, "PROFILE byte": bits 0-3 QUANT
 // (0 = F32, 1 = Q8), bits 4-5 NUMERIC_CONTRACT (1 = fmath-v1, 2 = fma-v1), bit 6 RESET_PERIOD (a
 // RESET_LOG2 byte follows at offset 14). Since R-108 the Mamba family writes RESET_PERIOD by
 // default with RESET_LOG2 = 12 (a state reset every 4096 forwards), so a default Mamba archive
@@ -538,8 +540,8 @@ fn mamba_q8_profile_roundtrip_and_mismatch() {
     let tmp = std::env::temp_dir().join("redukt_test_mamba_q8");
     std::fs::create_dir_all(&tmp).unwrap();
     let input = tmp.join("input.txt");
-    let az_n = tmp.join("q8_n.azth");
-    let az_1 = tmp.join("q8_1.azth");
+    let az_n = tmp.join("q8_n.rdkt");
+    let az_1 = tmp.join("q8_1.rdkt");
     let restored = tmp.join("restored.txt");
     let bad = tmp.join("bad.txt");
     std::fs::write(&input, b"<invoice id=\"42\"><total currency=\"EUR\">1234.56</total></invoice>\n").unwrap();
@@ -551,7 +553,7 @@ fn mamba_q8_profile_roundtrip_and_mismatch() {
         assert!(o.status.success(), "Q8 compress failed (threads={})", threads);
     }
     let azth = std::fs::read(&az_n).unwrap();
-    assert_eq!(&azth[..8], b"AZTH\x05\x00\x00\x00", "Q8 archive must be AZTH v5");
+    assert_eq!(&azth[..8], b"RDKT\x05\x00\x00\x00", "Q8 archive must be RDKT v5");
     assert_eq!(azth[13], PROFILE_QUANT_Q8 | PROFILE_CONTRACT_FMATH_V1 | PROFILE_RESET_PERIOD,
         "PROFILE byte must carry quant 1 (Q8), numeric contract 1 (fmath-v1) and RESET_PERIOD (R-108)");
     assert_eq!(azth[14], MAMBA_DEFAULT_RESET_LOG2, "RESET_LOG2 must follow PROFILE (default: 2^12 forwards)");
@@ -572,7 +574,7 @@ fn mamba_q8_profile_roundtrip_and_mismatch() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// F32 Mamba archives stay AZTH v4 and are byte-identical for 1 vs N threads.
+/// F32 Mamba archives stay RDKT v4 and are byte-identical for 1 vs N threads.
 #[test]
 #[ignore] // requires Mamba weights; run with --release for speed
 fn mamba_f32_pooled_gemv_thread_count_invariant() {
@@ -585,13 +587,13 @@ fn mamba_f32_pooled_gemv_thread_count_invariant() {
     std::fs::write(&input, b"The quick brown fox jumps over the lazy dog. 0123456789\n").unwrap();
     let mut outputs = Vec::new();
     for threads in ["1", "3", "8"] {
-        let out = tmp.join(format!("f32_{}.azth", threads));
+        let out = tmp.join(format!("f32_{}.rdkt", threads));
         let o = run_redukt(&bin, &["compress", "--input", input.to_str().unwrap(),
             "--output", out.to_str().unwrap(), "--backbone", "mamba", "--quant", "f32"], threads);
         assert!(o.status.success(), "F32 compress failed (threads={})", threads);
         outputs.push(std::fs::read(&out).unwrap());
     }
-    assert_eq!(&outputs[0][..5], b"AZTH\x05", "F32 archives are AZTH v5 since R-104 (numeric contract)");
+    assert_eq!(&outputs[0][..5], b"RDKT\x05", "F32 archives are RDKT v5 since R-104 (numeric contract)");
     assert!(outputs.iter().all(|o| *o == outputs[0]), "F32 bytes depend on thread count");
 
     std::fs::remove_dir_all(&tmp).ok();
@@ -629,11 +631,11 @@ fn lockstep_batch_matches_single_file_both_directions() {
 
     for i in 0..texts.len() {
         let f = format!("f{}.txt", i);
-        let s_out = single.join(format!("{}.azth", f));
+        let s_out = single.join(format!("{}.rdkt", f));
         let o = run_redukt(&bin, &["compress", "--input", inp.join(&f).to_str().unwrap(), "--output",
             s_out.to_str().unwrap(), "--quant", "q8", "--no-governor"], "4");
         assert!(o.status.success(), "single compress failed for {}", f);
-        let batched = std::fs::read(outd.join(format!("{}.azth", f))).unwrap();
+        let batched = std::fs::read(outd.join(format!("{}.rdkt", f))).unwrap();
         assert_eq!(batched, std::fs::read(&s_out).unwrap(), "{}: lockstep bytes != single-file bytes", f);
     }
 
@@ -645,7 +647,7 @@ fn lockstep_batch_matches_single_file_both_directions() {
     }
 
     let restored = tmp.join("f2.single");
-    let o = run_redukt(&bin, &["decompress", "--input", outd.join("f2.txt.azth").to_str().unwrap(),
+    let o = run_redukt(&bin, &["decompress", "--input", outd.join("f2.txt.rdkt").to_str().unwrap(),
         "--output", restored.to_str().unwrap(), "--no-governor"], "4");
     assert!(o.status.success(), "single decompress of a batched archive failed");
     assert_eq!(std::fs::read(&restored).unwrap(), texts[2].to_vec());
@@ -682,8 +684,8 @@ fn fma_contract_roundtrip_real_weights() {
         // 0x51 / 0x50 with the default contract 1.
         let profile = quant_code | PROFILE_CONTRACT_FMA_V1 | PROFILE_RESET_PERIOD;
         let default_profile = quant_code | PROFILE_CONTRACT_FMATH_V1 | PROFILE_RESET_PERIOD;
-        let az = tmp.join(format!("{}.azth", quant));
-        let plain = tmp.join(format!("{}-plain.azth", quant));
+        let az = tmp.join(format!("{}.rdkt", quant));
+        let plain = tmp.join(format!("{}-plain.rdkt", quant));
         let o = run_redukt(&bin, &["compress", "--input", &s(&input), "--output", &s(&az),
             "--quant", quant, "--numeric", "fma", "--no-governor"], "4");
         assert!(o.status.success(), "fma compress failed: {}", String::from_utf8_lossy(&o.stderr));
@@ -708,14 +710,14 @@ fn fma_contract_roundtrip_real_weights() {
         let o = run_redukt(&bin, &["compress", "--input-dir", &s(&inp), "--output-dir", &s(&outd),
             "--jobs", "2", "--quant", quant, "--numeric", "fma", "--no-governor"], "4");
         assert!(o.status.success(), "fma batch compress failed");
-        assert_eq!(std::fs::read(outd.join("t.txt.azth")).unwrap(), a, "{}: batch != single", quant);
+        assert_eq!(std::fs::read(outd.join("t.txt.rdkt")).unwrap(), a, "{}: batch != single", quant);
         let o = run_redukt(&bin, &["decompress", "--input-dir", &s(&outd), "--output-dir", &s(&decd),
             "--jobs", "2", "--no-governor"], "4");
         assert!(o.status.success(), "fma batch decompress failed");
         assert_eq!(std::fs::read(decd.join("t.txt")).unwrap(), text.to_vec());
         // Mixed contracts in one batch directory: rejected up front.
-        std::fs::copy(&az, mixed.join("a.azth")).unwrap();
-        std::fs::copy(&plain, mixed.join("b.azth")).unwrap();
+        std::fs::copy(&az, mixed.join("a.rdkt")).unwrap();
+        std::fs::copy(&plain, mixed.join("b.rdkt")).unwrap();
         let o = run_redukt(&bin, &["decompress", "--input-dir", &s(&mixed), "--output-dir",
             &s(&tmp.join("mixed-out")), "--no-governor"], "4");
         assert!(!o.status.success(), "mixed-contract batch must fail");
@@ -770,7 +772,7 @@ fn scalar_tier_is_bit_identical_to_simd_tier() {
     for (name, backbone, quant, extra) in configs {
         let mut archives = Vec::new();
         for scalar in [false, true] {
-            let out = tmp.join(format!("{}-{}.azth", name, if scalar { "scalar" } else { "simd" }));
+            let out = tmp.join(format!("{}-{}.rdkt", name, if scalar { "scalar" } else { "simd" }));
             let mut args = owned(&["compress", "--no-governor", "--backbone", backbone, "--quant", quant]);
             args.extend(owned(extra));
             args.extend(["--input".to_string(), s(&input), "--output".to_string(), s(&out)]);

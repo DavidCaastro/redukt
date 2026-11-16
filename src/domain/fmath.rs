@@ -25,7 +25,7 @@
 //!
 //! `NumericContract` selects, per archive, which `exp`/`ln` feed the coded
 //! probability stream and (R-107) whether the Mamba GEMV/GEMM kernels use
-//! fused multiply-add (AZTH v5 PROFILE bits 4-5, see docs/api/FORMAT-SPEC.md).
+//! fused multiply-add (RDKT v5 PROFILE bits 4-5, see docs/api/FORMAT-SPEC.md).
 
 /// Numeric contract of an archive: which transcendental implementation
 /// produced the probabilities that the range coder saw.

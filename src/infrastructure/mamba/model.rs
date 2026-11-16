@@ -47,7 +47,7 @@ impl MambaConfig {
 
 // --- Weight matrices (R-099) ---
 
-/// Q8 profile recipe (AZTH v5 profile code 1) — part of the format contract:
+/// Q8 profile recipe (RDKT v5 profile code 1) — part of the format contract:
 /// changing it changes the logits, so it would need a new profile code.
 /// in_proj, out_proj and the (tied) embedding/LM head are int8 with one f32
 /// scale per 64 columns. Measured at 10 KB (Mamba-130M): a per-row scale costs
@@ -302,7 +302,7 @@ impl MambaState {
     }
 
     /// R-108: periodic reset period in forwards (0 = never). The period is part of the
-    /// AZTH header (PROFILE bit 6 + RESET_LOG2), so encoder and decoder always agree.
+    /// RDKT header (PROFILE bit 6 + RESET_LOG2), so encoder and decoder always agree.
     pub fn set_reset_every(&mut self, every: u64) {
         self.reset_every = every;
     }

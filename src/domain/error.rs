@@ -12,7 +12,7 @@ pub enum AzError {
     Parse { context: String, value: String },
     /// Weight/model loading failure.
     ModelLoad(String),
-    /// AZTH format validation failure (bad magic, bad version, bad hyperparams).
+    /// RDKT format validation failure (bad magic, bad version, bad hyperparams).
     Format(String),
     /// Arithmetic decoder failure (range underflow, symbol out-of-range).
     Decode { token_idx: usize, detail: String },
@@ -100,12 +100,12 @@ pub fn read_file_capped(path: &str) -> AzResult<Vec<u8>> {
     read_file(path)
 }
 
-/// Validate that a size fits in u32 (AZTH header field).
+/// Validate that a size fits in u32 (RDKT header field).
 /// Returns the value as u32 or a Format error if it exceeds u32::MAX.
 pub fn validate_u32_size(value: usize, field: &str) -> AzResult<u32> {
     if value > u32::MAX as usize {
         return Err(AzError::Format(format!(
-            "{} = {} bytes exceeds u32::MAX ({}) — AZTH format limit is ~4 GB",
+            "{} = {} bytes exceeds u32::MAX ({}) — RDKT format limit is ~4 GB",
             field, value, u32::MAX
         )));
     }

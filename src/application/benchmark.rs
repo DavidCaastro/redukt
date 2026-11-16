@@ -393,7 +393,7 @@ fn compress_and_measure<M: Backbone, T: BackendTokenizer>(
     (azth, result)
 }
 
-/// Decompress AZTH and verify byte-identical output.
+/// Decompress RDKT and verify byte-identical output.
 fn verify_roundtrip<M: Backbone, T: BackendTokenizer>(
     azth: &[u8],
     original: &[u8],
@@ -689,7 +689,7 @@ fn format_json(
         retention_years
     ));
     s.push_str("    \"methodology\": \"All BPB values = compressed_size * 8 / original_size. \
-        Redukt BPB is from actual AZTH file output, not cross-entropy estimate. \
+        Redukt BPB is from actual RDKT file output, not cross-entropy estimate. \
         Competitors compressed via stdin pipe. Apples-to-apples comparison.\"\n");
     s.push_str("  },\n");
 

@@ -83,7 +83,7 @@ fn api_compress_matches_cli_bytes_and_roundtrips() {
     let dir = std::env::temp_dir().join(format!("redukt-api-parity-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let input = dir.join("in.log");
-    let cli_out = dir.join("cli.azth");
+    let cli_out = dir.join("cli.rdkt");
     let data = sample_4kb();
     std::fs::write(&input, &data).expect("write input");
 
@@ -151,8 +151,8 @@ fn api_decompresses_a_non_default_numeric_contract() {
         assert!(st.success(), "cli compress {:?} failed", extra);
         std::fs::read(&out).expect("cli output")
     };
-    let plain = cli("plain.azth", &[]);
-    let fma = cli("fma.azth", &["--numeric", "fma"]);
+    let plain = cli("plain.rdkt", &[]);
+    let fma = cli("fma.rdkt", &["--numeric", "fma"]);
     // docs/api/FORMAT-SPEC.md, PROFILE byte (offset 13): bits 4-5 = NUMERIC_CONTRACT,
     // 1 = fmath-v1 (default), 2 = fma-v1.
     assert_eq!((plain[13] >> 4) & 3, 1, "the default archive must declare contract 1");

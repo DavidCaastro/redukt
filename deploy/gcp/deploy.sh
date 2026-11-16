@@ -8,7 +8,7 @@
 #   build    Cloud Build (deploy/gcp/cloudbuild.yaml): CPU image, CUDA image if BUILD_CUDA=true
 #   run      deploy the Cloud Run service `redukt-api` (deploy/gcp/cloudrun-service.yaml)
 #   batch    submit a Cloud Batch job (deploy/gcp/batch-job.json) gs://$IN_BUCKET -> gs://$OUT_BUCKET.
-#            BATCH_MODE=compress (default) or decompress (IN_BUCKET then holds the .azth files)
+#            BATCH_MODE=compress (default) or decompress (IN_BUCKET then holds the .rdkt files)
 #   render F print cloudrun-service.yaml / batch-job.json with the current variables substituted (no GCP calls)
 #
 # Every step is safe to re-run.  DRY_RUN=1 prints the mutating gcloud commands instead of executing them
@@ -50,7 +50,7 @@ BATCH_MODE="${BATCH_MODE:-compress}"                   # compress | decompress (
 # Measured on an i5-1235U laptop: aggregate tok/s saturates around N=32; 16-32 is recommended on c4-highcpu-32.
 JOBS="${JOBS:-16}"
 REDUKT_BACKBONE="${REDUKT_BACKBONE:-mamba}"            # batch takes a single backbone (a comma list is api-only)
-# auto = Q8 for Mamba (AZTH v5).  f32 (AZTH v4) is ~1% better BPB at equal aggregate throughput for N >= 16.
+# auto = Q8 for Mamba (RDKT v5).  f32 (also RDKT v5) is ~1% better BPB at equal aggregate throughput for N >= 16.
 # Ignored by decompress (the profile comes from each archive header).
 REDUKT_QUANT="${REDUKT_QUANT:-auto}"
 CPU_MILLI="${CPU_MILLI:-$((VCPUS * 1000))}"

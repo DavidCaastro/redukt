@@ -38,5 +38,6 @@ pgo-data/
 
 # Outputs / logs
 *.azth
+*.rdkt
 *.log
 *.jsonl

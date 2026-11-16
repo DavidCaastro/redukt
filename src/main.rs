@@ -38,8 +38,8 @@ fn print_usage() {
     eprintln!("redukt — Neural compression engine (RWKV-7 + Context Mixing + Arithmetic Coding)");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  compress    Compress a file to AZTH format");
-    eprintln!("  decompress  Decompress an AZTH file to original");
+    eprintln!("  compress    Compress a file to RDKT format");
+    eprintln!("  decompress  Decompress an RDKT file to original");
     eprintln!("  hybrid-eval Evaluate BPB with full ensemble (no output file)");
     eprintln!("  baseline    Evaluate BPB with RWKV-only (no ensemble)");
     eprintln!("  benchmark   Evaluate compression vs gzip/brotli/zstd (JSON report)");
@@ -72,7 +72,7 @@ fn print_usage() {
     eprintln!("  --quant <LEVEL>      RWKV: f32, q8, q4, auto (default: auto = q8, a fixed choice). The RWKV level");
     eprintln!("                       is not stored in the archive: decompress needs the same --quant unless it");
     eprintln!("                       was the default.");
-    eprintln!("                       Mamba: auto|q8 (default: weight-only Q8, AZTH v5) or f32 (AZTH v4).");
+    eprintln!("                       Mamba: auto|q8 (default: weight-only Q8) or f32; both write RDKT v5.");
     eprintln!("                       f32 gives ~1% better BPB and is the recommended profile for batches of");
     eprintln!("                       >=16 streams (--input-dir), where aggregate throughput is equal; q8 is ~3.3x");
     eprintln!("                       faster for single files (+0.6..1.2% BPB). decompress ignores this flag:");
@@ -88,7 +88,7 @@ fn print_usage() {
     eprintln!("  --shuffle <MODE>     Byte-plane shuffle: auto (default), on, on:N, off");
     eprintln!("  --delta <MODE>       Delta coding: auto (default), on, on:N, off");
     eprintln!("  --no-governor        Disable hardware governor (battery/RAM monitoring)");
-    eprintln!("  --input-dir <DIR>    Batch mode: compress every file / decompress every .azth in DIR");
+    eprintln!("  --input-dir <DIR>    Batch mode: compress every file / decompress every .rdkt in DIR");
     eprintln!("  --output-dir <DIR>   Batch mode: output directory (required with --input-dir)");
     eprintln!("  --jobs <N>           Batch mode: files advanced in lockstep per step (default: 8).");
     eprintln!("                       Streams share each weight fetch (GEMV->GEMM); output per file is");

@@ -25,10 +25,10 @@ depender de ellos y se actualizará cuando se cierren.
 | Hallazgo | Dónde | Consecuencia en este despliegue |
 |---|---|---|
 | La ruta de pesos es **relativa al CWD** (`weights/mamba-130m` para Mamba, el backbone por defecto; `weights/rwkv7-0.1b` para RWKV, que sí admite `--weights`). No hay variable de entorno. | `model_loader.rs`, `api.rs`, `codec.rs` | La imagen trabaja en `/app` con el symlink `/app/weights -> /weights`; `entrypoint.sh` lo reapunta si `REDUKT_WEIGHTS_DIR` cambia. |
-| ~~`redukt api` solo RWKV~~ (obsoleto desde 2026-11-10): ahora carga los backbones de `--backbone` (defecto Mamba, Q8, AZTH v5) con el mismo pipeline que `compress --input`. | `api.rs` | Cloud Run sirve Mamba+CM (~0.96 BPB clase enwik8). `WEIGHTS_SET` se deriva de `REDUKT_BACKBONE`. |
+| ~~`redukt api` solo RWKV~~ (obsoleto desde 2026-11-10): ahora carga los backbones de `--backbone` (defecto Mamba, Q8, RDKT v5) con el mismo pipeline que `compress --input`. | `api.rs` | Cloud Run sirve Mamba+CM (~0.96 BPB clase enwik8). `WEIGHTS_SET` se deriva de `REDUKT_BACKBONE`. |
 | El servidor API es **monohilo** (`for stream in listener.incoming()`), sin timeouts de lectura, HTTP/1.1 `Connection: close`. | `api.rs` | `containerConcurrency: 1`. Sin livenessProbe (no puede contestar mientras comprime). |
 | Endpoint de salud: **existe** `GET /v1/status` (JSON). El modelo se carga **antes** de abrir el socket. | `api.rs` | `startupProbe` HTTP en `/v1/status`; el `HEALTHCHECK` curl del `Dockerfile` raíz no sirve (curl no está instalado allí). |
-| El modo batch `--input-dir` exige **`--output-dir`** (no hay otra forma de salida); escribe `<nombre>.azth`, **no recursivo**, salta `*.azth`. | `codec.rs` `batch_compress` | Salida: `gs://OUT/<nombre>.azth`. Directorios planos. |
+| El modo batch `--input-dir` exige **`--output-dir`** (no hay otra forma de salida); escribe `<nombre>.rdkt`, **no recursivo**, salta `*.rdkt`. | `codec.rs` `batch_compress` | Salida: `gs://OUT/<nombre>.rdkt`. Directorios planos. |
 | ~~El modo batch es solo RWKV, sin preprocesado~~ (obsoleto desde 2026-11-10: batch lockstep con Mamba, preprocesado y `--backbone/--quant`). Sigue sin haber sharding entre procesos (cada proceso trataría **todos** los ficheros). | `lockstep.rs` | `entrypoint.sh batch-compress` / `batch-decompress` genera un directorio de symlinks por tarea (reparto por tamaño, round-robin por `BATCH_TASK_INDEX/COUNT`) y salta lo ya comprimido (reanudable tras preempción Spot). |
 | El plugin se busca **junto al ejecutable** (`libredukt_gpu.so`), sin env var ni flag. Se activa con `--backbone plugin`; `--weights` = directorio con `model.rbin`. `--gpu` es un stub que devuelve error. | `loader.rs`, `codec.rs` | `Dockerfile.cuda` instala ambos en `/usr/local/bin`. |
 | `PluginTokenizer` es identidad byte-level (vocab 256). Un `model.rbin` convertido desde **mamba-130m (BPE 50280)** no es coherente con él. | `plugin_backend/model.rs`, `plugins/redukt-gpu-cuda/README.md` | El set `gpu` apunta a un `.rbin` byte-level (MambaByte, p.ej. `mambabyte-353m`, +37% BPB según R-088). GPU "útil" depende de entrenar MambaByte (R-084). |
@@ -82,9 +82,9 @@ deploy/gcp/deploy.sh run             # Cloud Run redukt-api
 # Compresión masiva (lockstep: 16 streams por VM; F32 recomendado desde N=16)
 gcloud storage cp ./corpus/* gs://$PROJECT_ID-redukt-in/
 TASK_COUNT=4 PROVISIONING_MODEL=SPOT REDUKT_QUANT=f32 JOBS=16 deploy/gcp/deploy.sh batch
-gcloud storage ls gs://$PROJECT_ID-redukt-out/                  # <nombre>.azth
+gcloud storage ls gs://$PROJECT_ID-redukt-out/                  # <nombre>.rdkt
 
-# Descompresión masiva (perfil y backbone salen de la cabecera de cada .azth)
+# Descompresión masiva (perfil y backbone salen de la cabecera de cada .rdkt)
 BATCH_MODE=decompress IN_BUCKET=$PROJECT_ID-redukt-out OUT_BUCKET=$PROJECT_ID-redukt-restored deploy/gcp/deploy.sh batch
 
 # GPU (opcional)
@@ -104,7 +104,7 @@ Prueba local de la imagen (sin GCP):
 docker build -f deploy/gcp/Dockerfile -t redukt:cpu .
 docker run --rm redukt:cpu --help
 docker run --rm -v "$PWD/weights:/weights:ro" -v "$PWD:/work" --entrypoint redukt-entrypoint.sh redukt:cpu \
-  compress --input /work/x.txt --output /work/x.azth
+  compress --input /work/x.txt --output /work/x.rdkt
 docker run --rm -p 8080:8080 -v "$PWD/weights:/weights:ro" --entrypoint redukt-entrypoint.sh redukt:cpu api
 # variantes: -e REDUKT_BACKBONE=mamba,rwkv  -e REDUKT_QUANT=f32
 ```
@@ -123,7 +123,7 @@ docker run --rm -p 8080:8080 -v "$PWD/weights:/weights:ro" --entrypoint redukt-e
 | `BATCH_MODE` | `compress` | `compress` o `decompress` (contenedor `batch-<modo>`) |
 | `JOBS` | `16` | `--jobs` = **streams lockstep** por tarea (no hilos). 16-32 en c4-highcpu-32 |
 | `REDUKT_BACKBONE` | `mamba` | batch: un solo backbone; api: también lista (`mamba,rwkv`) |
-| `REDUKT_QUANT` | `auto` | `auto` = Q8 para Mamba (AZTH v5); `f32` (v4) recomendado con N >= 16. Decompress lo ignora |
+| `REDUKT_QUANT` | `auto` | `auto` = Q8 para Mamba; `f32` recomendado con N >= 16. Decompress lo ignora |
 | `REDUKT_THREADS` | todos los CPUs | hilos GEMV/SSM (no es `--jobs`) |
 | `PROVISIONING_MODEL` | `STANDARD` | `SPOT` (reintenta con código 50001) |
 | `WEIGHTS_SET` | derivado de `REDUKT_BACKBONE` (`mamba`; `rwkv` solo si se pide; decompress: `mamba,rwkv`) | `rwkv`, `mamba`, `gpu`, o combinados con coma |
@@ -170,8 +170,8 @@ Disponibilidad comprobada con `gcloud compute machine-types|accelerator-types li
   a `compress --input`. Los hilos de cálculo los fija `REDUKT_THREADS` (defecto: todos los CPUs), no `--jobs`. Memoria ~6 MB por stream (Mamba).
   El modelo se carga una vez por VM; no hay motivo para muchas VMs pequeñas.
 - N recomendado: **16-32 en c4-highcpu-32** (defecto 16, variable `JOBS`). Con N >= 16 usar `REDUKT_QUANT=f32`: mismo throughput agregado que Q8 y ~1% mejor BPB
-  (cabecera AZTH v4); con N pequeño (1-8) Q8 es claramente más rápido (AZTH v5). `decompress` toma backbone y perfil de la cabecera de cada archivo.
-- Descompresión batch: `BATCH_MODE=decompress` (contenedor `batch-decompress`, `redukt decompress --input-dir --output-dir --jobs N`): lee `*.azth` de `IN_BUCKET`
+  ; con N pequeño (1-8) Q8 es claramente más rápido (ambos escriben RDKT v5). `decompress` toma backbone y perfil de la cabecera de cada archivo.
+- Descompresión batch: `BATCH_MODE=decompress` (contenedor `batch-decompress`, `redukt decompress --input-dir --output-dir --jobs N`): lee `*.rdkt` de `IN_BUCKET`
   y escribe `<nombre>` en `OUT_BUCKET`, con CRC-32 verificado. Mismo sharding y reanudación (omite `<nombre>` ya presente). Pide por defecto los pesos
   `mamba,rwkv` porque las cabeceras pueden nombrar cualquiera de los dos. No admite archivos v2/token-count ni adaptive-skip (usar `decompress --input`).
 - Máquina: `c4-highcpu-32` (Madrid) o `c3-highcpu-22`. Motivo: DDR5 con mucho ancho de banda por VM (el cuello de botella de
@@ -181,9 +181,9 @@ Disponibilidad comprobada con `gcloud compute machine-types|accelerator-types li
   (por eso `hyperdisk-balanced` como disco de arranque).
 - Entrada/salida: tres volúmenes GCS (`gcs.remotePath`) montados bajo `/mnt/disks/...` (exigido por Batch) y enlazados al
   contenedor con `container.volumes`. Comando efectivo: `redukt compress --input-dir <shard> --output-dir /mnt/out --jobs N --backbone mamba --quant $REDUKT_QUANT`.
-  Los ficheros de salida son `/mnt/out/<nombre>.azth`.
+  Los ficheros de salida son `/mnt/out/<nombre>.rdkt`.
 - Sharding: `redukt` no lo implementa; `entrypoint.sh batch-compress|batch-decompress` reparte los ficheros de `/mnt/in` (orden por tamaño desc,
-  round-robin por `BATCH_TASK_INDEX` / `BATCH_TASK_COUNT`) a un directorio de symlinks. Reanudable: omite los `<nombre>.azth` ya presentes.
+  round-robin por `BATCH_TASK_INDEX` / `BATCH_TASK_COUNT`) a un directorio de symlinks. Reanudable: omite los `<nombre>.rdkt` ya presentes.
 - Spot: `PROVISIONING_MODEL=SPOT` + `maxRetryCount: 3` + `lifecyclePolicies: RETRY_TASK` en código de salida 50001 (preempción, según la página de reintentos).
 - El contenedor corre como root (`options: --user=0`) en Batch: no está documentado qué UID/permisos da Batch a los montajes
   GCS, y root evita fallos de escritura en `/mnt/out`. (NO VERIFICADO; alternativa: `mountOptions` de gcsfuse `uid=`/`gid=`/`file-mode`.)
@@ -212,8 +212,8 @@ se espera más throughput que en el portátil, pero NO está medido**: medir con
   `redukt-gpu`:
 
   ```bash
-  redukt-gpu compress --backbone plugin --weights /weights/mambabyte-353m --input /data/f --output /data/f.azth
-  redukt-gpu decompress --input /data/f.azth --output /data/f.out --weights /weights/mambabyte-353m
+  redukt-gpu compress --backbone plugin --weights /weights/mambabyte-353m --input /data/f --output /data/f.rdkt
+  redukt-gpu decompress --input /data/f.rdkt --output /data/f.out --weights /weights/mambabyte-353m
   ```
 - Activación del plugin (de `loader.rs`): `libredukt_gpu.so` junto al ejecutable `redukt` (ambos en `/usr/local/bin`), `--backbone plugin`,
   `--weights` = directorio con `model.rbin` (formato "RGPU" v1, ver `plugins/redukt-gpu-cuda/README.md`).
@@ -229,7 +229,7 @@ python scripts/convert-weights-gpu.py --input weights/mamba-130m/model.safetenso
 - La cabecera v2 declara el tokenizer: vocab 256 -> byte-level; 50280 -> BPE GPT-NeoX.
   El conversor copia tokenizer.json junto al .rbin (fallback: weights/mamba-130m).
 - Montar ese directorio y usar: compress --backbone plugin --weights /weights/mamba-130m
-  (decompress detecta el backbone por la cabecera AZTH, pero también necesita --weights).
+  (decompress detecta el backbone por la cabecera RDKT, pero también necesita --weights).
 - libredukt_gpu.so debe estar junto al binario redukt (/usr/local/bin en la imagen).
 - Batch multi-stream (FFI v2, docs/api/PLUGIN-FFI-V2.md): el plugin expone
   redukt_backend_forward_batch; el host lo detecta solo si existe (v1 sin cambios).
@@ -248,7 +248,7 @@ python scripts/convert-weights-gpu.py --input weights/mamba-130m/model.safetenso
 
 Cálculo de referencia: a **130 B/s por stream/vCPU**, 1 GB = 7.7 x 10^6 s = 2 137 vCPU-h, es decir ~$47 de cómputo spot.
 Las optimizaciones (Q8, lockstep multi-stream; ver tabla de dimensionamiento) apuntan a 20-40x: ~$1.2-2.4/GB. El egress entre buckets y VMs de la misma región
-no se cobra como egress a Internet (verificar), pero descargar los `.azth` fuera de GCP sí. La salida comprimida reduce el coste de almacenamiento/egress
+no se cobra como egress a Internet (verificar), pero descargar los `.rdkt` fuera de GCP sí. La salida comprimida reduce el coste de almacenamiento/egress
 de forma proporcional a la ratio (p.ej. 0.2-0.4 en texto/logs/XML estructurado).
 
 ## 7. Determinismo
@@ -282,7 +282,7 @@ La descompresión exige **mismo modelo, mismos pesos y mismo nivel SIMD** que la
 
 - MSRV medido: `--build-arg RUST_VERSION=1.88` falla (`avxvnni` inestable), `1.89` compila; el `Dockerfile` raíz (rust:1.82) falla igual.
 - `docker build -f deploy/gcp/Dockerfile` (maxperf, lto fat, x86-64-v3): compila en ~18 s (build completo con pull ~100 s); imagen 136 MB; `docker run --rm redukt:cpu-test --help` imprime la ayuda del binario.
-- Con los pesos locales montados: `compress` (Mamba auto) y `decompress` por el entrypoint con ida y vuelta idéntica; `batch-compress` con 2 tareas simuladas (reparto correcto, `--jobs 2`, reanudación "0 to compress, 2 already done", ida y vuelta de un `.azth` de batch idéntica);
+- Con los pesos locales montados: `compress` (Mamba auto) y `decompress` por el entrypoint con ida y vuelta idéntica; `batch-compress` con 2 tareas simuladas (reparto correcto, `--jobs 2`, reanudación "0 to compress, 2 already done", ida y vuelta de un `.rdkt` de batch idéntica);
   `api`: `/v1/status`, `POST /v1/compress` y `/v1/decompress` idénticos.
 - Descarga de pesos contra un servidor HTTP simulado: ruta bucket (curl + SHA256SUMS correctos), ruta `WEIGHTS_TARBALL_URL` (.tar.gz con query string), fallo con checksum erróneo, error claro sin origen.
 - `docker build -f deploy/gcp/Dockerfile.cuda` (nvidia/cuda 12.4.1 devel + rustup 1.98.1 + nvcc, sin GPU): OK en 1 min 23 s con la base `devel` ya descargada (la descarga de la base tardó más de 3 min); imagen 3.79 GB con `runtime`, 362 MB con `RUNTIME_FLAVOR=base`; `--help` funciona en ambas; `cuobjdump` confirma cubin sm_75 y sm_89 y PTX compute_89; `ldd libredukt_gpu.so` solo muestra libc. Sin GPU no se probó el plugin en ejecución.

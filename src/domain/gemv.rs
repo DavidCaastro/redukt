@@ -3,7 +3,7 @@
 //! - R-098: row-partitioned multithreaded f32 GEMV on the persistent pool
 //!   ([`par_pool`]). Each output row is computed by the exact same
 //!   single-thread kernel as before (`mat_vec_mul_avx2_nofma_raw` /
-//!   `mat_vec_mul_scalar_raw`), so logits — and therefore AZTH bytes — are
+//!   `mat_vec_mul_scalar_raw`), so logits — and therefore RDKT bytes — are
 //!   bit-identical to the single-thread path for any thread count.
 //! - R-099: Q8 weight-only GEMV (W8A32). Weights are symmetric int8 with one
 //!   f32 scale per group of columns (group = whole row, or 64); activations

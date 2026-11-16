@@ -47,7 +47,7 @@ def azth_sizes(files, jobs):
                     "--weights", os.path.join(ROOT, "weights", "mamba-130m")],
                    cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                    check=True)
-    return {n: os.path.getsize(os.path.join(dst, n + ".azth")) for n in files}
+    return {n: os.path.getsize(os.path.join(dst, n + ".rdkt")) for n in files}
 
 
 def primer_of(src, kind):

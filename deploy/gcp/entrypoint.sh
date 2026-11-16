@@ -4,7 +4,7 @@
 # Usage (first argument = mode):
 #   redukt-entrypoint.sh api              HTTP server on $PORT (default 8080), models loaded before bind
 #   redukt-entrypoint.sh batch-compress   shard $IN_DIR by task and compress to $OUT_DIR (lockstep, --jobs N streams)
-#   redukt-entrypoint.sh batch-decompress shard $IN_DIR/*.azth by task and restore them to $OUT_DIR
+#   redukt-entrypoint.sh batch-decompress shard $IN_DIR/*.rdkt by task and restore them to $OUT_DIR
 #   redukt-entrypoint.sh fetch-weights    only make sure the weights are present, then exit
 #   redukt-entrypoint.sh <anything else>  weights bootstrap, then `exec redukt "$@"`
 #   redukt-entrypoint.sh --help | -h | help   no bootstrap, straight to `redukt`
@@ -17,7 +17,7 @@
 #
 # Tunables (all optional):
 #   REDUKT_BACKBONE  mamba (default) | rwkv | auto | comma list (api only, e.g. mamba,rwkv for routing by content)
-#   REDUKT_QUANT     auto (default; Q8 for Mamba, AZTH v5) | q8 | f32 (f32 recommended for batches of >= 16 streams)
+#   REDUKT_QUANT     auto (default; Q8 for Mamba, RDKT v5) | q8 | f32 (f32 recommended for batches of >= 16 streams)
 #   JOBS             lockstep streams for batch modes (default 16); worker threads come from REDUKT_THREADS (default: all CPUs)
 #   WEIGHTS_SET      weight sets to make sure are present; derived from REDUKT_BACKBONE when unset
 #
@@ -219,7 +219,7 @@ case "$MODE" in
     ensure_weights
     case "$MODE" in
       batch-compress)   VERB=compress;   SUFFIX="" ;;
-      batch-decompress) VERB=decompress; SUFFIX=".azth" ;;
+      batch-decompress) VERB=decompress; SUFFIX=".rdkt" ;;
     esac
 
     IN_DIR="${IN_DIR:-/mnt/in}"
@@ -242,20 +242,20 @@ case "$MODE" in
     # redukt's --input-dir mode has no sharding of its own: every process would handle EVERY
     # file.  Build a per-task staging dir of symlinks: files sorted by size (desc) and dealt
     # round-robin to tasks so shards have similar total bytes.  Files whose result already exists
-    # in OUT_DIR (<name>.azth when compressing, <name> when decompressing) are skipped, which makes
+    # in OUT_DIR (<name>.rdkt when compressing, <name> when decompressing) are skipped, which makes
     # Spot-preemption retries resumable (an object only appears in GCS once the write is finalised).
-    # compress skips *.azth inputs itself; decompress only reads *.azth.
+    # compress skips *.rdkt (and legacy *.rdkt) inputs itself; decompress only reads those.
     STAGE="$(mktemp -d /tmp/redukt-shard.XXXXXX)"
     trap 'rm -rf "$STAGE"' EXIT
 
     n=0; kept=0; skipped=0
     while IFS=$'\t' read -r -d '' size name; do
       if [ "$VERB" = compress ]; then
-        case "$name" in *.azth) continue ;; esac
-        done_name="$name.azth"
+        case "$name" in *.rdkt|*.rdkt) continue ;; esac
+        done_name="$name.rdkt"
       else
-        case "$name" in *.azth) ;; *) continue ;; esac
-        done_name="${name%.azth}"
+        case "$name" in *.rdkt|*.rdkt) ;; *) continue ;; esac
+        done_name="${name%.rdkt}"; done_name="${done_name%.rdkt}"
       fi
       if [ $(( n % SHARD_COUNT )) -eq "$SHARD_INDEX" ]; then
         if [ "$SKIP_EXISTING" = 1 ] && [ -e "$OUT_DIR/$done_name" ]; then

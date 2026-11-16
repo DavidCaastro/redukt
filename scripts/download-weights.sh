@@ -82,7 +82,7 @@ if [ -f "$MODEL_FILE" ] && [ -f "$VOCAB_FILE" ]; then
     echo ""
     echo "[ok] Weights ready. You can now run:"
     echo "  cargo build --release"
-    echo "  ./target/release/redukt compress --input <FILE> --output <FILE>.azth"
+    echo "  ./target/release/redukt compress --input <FILE> --output <FILE>.rdkt"
 else
     echo "[error] Download incomplete — check errors above."
     exit 1

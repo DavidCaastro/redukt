@@ -1,10 +1,33 @@
-# AZTH Format Specification
+# RDKT Format Specification (formerly AZTH)
 
 ## Purpose
 
-AZTH is a lossless compression format that encodes data using neural network
+RDKT is a lossless compression format that encodes data using neural network
 probability predictions combined with arithmetic coding. Decompression requires
 the identical model and weights; hyperparameters are stored in the header.
+
+## Name and magic (2026-11-16)
+
+The format is called **RDKT**; archives use the extension `.rdkt` and start with the four bytes `RDKT`.
+Until 2026-11-16 the working name was AZTH (extension `.azth`, magic `AZTH`). The rename changes the first
+four bytes of the archive and nothing else:
+
+- **RDKT starts at version 5.** The version numbering continues: RDKT v5 has exactly the layout of AZTH v5
+  described below (bytes 4 onward are identical for the same input, model and options). Versions 2, 3 and 4
+  exist only with the legacy magic.
+- **The encoder always writes `RDKT\x05`.** The decoder accepts `RDKT` version 5 and, read-only, `AZTH`
+  versions 2 to 5, so every archive written before the rename still decodes. `RDKT` with a version below 5 is
+  rejected (`unsupported RDKT version`).
+- **Batch mode** writes `<name>.rdkt`; `compress --input-dir` skips `*.rdkt` and `*.azth` inputs, and
+  `decompress --input-dir` reads both extensions.
+- A build older than the rename rejects an RDKT archive up front with `bad magic` (never with a CRC mismatch).
+- The sha256 of every archive changes with the magic. Hashes quoted in documents dated before 2026-11-16 refer
+  to the AZTH magic; replacing the first four bytes of a new archive by `AZTH` reproduces them (verified on the
+  golden reference: `b8719bf8...` with the old magic, `be14e088...` with the new one).
+- Why `RDKT`: the three-letter `.rdk` is the station file of a commercial robot-simulation product, and `.rdz`
+  has several unrelated uses; no use of `.rdkt` was found (web search, 2026-11-16; absence in a search is not
+  a registry check).
+- Documents dated before 2026-11-16 (research notes, benchmark results, pinned notebooks) keep the old name.
 
 ## Format Layout (v4 — read-only since R-104 F1)
 
@@ -16,7 +39,7 @@ profile and **numeric contract 0 (legacy libm)**.
 ```
 Offset  Size  Field          Description
 ------  ----  -----          -----------
-0x00    8B    MAGIC          "AZTH\x04\x00\x00\x00" (version 4)
+0x00    8B    MAGIC          "AZTH\x04\x00\x00\x00" (version 4, legacy magic)
 0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
 0x0C    1B    FLAGS          Bit flags (see below)
 --- if FLAGS & 0x01 (custom hyperparams): ---
@@ -166,14 +189,14 @@ numeric weight profile of the Mamba-family backbone and the **numeric contract**
 - Since R-104 F1 the encoder writes v5 for **every** archive (F32 included) with
   `NUMERIC_CONTRACT = 1`. F32 archives are therefore one byte larger than the
   former v4 output.
-- A v4-only decoder fed a v5 file fails up front with `unsupported AZTH version 5`;
+- A v4-only decoder fed a v5 file fails up front with `unsupported RDKT version 5`;
   an R-099 decoder fed a contract-1 file fails with `PROFILE has reserved bits set`
   (never with a CRC mismatch).
 
 ```
 Offset  Size  Field          Description
 ------  ----  -----          -----------
-0x00    8B    MAGIC          "AZTH\x05\x00\x00\x00" (version 5)
+0x00    8B    MAGIC          "RDKT\x05\x00\x00\x00" (version 5)
 0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
 0x0C    1B    FLAGS          Same bits and semantics as v4
 0x0D    1B    PROFILE        Weight profile (see below)
@@ -351,7 +374,7 @@ apache log +1.1% BPB; weight traffic 516.5 → 153.6 MB/token.
 
 ### Decoder rules (v5)
 
-1. `validate_magic` accepts v2–v5 (v5 minimum 14 bytes).
+1. `validate_magic` accepts `RDKT` v5 and legacy `AZTH` v2–v5 (v5 minimum 14 bytes).
 2. PROFILE is validated (reserved bits, reserved/unknown quant codes, unknown
    numeric contracts) while parsing.
 3. The header profile is authoritative. `decompress --quant` is optional; if
@@ -376,7 +399,7 @@ means byte count implies token count).
 | v4      | `\x04`      | 13–34       | Removed TOKEN_COUNT, FLAGS (HP, emb-surgery, E8E9, shuffle, delta, skip, backbone, CM) |
 | v5      | `\x05`      | 14–36       | v4 + PROFILE byte after FLAGS (Mamba weight profile, R-099; numeric contract, R-104; contract 2 fma-v1, R-107; RESET_LOG2 byte when PROFILE bit 6, R-108) |
 
-The decoder accepts v2, v3, v4 and v5 files:
+The decoder accepts v2, v3, v4 and v5 files (v2–v4 only with the legacy `AZTH` magic; v5 with either):
 - **v2**: no CRC check (backward compatible)
 - **v3**: CRC-32 verified after decompression
 - **v4**: CRC-32 verified, compact header, byte-count termination
@@ -396,7 +419,7 @@ now the fixed level Q8, see "RWKV quantization".)
 ```
 Offset  Size  Field          Description
 ------  ----  -----          -----------
-0x00    8B    MAGIC          "AZTH\x03\x00\x00\x00" (version 3)
+0x00    8B    MAGIC          "AZTH\x03\x00\x00\x00" (version 3, legacy magic)
 0x08    4B    TOTAL_BYTES    Original file size (little-endian u32)
 0x0C    4B    TOKEN_COUNT    Number of tokens after tokenization (little-endian u32)
 0x10    4B    BIAS_LR        BiasHead learning rate (little-endian f32)
@@ -481,7 +504,7 @@ This detects:
 ### v4 (byte-count driven)
 
 ```
-1. Read AZTH file, validate MAGIC (accept v2, v3, v4 or v5)
+1. Read RDKT file, validate MAGIC (accept RDKT v5, or legacy AZTH v2-v5)
 2. Parse header (TOTAL_BYTES, FLAGS, [v5: PROFILE], optional HP, optional emb-surgery, ...)
 2a. Resolve weight profile from the header (reject a conflicting `--quant`)
 2b. If emb-surgery stored in header: apply matching surgery to model
@@ -512,7 +535,7 @@ When `--streaming` is specified (v4 files only):
 ### v2/v3 (token-count driven, legacy)
 
 ```
-1. Read AZTH file, validate MAGIC
+1. Read RDKT file, validate MAGIC
 2. Parse TOTAL_BYTES, TOKEN_COUNT, hyperparameters
 3. Extract STREAM and CRC32 (v3) or STREAM only (v2)
 4. Decode TOKEN_COUNT symbols sequentially
@@ -572,7 +595,7 @@ This is inherent to ALL neural compression schemes (cmix, NNCP, etc.).
 ## MIME Type (Proposed)
 
 ```
-application/x-azth
+application/x-rdkt
 ```
 
-File extension: `.azth`
+File extension: `.rdkt`

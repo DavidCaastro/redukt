@@ -7,11 +7,11 @@ dependencies, single binary, CPU reference implementation with an optional CUDA 
 ## Highlights
 
 - **Strong ratio on text, logs and XML at small window sizes**: enwik8 0.964 bpb, apache log 0.216, facturae XML 0.389
-  (10 KB windows, actual AZTH output). See "Competitive position" below for what those figures do and do not mean.
+  (10 KB windows, actual RDKT output). See "Competitive position" below for what those figures do and do not mean.
 - **18 domains validated**: Silesia corpus (12 files), enwik8, industry files (5)
 - **Zero dependencies**: Pure Rust, single binary, CPU-only reference; GPU is a plugin, never a requirement
 - **Deterministic by contract**: byte-identical output batch == single file, Windows == Linux (x86-64-v3), API == CLI;
-  weight profile and numeric contract are declared in the AZTH v5 header. CRC-32 verified on decompression.
+  weight profile and numeric contract are declared in the RDKT v5 header. CRC-32 verified on decompression.
 
 ## Quick Start
 
@@ -24,10 +24,10 @@ bash scripts/download-mamba-weights.sh    # Mamba-130M (default backbone)
 cargo build --release
 
 # 3. Compress
-./target/release/redukt compress --input data.txt --output data.azth
+./target/release/redukt compress --input data.txt --output data.rdkt
 
 # 4. Decompress (lossless — byte-identical output guaranteed)
-./target/release/redukt decompress --input data.azth --output restored.txt
+./target/release/redukt decompress --input data.rdkt --output restored.txt
 ```
 
 ## How It Works
@@ -38,10 +38,10 @@ head) is blended with the backbone by an adaptive SGD mixer, and the resulting d
 Binary inputs can be preprocessed with E8E9, byte-plane shuffle and delta coding.
 
 ```
-Input → Tokenize → [Mamba-130M | RWKV-7 + CM ensemble + adaptive mixer] → Arithmetic Coder → .azth
+Input → Tokenize → [Mamba-130M | RWKV-7 + CM ensemble + adaptive mixer] → Arithmetic Coder → .rdkt
 ```
 
-## Performance (12 files, 10 KB windows, actual AZTH compression, measured 2026-10-31)
+## Performance (12 files, 10 KB windows, actual RDKT compression, measured 2026-10-31)
 
 All BPB = `compressed_size × 8 / original_size` (actual file output, not cross-entropy). **These are 10 KB
 windows**: classical codecs improve far more than Redukt when they see the whole file (see the last column), so the
@@ -61,7 +61,7 @@ Wins 8/12 files vs brotli-11 at 10 KB; loses on high-entropy binary (sao +45%, o
 backbone the ratio collapses with length — enwik8 0.964 (10 KB) → 1.63 (100 KB) → 3.91 (2 MB), and all five whole
 industry files lose to brotli-11/xz. The cause is Mamba-130M's recurrent state degenerating beyond ~16K tokens
 (reproduced with the HF reference implementation). A periodic state reset
-is now the default (R-108): the Mamba backbone state is zeroed every 4096 tokens and the period is recorded in the AZTH
+is now the default (R-108): the Mamba backbone state is zeroed every 4096 tokens and the period is recorded in the RDKT
 header (`compress --reset-every N`, 0 = off). It restores 0.995 bpb on the 100 KB prefix and wins the five whole
 industry files again (apache 0.185 vs brotli 0.313, UBL 0.235 vs 0.247). 10 KB references grow by one header byte
 (enwik8 F32 0.9648, Q8 0.9695). Measured on a T4 with the reset (`data/benchmark/results/kaggle-fullsize/`): enwik8
@@ -97,7 +97,7 @@ Roadmap consequences: `docs/ROADMAP.md` Fase 19 (R-103 GPU kernels, R-105 fast t
 
 `--jobs N` runs N files as lockstep streams: every step advances one token in each stream and shares a single fetch of
 the model weights (GEMV becomes GEMM), so aggregate throughput grows with N until the CPU is compute-bound (N~8-32).
-Each `.azth` is byte-identical to the single-file output regardless of N.
+Each `.rdkt` is byte-identical to the single-file output regardless of N.
 
 ```bash
 ./target/release/redukt compress --input-dir logs/ --output-dir out/ --jobs 16
@@ -144,7 +144,7 @@ pip install brotli zstandard
 python scripts/benchmark-suite.py --bytes 10240
 ```
 
-The `benchmark` command runs actual AZTH compression on your data and compares against gzip-9
+The `benchmark` command runs actual RDKT compression on your data and compares against gzip-9
 and brotli-11 (auto-detected). Add `--verify` for roundtrip decompression check. Output: JSON
 with per-file BPB (actual compressed size), compression ratio, throughput, coder efficiency,
 and storage savings projection. All results are deterministic and CRC-verified. Compare against
@@ -160,12 +160,12 @@ cargo test
 cargo test --release --test roundtrip -- --ignored
 
 # Verbose timing breakdown
-./target/release/redukt compress --input data.txt --output data.azth --verbose
+./target/release/redukt compress --input data.txt --output data.rdkt --verbose
 ```
 
 ## Format
 
-Output format: AZTH v5 (adds a PROFILE byte with the weight profile and the numeric contract; since R-104 the encoder
+Output format: RDKT v5 (adds a PROFILE byte with the weight profile and the numeric contract; since R-104 the encoder
 always writes v5, F32 included). The decoder accepts v2-v5.
 See `docs/api/FORMAT-SPEC.md` for full specification.
 Includes CRC-32 integrity verification, hyperparameter validation, and u32 overflow protection.

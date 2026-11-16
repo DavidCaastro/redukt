@@ -33,7 +33,7 @@ pub struct PluginState {
     reset_fn: BackendResetFn,
     slot: Option<u32>,
     v2: Option<BackendVTableV2>,
-    /// R-108: zero the device state every N forwards (0 = never), from the AZTH header.
+    /// R-108: zero the device state every N forwards (0 = never), from the RDKT header.
     reset_every: u64,
     since_reset: u64,
 }
