@@ -8,3 +8,4 @@ Makefile text eol=lf
 *.json text eol=lf
 .gcloudignore text eol=lf
 .dockerignore text eol=lf
+data/test-fixtures/** -text
