@@ -278,7 +278,9 @@ Provenance documented in `weights/MANIFEST.md`.
 2. BPB validation: hybrid-eval enwik8 10KB ≈ 1.28 (Q8 or F32 — difference <2%)
 2b. Cross-OS gate (R-104): same sha256 and byte-identical roundtrip Windows <-> Linux (x86-64-v3) on
     enwik8/facturae/apache, F32 and Q8 (re-verified 2026-11-10 with R-108 archives: enwik8 10 KB and 100 KB Q8
-    sha256 d550671b… / d907ffc0… identical on the i5 and the Kaggle Xeon)
+    sha256 d550671b… / d907ffc0… identical on the i5 and the Kaggle Xeon; since 2026-11-16 the Linux 10 KB
+    archives are tracked in `data/test-fixtures/linux-x86_64/` and checked by the ignored test
+    `linux_reference_archives_match` — they carry the legacy AZTH magic, identity is from byte 4 on)
 2c. API == CLI gate (R-102): `redukt api` compress output sha256 == CLI output sha256 (enwik8 10 KB, Q8 and F32)
 3. Full benchmark matches verified results (see below)
 4. NOTICE file up to date
@@ -481,7 +483,8 @@ T1-T6, ledger); read sections 2, 3 and 5 before any Strata work.
   Owner, 2026-11-15: leaving CPU / edge is acceptable if viability needs it; CPU work so far counts as a functional
   demonstration.
 - RDKT (formerly AZTH) BACKBONE id 4 is reserved for Strata; nothing is implemented in Rust yet (stage 4a) and the spec-only oracle
-  (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. "Strata" is a working name (ROADMAP R-087
+  (4b) has not started. GPU budget: 12 of 18.5 Kaggle hours, 3.8 used. The V7 ladder integer weights are tracked in `weights/strata/`
+  (`weights/MANIFEST.md`); of the Kaggle kernels only `strata-ladder` remains (2026-11-16, `notebooks/README.md`). "Strata" is a working name (ROADMAP R-087
   cites an unrelated external `strata-inference`).
 
 ## Process Safety (Windows)

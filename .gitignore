@@ -3,6 +3,9 @@
 *.rdkt
 !data/test-fixtures/golden.azth
 !data/test-fixtures/golden.rdkt
+!data/test-fixtures/linux-x86_64/*.azth
+# trained models of the closed log-specialist path (R-112), local backup only
+data/benchmark/results/log-specialist/run-1/models/
 weights/**/*.safetensors
 weights/**/*.gguf
 weights/**/*.bin

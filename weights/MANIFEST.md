@@ -86,3 +86,22 @@ shutil.copy(path, 'weights/mamba-130m/tokenizer.json')
 3. **Every new weights directory MUST have an entry here** before use in experiments
 4. **Every experiment result MUST specify** which `--weights` path was used
 5. **Restoration procedures MUST be tested** before considering a deletion safe
+
+### strata/ladder3-s1204, strata/ladder3-s1205 — Strata capacity ladder (gate V7), TRACKED IN GIT
+
+- **Status**: research evidence, not a product model. These are the integer weights that gate V7 evaluated
+  (`docs/internal/research/strata-backbone/09-capacity-ladder-results.md`, arm W, retrained ladder: widths 88 /
+  208 / 456, two seeds). The V7 verdict was "objective NOT met"; they are kept so that the verdict can be
+  re-evaluated on CPU without retraining on a GPU.
+- **Source**: trained by this project, Kaggle T4, private kernel `strata-ladder` (code:
+  `notebooks/strata-ladder/strata-ladder.py`), 2026-11-14. Seed 1204: 22,016 updates, 1,442,840,576 training bytes,
+  12,216 s of loop time. Corpus: public data only (charter section 5b).
+- **Files** (the only weight files tracked in this repository; `.npz`, 80 arrays, int64 / bool, 1,276,182 values):
+  - `strata/ladder3-s1204/weights-int.npz` — 1,399,318 bytes, sha256 `ad36f04000178e5b64b62a3e264ed959a0367178f197d378cc37a7777bb7e88f`
+  - `strata/ladder3-s1205/weights-int.npz` — 1,397,808 bytes, sha256 `012a45fd4ce22ab4ed7b3a624605f70576b9006ccc949cdef355fb8d6d267465`
+- **License**: Apache-2.0 (own work).
+- **Working copies**: the evaluation tools read `data/strata/runs-ladder/kaggle-long-v3/run-ladder3-s<seed>/`
+  (gitignored). To restore, copy each file there under the same name.
+- **Not tracked**: the float training checkpoints `ckpt.pt` (12 MB each; only needed to continue training). Copies:
+  the laptop (`data/strata/runs-ladder/kaggle-long-v3/`) and the output of the Kaggle kernel `strata-ladder`,
+  which is kept for that reason.

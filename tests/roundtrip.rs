@@ -274,6 +274,47 @@ fn golden_fixtures_are_pinned() {
     assert_eq!(&legacy[..8], b"AZTH\x05\x00\x00\x00");
     assert_eq!(rdkt[4..], legacy[4..], "the fixtures must differ only in the magic");
     assert_eq!(u32::from_le_bytes([rdkt[8], rdkt[9], rdkt[10], rdkt[11]]), 39, "TOTAL_BYTES");
+    for (quant, expected) in LINUX_REFERENCE_SHA256 {
+        let a = std::fs::read(fixture(&format!("linux-x86_64/enwik8.10k.{}.azth", quant))).unwrap();
+        assert_eq!(sha256_hex(&a), expected, "linux reference {} changed", quant);
+    }
+    assert_eq!(std::fs::read(fixture("linux-x86_64/enwik8.10k")).unwrap().len(), 10240);
+}
+
+/// Archives written on Linux x86-64 (Kaggle Xeon, 2026-11-10), legacy magic. Cross-OS gate 2b.
+const LINUX_REFERENCE_SHA256: [(&str, &str); 2] = [
+    ("q8", "d550671b4258c908d859b9159530a9db84e107aa525848f317cbbf3cb5886736"),
+    ("f32", "fb07e20d4fff04b0a19559a35e3c29d1bd623cc09604f775aa41aa962fa3484f"),
+];
+
+/// Cross-OS identity (R-104): compressing the same bytes here gives the Linux archive from byte 4 on
+/// (the magic was renamed after those archives were written), and the Linux archive decodes here.
+#[test]
+#[ignore] // requires weights
+fn linux_reference_archives_match() {
+    let bin = ensure_bin();
+    if !has_weights() { eprintln!("SKIP: no weights"); return; }
+    let tmp = std::env::temp_dir().join("redukt_test_linux_ref");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let input = fixture("linux-x86_64/enwik8.10k");
+    let original = std::fs::read(&input).unwrap();
+    for (quant, _) in LINUX_REFERENCE_SHA256 {
+        let reference = fixture(&format!("linux-x86_64/enwik8.10k.{}.azth", quant));
+        let out = tmp.join(format!("{}.rdkt", quant));
+        let status = Command::new(&bin)
+            .args(["compress", "--input", input.to_str().unwrap(),
+                   "--output", out.to_str().unwrap(), "--quant", quant])
+            .status()
+            .expect("failed to run compress");
+        assert!(status.success(), "{}: compress failed", quant);
+        let (here, linux) = (std::fs::read(&out).unwrap(), std::fs::read(&reference).unwrap());
+        assert_eq!(&linux[..4], b"AZTH");
+        assert_eq!(here[4..], linux[4..], "{}: archive differs from the Linux reference", quant);
+        let back = tmp.join(format!("{}.out", quant));
+        assert!(decompress(&bin, &reference, &back), "{}: Linux archive does not decode", quant);
+        assert_eq!(std::fs::read(&back).unwrap(), original, "{}: Linux archive decodes to other bytes", quant);
+    }
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 /// Golden reference: compress a known 40-byte input and verify the output

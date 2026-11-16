@@ -18,6 +18,21 @@ redukt compress --input data/test-fixtures/golden-input.bin --output data/test-f
 
 then write `golden.azth` as `AZTH` + bytes 4 onward of `golden.rdkt`, and update the two hashes in the test.
 
+## Linux reference archives (`linux-x86_64/`)
+
+Archives written on Linux (Kaggle, 4-vCPU Xeon, x86-64-v3, 2026-11-10, run `run-a-r108` of
+`redukt-gpu-fullsize-bench`) for the cross-OS gate 2b of `CLAUDE.md`. They carry the legacy magic `AZTH`.
+
+| File | Bytes | sha256 | What |
+|---|---|---|---|
+| `enwik8.10k` | 10240 | — | first 10,240 bytes of enwik8 |
+| `enwik8.10k.q8.azth` | 1241 | `d550671b4258c908d859b9159530a9db84e107aa525848f317cbbf3cb5886736` | `compress --quant q8` on Linux |
+| `enwik8.10k.f32.azth` | 1235 | `fb07e20d4fff04b0a19559a35e3c29d1bd623cc09604f775aa41aa962fa3484f` | `compress --quant f32` on Linux |
+
+Tests: `golden_fixtures_are_pinned` pins the two hashes; `linux_reference_archives_match` (real weights)
+compresses `enwik8.10k` on the current machine and requires bytes 4 onward to equal the Linux archive, then
+decodes the Linux archive. Verified on Windows x86-64 AVX2 on 2026-11-16, both profiles.
+
 History: until 2026-11-16 `golden.azth` was an RWKV v4 archive of 2026-10-29 (35 bytes, sha256
 `736a2024822ef712bf9847cffd2b1065f03f7f1de152329a02b816f71b6c3e21`) that no test read and that had stopped decoding (size mismatch;
 the RWKV quantization level is not recorded in the header and the runtime changed after that date; not bisected).
